@@ -258,7 +258,11 @@ npm test
 - **Claude Code**：按[方式一](#方式一在-claude-code-中导入推荐)用本地路径 `/plugin marketplace add /path/to/sdd-harness` 添加。
 - **Codex**：按[方式二](#方式二在-codex-中导入)把 `packages/codex-plugin` 复制到本地插件目录，并更新 `~/.agents/plugins/marketplace.json`。
 
-> 卸载（当前 MVP 为手工方式）：保留所需归档后，移除项目内的 `.sdd/`，并删除宿主侧的 Claude marketplace 安装项或 Codex 本地插件目录 `~/.codex/plugins/sdd-harness` 及其 `~/.agents/plugins/marketplace.json` 条目。重复执行 `init` 会保留用户手改过的文件，仅补回缺失的生成文件。
+> 卸载（当前 MVP 为手工方式）分两层：
+>
+> 1. 清理项目内集成文件：`.sdd/`、`.claude/commands/sdd.*`、`.claude/skills/sdd-harness/`、`.codex/skills/sdd-harness/`；
+> 2. 清理宿主侧插件安装：删除 Claude marketplace 安装项，或删除 Codex 本地插件目录 `~/.codex/plugins/sdd-harness` 及其 `~/.agents/plugins/marketplace.json` 条目。  
+>    重复执行 `init` 会保留用户手改过的文件，仅补回缺失的生成文件。
 
 ---
 

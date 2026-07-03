@@ -81,6 +81,12 @@ describe("StateStore", () => {
     expect(
       await readFile(join(root, ".sdd/logs/migration.log"), "utf8"),
     ).toContain("0.9.0 -> 1.0.0");
+    expect(
+      await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
+    ).toContain("目标 schemaVersion：1.0.0");
+    expect(
+      await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
+    ).toContain(".sdd/state.json.migration.bak");
   });
 
   it("infers and writes a recovered state when state and backup are invalid", async () => {
@@ -111,6 +117,52 @@ describe("StateStore", () => {
     await expect(
       readFile(join(root, ".sdd/state.recovered.json"), "utf8"),
     ).resolves.toContain("SPEC_READY");
+  });
+
+  it("normalizes an orphaned in-progress state to FAILED with recovery context", async () => {
+    const root = await temporaryRoot();
+    const store = new StateStore(root);
+    await store.write({
+      ...createInitialState(),
+      initialized: true,
+      currentChangeId: "add-cancel",
+      currentPhase: "BUILDING",
+      previousPhase: "PLAN_READY",
+      inProgressPhase: "BUILDING",
+      lastCommand: "sdd build",
+      suggestedCommand: "sdd build",
+      tasks: {
+        "TASK-001": "DONE",
+        "TASK-002": "BUILDING",
+      },
+    });
+    await mkdir(join(root, ".sdd", "changes", "add-cancel"), {
+      recursive: true,
+    });
+
+    const normalized = await store.read();
+
+    expect(normalized).toMatchObject({
+      currentPhase: "FAILED",
+      previousPhase: "PLAN_READY",
+      inProgressPhase: "BUILDING",
+      failedCommand: "sdd build",
+      suggestedCommand: "sdd build",
+      recoverable: true,
+      lastError: "E_INTERRUPTED",
+      tasks: {
+        "TASK-001": "DONE",
+        "TASK-002": "FAILED",
+      },
+    });
+    expect(normalized.failedReason).toContain("已自动规范化为 FAILED");
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({
+      currentPhase: "FAILED",
+      failedCommand: "sdd build",
+      inProgressPhase: "BUILDING",
+    });
   });
 });
 

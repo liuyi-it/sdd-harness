@@ -28,6 +28,13 @@ export async function runStatus(root: string): Promise<CommandResult> {
       ? {}
       : { changeId: state.currentChangeId }),
     ...(next === undefined ? {} : { next }),
+    ...(state.recoveredFromBackup
+      ? {
+          warnings: [
+            `状态已从备份或制品恢复，请确认当前阶段后再继续执行${next === undefined ? "" : `：${next}`}`,
+          ],
+        }
+      : {}),
     data: state,
   };
 }

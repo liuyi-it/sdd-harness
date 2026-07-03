@@ -1,12 +1,14 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
+import { z } from "zod";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { type CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import { type CommandResult } from "../contracts.js";
 import { PINNED_DEPENDENCIES } from "../dependencies.js";
+import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
@@ -24,6 +26,28 @@ const REQUIRED_DIRECTORIES = [
   "plugins",
   "adapters",
   "schemas",
+] as const;
+
+const configSchema = z
+  .object({
+    schemaVersion: z.literal("1.0.0"),
+    project: z.object({ name: z.string().min(1) }).passthrough(),
+    plugins: z.object({}).passthrough(),
+    codebase: z.object({}).passthrough(),
+    workflow: z.object({}).passthrough(),
+    quality: z.object({}).passthrough(),
+    security: z.object({}).passthrough(),
+  })
+  .passthrough();
+
+const REQUIRED_CONFIG_KEYS = [
+  "schemaVersion",
+  "project",
+  "plugins",
+  "codebase",
+  "workflow",
+  "quality",
+  "security",
 ] as const;
 
 export async function runInit(
@@ -52,7 +76,8 @@ export async function runInit(
       join(sddRoot, "config.yml"),
       stringify(defaultConfig(root)),
     );
-    await installProjectIntegration(root);
+    const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
+    const integration = await installProjectIntegration(root);
     await store.update((state) => ({
       ...state,
       currentPhase: "INDEXING",
@@ -101,9 +126,7 @@ export async function runInit(
       state: ready.currentPhase,
       exitCode: 0,
       next: "sdd new",
-      ...(index.degraded
-        ? { warnings: [`降级模式：${index.reason ?? "MCP 不可用"}`] }
-        : {}),
+      ...buildWarnings(index, integration.candidateFiles, configWarnings),
     };
   } finally {
     await lock.release();
@@ -177,6 +200,55 @@ async function writeDependencyMetadata(
 
 async function writeIfMissing(path: string, content: string): Promise<void> {
   if (!(await exists(path))) await writeFile(path, content, "utf8");
+}
+
+function buildWarnings(
+  index: { degraded: boolean; reason?: string | null },
+  candidateFiles: string[],
+  configWarnings: string[],
+): { warnings?: string[] } {
+  const warnings: string[] = [];
+  if (index.degraded) {
+    warnings.push(`降级模式：${index.reason ?? "MCP 不可用"}`);
+  }
+  if (candidateFiles.length > 0) {
+    warnings.push(
+      `检测到人工修改，已生成候选文件供人工合并：${candidateFiles.join(", ")}`,
+    );
+  }
+  warnings.push(...configWarnings);
+  return warnings.length === 0 ? {} : { warnings };
+}
+
+async function validateConfig(path: string): Promise<string[]> {
+  const raw = await readFile(path, "utf8");
+  let parsed: unknown;
+  try {
+    parsed = parse(raw);
+  } catch (error) {
+    throw new SddError(
+      "E_STATE_CORRUPTED",
+      `config.yml 解析失败：${error instanceof Error ? error.message : String(error)}`,
+      "sdd init",
+    );
+  }
+  const config = configSchema.safeParse(parsed);
+  if (!config.success) {
+    throw new SddError(
+      "E_STATE_CORRUPTED",
+      `config.yml 校验失败：${config.error.issues.map((issue) => issue.path.join(".") || issue.message).join("; ")}`,
+      "sdd init",
+    );
+  }
+  const unknownKeys = Object.keys(config.data).filter(
+    (key) =>
+      !REQUIRED_CONFIG_KEYS.includes(
+        key as (typeof REQUIRED_CONFIG_KEYS)[number],
+      ),
+  );
+  return unknownKeys.length === 0
+    ? []
+    : [`config.yml 包含未知字段，已保留原值：${unknownKeys.join(", ")}`];
 }
 
 async function exists(path: string): Promise<boolean> {

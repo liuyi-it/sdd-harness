@@ -51,7 +51,9 @@ export const workflowStateSchema = z.object({
   previousPhase: z.enum(PHASES).nullable(),
   inProgressPhase: z.enum(PHASES).nullable(),
   failedCommand: z.string().nullable(),
+  failedReason: z.string().nullable().optional(),
   interruptedCommand: z.string().nullable(),
+  recoverable: z.boolean().optional(),
   suggestedCommand: z.string().nullable(),
   tasks: z.record(z.string(), taskStatusSchema),
   artifacts: z.record(
@@ -81,7 +83,9 @@ export function createInitialState(): WorkflowState {
     previousPhase: null,
     inProgressPhase: null,
     failedCommand: null,
+    failedReason: null,
     interruptedCommand: null,
+    recoverable: true,
     suggestedCommand: "sdd init",
     tasks: {},
     artifacts: {},
@@ -122,12 +126,25 @@ export class StateStore {
           `${new Date().toISOString()} 0.9.0 -> 1.0.0\n`,
           "utf8",
         );
+        await writeFile(
+          join(this.root, ".sdd", "migration-report.md"),
+          migrationReport({
+            fromSchemaVersion: "0.9.0",
+            toSchemaVersion: "1.0.0",
+            nextVersion: migrated.version,
+            backupPath: ".sdd/state.json.migration.bak",
+            ...(typeof raw.version === "number"
+              ? { previousVersion: raw.version }
+              : {}),
+          }),
+          "utf8",
+        );
         await this.write(migrated);
         return migrated;
       }
       const parsed = workflowStateSchema.parse(raw);
       await this.validateChangeReference(parsed);
-      return parsed;
+      return await this.normalizeTransientState(parsed);
     } catch (error) {
       try {
         // 优先回退到上一次完整写入时留下的备份。
@@ -202,6 +219,41 @@ export class StateStore {
         "sdd status",
       );
     }
+  }
+
+  private async normalizeTransientState(
+    state: WorkflowState,
+  ): Promise<WorkflowState> {
+    const recovery = TRANSIENT_PHASE_RECOVERY[state.currentPhase];
+    if (recovery === undefined) return state;
+    if (await pathExists(join(this.root, ".sdd", "lock"))) return state;
+    const normalized = workflowStateSchema.parse({
+      ...state,
+      currentPhase: "FAILED",
+      previousPhase: recovery.previousPhase,
+      inProgressPhase: state.currentPhase,
+      failedCommand: recovery.command,
+      failedReason:
+        state.failedReason ??
+        `检测到未完成的 ${recovery.command} 状态，已自动规范化为 FAILED`,
+      interruptedCommand: null,
+      recoverable: true,
+      suggestedCommand: recovery.command,
+      lastError: state.lastError ?? "E_INTERRUPTED",
+      tasks:
+        state.currentPhase === "BUILDING"
+          ? Object.fromEntries(
+              Object.entries(state.tasks).map(([taskId, status]) => [
+                taskId,
+                status === "BUILDING" ? "FAILED" : status,
+              ]),
+            )
+          : state.tasks,
+      version: state.version + 1,
+      updatedAt: new Date().toISOString(),
+    });
+    await this.write(normalized);
+    return normalized;
   }
 
   private async recoverFromArtifacts(): Promise<WorkflowState | null> {
@@ -301,3 +353,45 @@ function suggestedCommand(phase: Phase): string | null {
     }[phase as string] ?? null
   );
 }
+
+function migrationReport(input: {
+  fromSchemaVersion: string;
+  toSchemaVersion: string;
+  previousVersion?: number;
+  nextVersion: number;
+  backupPath: string;
+}): string {
+  return [
+    "# 迁移报告",
+    "",
+    "## 概要",
+    "",
+    `- 源 schemaVersion：${input.fromSchemaVersion}`,
+    `- 目标 schemaVersion：${input.toSchemaVersion}`,
+    ...(input.previousVersion === undefined
+      ? []
+      : [`- 迁移前 version：${input.previousVersion}`]),
+    `- 迁移后 version：${input.nextVersion}`,
+    `- 备份文件：${input.backupPath}`,
+    `- 迁移时间：${new Date().toISOString()}`,
+    "",
+    "## 结果",
+    "",
+    "PASS",
+    "",
+  ].join("\n");
+}
+
+const TRANSIENT_PHASE_RECOVERY: Partial<
+  Record<Phase, { command: string; previousPhase: Phase }>
+> = {
+  INITIALIZING: { command: "sdd init", previousPhase: "NOT_INITIALIZED" },
+  INDEXING: { command: "sdd init", previousPhase: "NOT_INITIALIZED" },
+  NEW_STARTED: { command: "sdd new", previousPhase: "INDEX_READY" },
+  DESIGNING: { command: "sdd design", previousPhase: "SPEC_READY" },
+  PLANNING: { command: "sdd plan", previousPhase: "DESIGN_READY" },
+  BUILDING: { command: "sdd build", previousPhase: "PLAN_READY" },
+  VERIFYING: { command: "sdd verify", previousPhase: "BUILD_READY" },
+  REVIEWING: { command: "sdd review", previousPhase: "VERIFY_READY" },
+  ARCHIVING: { command: "sdd archive", previousPhase: "REVIEW_READY" },
+};

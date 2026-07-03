@@ -7,6 +7,13 @@
   },
   "repository": "https://github.com/liuyi-it/sdd-harness",
   "license": "MIT",
+  "entry": "./src/index.ts",
+  "compatibility": {
+    "corePackage": "@sdd-harness/core",
+    "coreVersion": "0.1.0",
+    "hosts": ["claude-code"],
+    "os": ["macos", "windows"]
+  },
   "commands": "./commands/",
   "skills": "./skills/"
 }

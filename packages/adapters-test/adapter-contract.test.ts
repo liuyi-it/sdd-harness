@@ -76,18 +76,52 @@ describe("adapter parity", () => {
     });
   });
 
-  it("returns help and version without dispatching a write command", async () => {
-    const core = new RecordingCore();
-    const adapter = new CodexAdapter(core);
-    expect(await adapter.execute("sdd status --help", "/repo")).toMatchObject({
-      ok: true,
-      data: { command: "status", options: expect.any(Array) },
-    });
-    expect(adapter.version()).toMatchObject({
+  it.each([
+    "init",
+    "auto",
+    "new",
+    "design",
+    "plan",
+    "build",
+    "verify",
+    "review",
+    "archive",
+    "status",
+  ] as const)(
+    "returns help for %s without dispatching a write command",
+    async (command) => {
+      const claudeCore = new RecordingCore();
+      const codexCore = new RecordingCore();
+      const claude = new ClaudeCodeAdapter(claudeCore);
+      const codex = new CodexAdapter(codexCore);
+
+      expect(
+        await claude.execute(`/sdd.${command} --help`, "/repo"),
+      ).toMatchObject({
+        ok: true,
+        data: { command, options: expect.any(Array) },
+      });
+      expect(
+        await codex.execute(`sdd ${command} --help`, "/repo"),
+      ).toMatchObject({
+        ok: true,
+        data: { command, options: expect.any(Array) },
+      });
+      expect(claudeCore.execute).not.toHaveBeenCalled();
+      expect(codexCore.execute).not.toHaveBeenCalled();
+    },
+  );
+
+  it("returns plugin version metadata for both hosts", () => {
+    const claude = new ClaudeCodeAdapter(new RecordingCore());
+    const codex = new CodexAdapter(new RecordingCore());
+
+    expect(claude.version()).toMatchObject({
       name: "sdd-harness",
       version: "0.1.0",
       delivery: "plugin",
+      supportedTargets: ["claude-code", "codex"],
     });
-    expect(core.execute).not.toHaveBeenCalled();
+    expect(codex.version()).toEqual(claude.version());
   });
 });
