@@ -10,6 +10,10 @@ import { type StoredTaskResult, verifyGate } from "../quality/quality-gates.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * verify 阶段关注“需求是否被任务覆盖，任务是否有通过的执行证据”。
+ * 它不检查实现细节优雅与否，只判断是否达到可验证完成状态。
+ */
 export async function runVerify(root: string): Promise<CommandResult> {
   const lock = new FileLock(root);
   await lock.acquire("sdd verify");
@@ -19,12 +23,12 @@ export async function runVerify(root: string): Promise<CommandResult> {
     if (state.currentPhase !== "BUILD_READY") {
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
-        `Cannot verify from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下执行 verify`,
         state.suggestedCommand ?? undefined,
       );
     }
     if (state.currentChangeId === null)
-      throw new SddError("E_MISSING_CHANGE", "No active change");
+      throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
     const changeId = state.currentChangeId;
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
@@ -42,31 +46,31 @@ export async function runVerify(root: string): Promise<CommandResult> {
     ) as StoredTaskResult[];
     const gate = verifyGate(spec, tasks, results, state.tasks);
     const report = reportDocument(
-      "Verify Report",
+      "验证报告",
       [
         [
-          "Task Completion",
+          "任务完成情况",
           gate.failures.filter((failure) => failure.includes("TASK-")),
         ],
         [
-          "Requirement Coverage",
+          "需求覆盖",
           gate.failures.filter((failure) => failure.includes("REQ-")),
         ],
         [
-          "Acceptance Criteria Coverage",
+          "验收标准覆盖",
           gate.failures.filter((failure) => failure.includes("Acceptance")),
         ],
         [
-          "Test Results",
+          "测试结果",
           results.flatMap((result) =>
             result.verification.map(
               (entry) => `${entry.command}: ${entry.passed ? "PASS" : "FAIL"}`,
             ),
           ),
         ],
-        ["Boundary Checks", []],
-        ["Drift Checks", []],
-        ["Failed Items", gate.failures],
+        ["边界检查", []],
+        ["漂移检查", []],
+        ["未通过项", gate.failures],
       ],
       gate.passed,
     );
@@ -126,9 +130,9 @@ function reportDocument(
   return [
     `# ${title}`,
     "",
-    "## Summary",
+    "## 概要",
     "",
-    passed ? "All gates passed." : "One or more gates failed.",
+    passed ? "所有质量闸门均已通过。" : "存在一个或多个未通过的质量闸门。",
     "",
     ...sections.flatMap(([heading, items]) => [
       `## ${heading}`,

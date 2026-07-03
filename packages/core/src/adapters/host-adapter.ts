@@ -6,6 +6,10 @@ import {
 } from "../contracts.js";
 import { SddError } from "../errors.js";
 
+/**
+ * HostAdapter 把 Claude Code / Codex 的命令字符串解析成统一的 Core 请求。
+ * 适配器层不保存工作流状态，也不改写 Core 的语义结果。
+ */
 export type HostStyle = "claude-code" | "codex";
 
 export interface PluginVersion {
@@ -24,6 +28,7 @@ export class HostAdapter {
   async execute(input: string, cwd: string): Promise<CommandResult> {
     const parsed = parseHostCommand(input, cwd, this.style);
     if (parsed.help) {
+      // help/version 由适配器直接返回，避免为了查看帮助信息进入写流程。
       return {
         ok: true,
         state: "NOT_INITIALIZED",
@@ -85,11 +90,12 @@ export function parseHostCommand(
   ) {
     throw new SddError(
       "E_INVALID_PHASE_COMMAND",
-      `Unknown sdd command: ${rawCommand ?? ""}`,
+      `未知的 sdd 命令：${rawCommand ?? ""}`,
     );
   }
   const command = rawCommand as CommandName;
   const args: Record<string, unknown> = {};
+  // new/auto 允许第一个非选项参数直接作为自然语言需求输入。
   if (
     (command === "new" || command === "auto") &&
     tokens[0]?.startsWith("--") === false
@@ -123,7 +129,7 @@ export function parseHostCommand(
         if (!Number.isFinite(value) || value < 0)
           throw new SddError(
             "E_INVALID_PHASE_COMMAND",
-            "--timeout must be a non-negative number",
+            "--timeout 必须是非负数",
           );
         args.timeout = value;
         break;
@@ -131,7 +137,7 @@ export function parseHostCommand(
       default:
         throw new SddError(
           "E_INVALID_PHASE_COMMAND",
-          `Unknown option: ${token ?? ""}`,
+          `未知的选项：${token ?? ""}`,
         );
     }
   }
@@ -156,7 +162,7 @@ function tokenize(input: string): string[] {
 function requireValue(tokens: string[], option: string): string {
   const value = tokens.shift();
   if (value === undefined || value.startsWith("--")) {
-    throw new SddError("E_INVALID_PHASE_COMMAND", `${option} requires a value`);
+    throw new SddError("E_INVALID_PHASE_COMMAND", `${option} 需要提供一个值`);
   }
   return value;
 }

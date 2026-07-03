@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AuditLogger } from "../src/audit/audit-logger.js";
 import { assertSafePath } from "../src/security/path-safety.js";
 
+// 安全测试聚焦路径逃逸、符号链接和审计日志脱敏三类高风险场景。
 const roots: string[] = [];
 
 async function temporaryRoot(): Promise<string> {

@@ -10,6 +10,10 @@ import { reviewGate, type StoredTaskResult } from "../quality/quality-gates.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * review 阶段在 verify 通过之后再做一次实现侧审查，
+ * 重点确认修改范围、验证证据和任务声明之间没有漂移。
+ */
 export async function runReview(root: string): Promise<CommandResult> {
   const lock = new FileLock(root);
   await lock.acquire("sdd review");
@@ -19,12 +23,12 @@ export async function runReview(root: string): Promise<CommandResult> {
     if (state.currentPhase !== "VERIFY_READY") {
       throw new SddError(
         "E_VERIFY_REQUIRED",
-        `Cannot review from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下执行 review`,
         state.suggestedCommand ?? "sdd verify",
       );
     }
     if (state.currentChangeId === null)
-      throw new SddError("E_MISSING_CHANGE", "No active change");
+      throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
     const changeId = state.currentChangeId;
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
@@ -41,53 +45,51 @@ export async function runReview(root: string): Promise<CommandResult> {
     ) as StoredTaskResult[];
     const gate = reviewGate(tasks, results);
     const report = [
-      "# Review Report",
+      "# 审查报告",
       "",
-      "## Summary",
+      "## 概要",
       "",
-      gate.passed
-        ? "Implementation evidence is consistent with the plan."
-        : "Review found required fixes.",
+      gate.passed ? "实现证据与计划一致。" : "审查发现需要修复的问题。",
       "",
-      "## Code Quality",
+      "## 代码质量",
       "",
-      "Verification evidence is present for each completed task.",
+      "每个已完成任务都具备验证证据。",
       "",
-      "## Architecture Consistency",
+      "## 架构一致性",
       "",
-      "Changes remain linked to planned tasks and requirements.",
+      "改动仍与计划中的任务和需求保持关联。",
       "",
-      "## Performance",
+      "## 性能",
       "",
-      "No unreviewed performance finding was recorded.",
+      "未记录到未经审查的性能问题。",
       "",
-      "## Simplicity",
+      "## 简洁性",
       "",
-      "No unrelated implementation evidence was recorded.",
+      "未记录到无关的实现证据。",
       "",
-      "## Security",
+      "## 安全",
       "",
-      "File and command safety gates were enforced.",
+      "文件与命令的安全闸门均已生效。",
       "",
-      "## File Scope",
+      "## 文件范围",
       "",
       gate.passed
         ? "PASS"
         : gate.failures.map((failure) => `- ${failure}`).join("\n"),
       "",
-      "## Unrelated Changes",
+      "## 无关改动",
       "",
-      gate.passed ? "None detected." : "See Required Fixes.",
+      gate.passed ? "未检测到。" : "参见「需修复项」。",
       "",
-      "## Required Fixes",
+      "## 需修复项",
       "",
       gate.failures.length === 0
-        ? "None."
+        ? "无。"
         : gate.failures.map((failure) => `- ${failure}`).join("\n"),
       "",
-      "## Suggestions",
+      "## 建议",
       "",
-      "Keep future changes within explicit task scope.",
+      "后续改动请保持在明确的任务范围之内。",
       "",
       "## Result",
       "",

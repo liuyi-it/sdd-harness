@@ -10,6 +10,7 @@ import { GitInspector } from "../src/git/git-inspector.js";
 import { isCommandAllowed } from "../src/security/shell-policy.js";
 import { validateTaskFiles } from "../src/security/task-scope.js";
 
+// 这里覆盖 build 周边的静态安全边界：允许的验证命令、允许的文件范围以及 Git 差异识别。
 describe("shell policy", () => {
   it("allows test commands and blocks destructive or network commands", () => {
     expect(isCommandAllowed("npm test")).toBe(true);

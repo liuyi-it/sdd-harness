@@ -21,6 +21,10 @@ import {
   type TaskExecutor,
 } from "./build/task-executor.js";
 
+/**
+ * Core 是整个工作流的统一调度入口。
+ * 所有平台适配器最终都只通过这里推进状态机、写入制品和返回结果。
+ */
 interface CoreDependencies {
   codebase?: CodebaseAdapter;
   specEngine?: SpecEngine;
@@ -43,19 +47,18 @@ export class Core implements SddCore {
 
   async execute(request: CommandRequest): Promise<CommandResult> {
     try {
+      // status 是纯只读命令，不依赖完整的写命令分发流程。
       if (request.command === "status") return await runStatus(request.cwd);
       if (request.command === "init")
         return await runInit(request.cwd, this.codebase);
       const current = await runStatus(request.cwd);
+      // 已归档 change 进入只读模式，只允许重新 archive、查看状态或开启新 change。
       if (
         current.state === "ARCHIVED" &&
         request.command !== "archive" &&
         request.command !== "new"
       ) {
-        throw new SddError(
-          "E_ARCHIVED_READONLY",
-          "Archived changes are read-only",
-        );
+        throw new SddError("E_ARCHIVED_READONLY", "已归档的变更为只读状态");
       }
       if (request.command === "auto") return await this.runAuto(request);
       if (request.command === "new")
@@ -78,13 +81,13 @@ export class Core implements SddCore {
       if (status.state === "NOT_INITIALIZED") {
         throw new SddError(
           "E_NOT_INITIALIZED",
-          "Run sdd init before other commands",
+          "请先运行 sdd init 再执行其他命令",
           "sdd init",
         );
       }
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
-        `Command ${request.command} is not implemented for ${status.state}`,
+        `命令 ${request.command} 在状态 ${status.state} 下不可用`,
         status.next,
       );
     } catch (error) {
@@ -108,7 +111,7 @@ export class Core implements SddCore {
     if (status.state === "NOT_INITIALIZED") {
       throw new SddError(
         "E_NOT_INITIALIZED",
-        "Run sdd init before sdd auto",
+        "请先运行 sdd init 再执行 sdd auto",
         "sdd init",
       );
     }
@@ -121,6 +124,7 @@ export class Core implements SddCore {
       VERIFY_READY: "review",
       REVIEW_READY: "archive",
     } as const;
+    // auto 只是阶段编排器，不会绕过任何单阶段命令自身的安全检查。
     for (let step = 0; step < 8; step += 1) {
       if (status.state === "ARCHIVED" || status.state === "CLARIFYING")
         return status;
@@ -145,7 +149,7 @@ export class Core implements SddCore {
     }
     throw new SddError(
       "E_STATE_CORRUPTED",
-      "Auto workflow exceeded the maximum phase count",
+      "auto 流程超过了允许的最大阶段推进次数",
     );
   }
 }

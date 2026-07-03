@@ -10,6 +10,7 @@ import {
 } from "../src/codebase/codebase-adapter.js";
 import { PINNED_DEPENDENCIES } from "../src/dependencies.js";
 
+// 这里既验证固定依赖元数据，也验证 MCP 可用/不可用两条代码库上下文路径。
 const roots: string[] = [];
 
 async function project(): Promise<string> {

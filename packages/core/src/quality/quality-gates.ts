@@ -2,6 +2,10 @@ import { type TaskExecutionResult } from "../build/task-executor.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 
+/**
+ * verify / review 阶段共享的质量闸门检查逻辑。
+ * 保持纯函数接口，便于命令层组合和测试层断言。
+ */
 export interface StoredTaskResult extends TaskExecutionResult {
   taskId: string;
 }
@@ -19,15 +23,16 @@ export function verifyGate(
 ): GateResult {
   const failures: string[] = [];
   for (const task of tasks) {
-    if (statuses[task.id] !== "DONE") failures.push(`${task.id} is not DONE`);
+    // verify 阶段同时检查“任务状态已完成”和“任务确实有通过的验证证据”。
+    if (statuses[task.id] !== "DONE")
+      failures.push(`${task.id} 未完成（DONE）`);
     const result = results.find((entry) => entry.taskId === task.id);
-    if (result === undefined)
-      failures.push(`${task.id} has no execution evidence`);
+    if (result === undefined) failures.push(`${task.id} 缺少执行证据`);
     else if (
       result.verification.length === 0 ||
       result.verification.some((entry) => !entry.passed)
     ) {
-      failures.push(`${task.id} verification did not pass`);
+      failures.push(`${task.id} 的验证未通过`);
     }
   }
   const requirements = [...spec.matchAll(/###\s+(REQ-\d+)/g)]
@@ -35,11 +40,11 @@ export function verifyGate(
     .filter((value): value is string => value !== undefined);
   for (const requirement of requirements) {
     if (!tasks.some((task) => task.requirements.includes(requirement))) {
-      failures.push(`${requirement} is not linked to a task`);
+      failures.push(`${requirement} 未关联到任何任务`);
     }
   }
   if (!spec.includes("Acceptance Criteria:"))
-    failures.push("Acceptance Criteria are missing");
+    failures.push("缺少验收标准（Acceptance Criteria）");
   return { passed: failures.length === 0, failures };
 }
 
@@ -49,9 +54,10 @@ export function reviewGate(
 ): GateResult {
   const failures: string[] = [];
   for (const result of results) {
+    // review 更关注结果与任务声明范围是否一致，而不是重新编排执行顺序。
     const task = tasks.find((candidate) => candidate.id === result.taskId);
     if (task === undefined) {
-      failures.push(`${result.taskId} does not exist in tasks`);
+      failures.push(`${result.taskId} 在任务列表中不存在`);
       continue;
     }
     try {
@@ -60,7 +66,7 @@ export function reviewGate(
       failures.push(error instanceof Error ? error.message : String(error));
     }
     if (result.verification.some((entry) => !entry.passed)) {
-      failures.push(`${result.taskId} contains failed verification evidence`);
+      failures.push(`${result.taskId} 包含未通过的验证证据`);
     }
   }
   return { passed: failures.length === 0, failures };

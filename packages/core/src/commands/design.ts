@@ -9,6 +9,10 @@ import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * design 阶段把 spec、impact 和代码库上下文收束成可执行设计稿。
+ * 如果输入未变化，则直接返回 already ready，保持幂等。
+ */
 export async function runDesign(
   root: string,
   engine: TddEngine,
@@ -24,7 +28,7 @@ export async function runDesign(
     ) {
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
-        `Cannot design from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下执行 design`,
         state.suggestedCommand ?? undefined,
       );
     }
@@ -70,7 +74,7 @@ export async function runDesign(
         changeId,
         next: "sdd plan",
         warnings: [
-          "design input changed; generated design.md.candidate.md for manual merge",
+          "design 输入已变化；已生成 design.md.candidate.md 供人工合并",
         ],
       };
     }
@@ -107,6 +111,6 @@ export async function runDesign(
 
 function requireChangeId(value: string | null): string {
   if (value === null)
-    throw new SddError("E_MISSING_CHANGE", "No active change");
+    throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
   return value;
 }

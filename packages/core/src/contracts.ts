@@ -11,6 +11,13 @@ export const COMMANDS = [
   "status",
 ] as const;
 
+/**
+ * 这里定义所有对外稳定契约：
+ * - 命令集合
+ * - 状态枚举
+ * - 错误码到退出码的映射
+ * - Core 请求/响应结构
+ */
 export type CommandName = (typeof COMMANDS)[number];
 
 export const PHASES = [

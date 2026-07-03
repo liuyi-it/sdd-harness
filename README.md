@@ -6,10 +6,10 @@
 
 第一版交付形态是**插件包 + 共享执行核心**，不发布独立 CLI。文档中的 `sdd init`、`sdd build` 等写法表示统一命令契约，在两个宿主中的触发方式不同：
 
-| 宿主 | 触发方式 | 示例 |
-| --- | --- | --- |
+| 宿主        | 触发方式      | 示例                      |
+| ----------- | ------------- | ------------------------- |
 | Claude Code | slash command | `/sdd.init`、`/sdd.build` |
-| Codex | 项目指令 | `sdd init`、`sdd build` |
+| Codex       | 项目指令      | `sdd init`、`sdd build`   |
 
 ---
 
@@ -280,18 +280,18 @@ Claude Code                       Codex
 
 ## 命令说明
 
-| 命令 | 作用 | Claude Code | Codex |
-| --- | --- | --- | --- |
-| `init` | 初始化项目并建立代码库上下文 | `/sdd.init` | `sdd init` |
-| `auto` | 自动执行完整 SDD 流程 | `/sdd.auto "需求"` | `sdd auto "需求"` |
-| `new` | 创建需求变更，做需求分析、澄清与规格生成 | `/sdd.new "需求"` | `sdd new "需求"` |
-| `design` | 基于规格生成设计方案 | `/sdd.design` | `sdd design` |
-| `plan` | 基于设计拆解开发任务 | `/sdd.plan` | `sdd plan` |
-| `build` | 根据任务计划实现代码 | `/sdd.build` | `sdd build` |
-| `verify` | 验证任务完成度与功能边界 | `/sdd.verify` | `sdd verify` |
-| `review` | 审查代码质量、修改范围与实现合理性 | `/sdd.review` | `sdd review` |
-| `archive` | 归档当前需求变更 | `/sdd.archive` | `sdd archive` |
-| `status` | 查看当前 SDD 状态与下一步建议 | `/sdd.status` | `sdd status` |
+| 命令      | 作用                                     | Claude Code        | Codex             |
+| --------- | ---------------------------------------- | ------------------ | ----------------- |
+| `init`    | 初始化项目并建立代码库上下文             | `/sdd.init`        | `sdd init`        |
+| `auto`    | 自动执行完整 SDD 流程                    | `/sdd.auto "需求"` | `sdd auto "需求"` |
+| `new`     | 创建需求变更，做需求分析、澄清与规格生成 | `/sdd.new "需求"`  | `sdd new "需求"`  |
+| `design`  | 基于规格生成设计方案                     | `/sdd.design`      | `sdd design`      |
+| `plan`    | 基于设计拆解开发任务                     | `/sdd.plan`        | `sdd plan`        |
+| `build`   | 根据任务计划实现代码                     | `/sdd.build`       | `sdd build`       |
+| `verify`  | 验证任务完成度与功能边界                 | `/sdd.verify`      | `sdd verify`      |
+| `review`  | 审查代码质量、修改范围与实现合理性       | `/sdd.review`      | `sdd review`      |
+| `archive` | 归档当前需求变更                         | `/sdd.archive`     | `sdd archive`     |
+| `status`  | 查看当前 SDD 状态与下一步建议            | `/sdd.status`      | `sdd status`      |
 
 **通用参数**：`--json`、`--non-interactive`、`--force`、`--timeout <seconds>`、`--change <id>`、`--verbose`、`--help`。`new` / `auto` 允许第一个非选项参数直接作为自然语言需求。
 

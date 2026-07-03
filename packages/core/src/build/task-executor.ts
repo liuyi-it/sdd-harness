@@ -14,6 +14,10 @@ export interface TaskExecutionRequest {
   signal?: AbortSignal;
 }
 
+/**
+ * TaskExecutor 抽象“谁真正去执行任务实现”。
+ * Core 只约束输入输出契约，不直接绑定具体 AI 或 shell 执行方式。
+ */
 export interface TaskExecutionResult {
   modifiedFiles: string[];
   verification: VerificationEvidence[];
@@ -27,7 +31,7 @@ export class MissingTaskExecutor implements TaskExecutor {
   async execute(): Promise<TaskExecutionResult> {
     throw new SddError(
       "E_COMPONENT_UNAVAILABLE",
-      "The host adapter must provide a TaskExecutor for sdd build",
+      "宿主适配器必须为 sdd build 提供 TaskExecutor",
     );
   }
 }

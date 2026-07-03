@@ -15,6 +15,10 @@ import { validateTaskFiles } from "../security/task-scope.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * build 阶段负责调度任务执行器、校验真实改动范围，并把执行证据固化到 `.sdd/`。
+ * 它是整个工作流里状态最复杂的阶段之一，因此需要同时处理并行、重试、超时和中断。
+ */
 interface TaskResult extends TaskExecutionResult {
   taskId: string;
 }
@@ -36,12 +40,12 @@ export async function runBuild(
     if (state.currentPhase !== "PLAN_READY" && !retrying) {
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
-        `Cannot build from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下执行 build`,
         state.suggestedCommand ?? undefined,
       );
     }
     if (state.currentChangeId === null)
-      throw new SddError("E_MISSING_CHANGE", "No active change");
+      throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
     const changeId = state.currentChangeId;
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = JSON.parse(
@@ -73,14 +77,12 @@ export async function runBuild(
     const git = new GitInspector(root);
     let gitBefore = await git.snapshot();
     while (remaining.length > 0) {
+      // 只有依赖已经全部完成的任务才允许进入当前批次。
       const readyTasks = remaining.filter((task) =>
         task.dependsOn.every((dependency) => completed.has(dependency)),
       );
       if (readyTasks.length === 0)
-        throw new SddError(
-          "E_STATE_CORRUPTED",
-          "Task dependency graph is cyclic or incomplete",
-        );
+        throw new SddError("E_STATE_CORRUPTED", "任务依赖图存在环或不完整");
       const batch = selectParallelBatch(readyTasks);
       for (const task of batch) {
         remaining.splice(
@@ -118,6 +120,7 @@ export async function runBuild(
         }),
       );
       const gitAfter = await git.snapshot();
+      // 执行器返回的 modifiedFiles 不是唯一信源，仍要结合 Git 差异做补全。
       const actualDelta = git.delta(gitBefore, gitAfter);
       assignUnreportedFiles(executions, actualDelta);
       for (const { task, result } of executions) {
@@ -127,7 +130,7 @@ export async function runBuild(
           if (!isCommandAllowed(evidence.command)) {
             throw new SddError(
               "E_SECURITY_BLOCKED",
-              `Verification command is not approved: ${evidence.command}`,
+              `验证命令未在允许清单内：${evidence.command}`,
             );
           }
         }
@@ -137,7 +140,7 @@ export async function runBuild(
         ) {
           throw new SddError(
             "E_VERIFY_FAILED",
-            `Verification failed for ${task.id}`,
+            `任务 ${task.id} 验证失败`,
             "sdd build",
           );
         }
@@ -277,13 +280,13 @@ function assignUnreportedFiles(
     if (owners.length === 0) {
       throw new SddError(
         "E_SECURITY_BLOCKED",
-        `Unreported file is outside task scope: ${file}`,
+        `未申报的文件超出任务范围：${file}`,
       );
     }
     if (owners.length > 1) {
       throw new SddError(
         "E_PARALLEL_FILE_CONFLICT",
-        `File can be attributed to multiple parallel tasks: ${file}`,
+        `该文件可能归属于多个并行任务：${file}`,
       );
     }
     owners[0]?.result.modifiedFiles.push(file);
@@ -308,7 +311,7 @@ async function readResults(path: string): Promise<TaskResult[]> {
 }
 
 function interruptionError(): SddError {
-  return new SddError("E_INTERRUPTED", "Build interrupted", "sdd build");
+  return new SddError("E_INTERRUPTED", "build 已被中断", "sdd build");
 }
 
 function timeoutMilliseconds(
@@ -337,7 +340,7 @@ async function executeWithLimits(
             reject(
               new SddError(
                 "E_TIMEOUT",
-                `Build task timed out after ${timeout}ms`,
+                `build 任务在 ${timeout}ms 后超时`,
                 "sdd build",
               ),
             ),

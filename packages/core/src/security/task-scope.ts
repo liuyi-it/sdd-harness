@@ -10,10 +10,7 @@ export function validateTaskFiles(files: string[], scope: TaskScope): void {
   for (const rawFile of files) {
     const file = rawFile.replaceAll("\\", "/").replace(/^\.\//, "");
     if (scope.forbiddenFiles.some((pattern) => matches(pattern, file))) {
-      throw new SddError(
-        "E_SECURITY_BLOCKED",
-        `Task modified forbidden file: ${file}`,
-      );
+      throw new SddError("E_SECURITY_BLOCKED", `任务修改了禁止文件：${file}`);
     }
     const allowed = [...scope.allowedFiles, ...scope.expectedNewFiles].some(
       (pattern) => matches(pattern, file),
@@ -21,7 +18,7 @@ export function validateTaskFiles(files: string[], scope: TaskScope): void {
     if (!allowed) {
       throw new SddError(
         "E_SECURITY_BLOCKED",
-        `Task modified file outside Allowed Files: ${file}`,
+        `任务修改了「允许文件」范围之外的文件：${file}`,
       );
     }
   }

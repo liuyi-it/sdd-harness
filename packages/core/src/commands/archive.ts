@@ -10,6 +10,12 @@ import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * archive 阶段把整个 change 固化为只读归档：
+ * - 生成 traceability 和 archive-report
+ * - 记录归档摘要
+ * - 将状态推进到 ARCHIVED
+ */
 export async function runArchive(root: string): Promise<CommandResult> {
   const lock = new FileLock(root);
   await lock.acquire("sdd archive");
@@ -29,12 +35,12 @@ export async function runArchive(root: string): Promise<CommandResult> {
     if (state.currentPhase !== "REVIEW_READY") {
       throw new SddError(
         "E_REVIEW_REQUIRED",
-        `Cannot archive from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下执行 archive`,
         state.suggestedCommand ?? "sdd review",
       );
     }
     if (state.currentChangeId === null)
-      throw new SddError("E_MISSING_CHANGE", "No active change");
+      throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
     const changeId = state.currentChangeId;
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
@@ -55,13 +61,13 @@ export async function runArchive(root: string): Promise<CommandResult> {
     if (!verifyReport.includes("## Result\n\nPASS"))
       throw new SddError(
         "E_VERIFY_REQUIRED",
-        "Verify report is not PASS",
+        "验证报告结果不是 PASS",
         "sdd verify",
       );
     if (!reviewReport.includes("## Result\n\nPASS"))
       throw new SddError(
         "E_REVIEW_REQUIRED",
-        "Review report is not PASS",
+        "审查报告结果不是 PASS",
         "sdd review",
       );
     const tasks = JSON.parse(taskJson) as TaskDefinition[];
@@ -71,21 +77,21 @@ export async function runArchive(root: string): Promise<CommandResult> {
       verification: Array<{ command: string }>;
     }>;
     const traceability = [
-      "# Traceability",
+      "# 需求追溯",
       "",
       ...tasks.flatMap((task) => [
         ...task.requirements.map((requirement) => `## ${requirement}`),
         "",
-        "Tasks:",
+        "任务：",
         `- ${task.id}`,
         "",
-        "Files:",
+        "文件：",
         ...(
           parsedResults.find((result) => result.taskId === task.id)
             ?.modifiedFiles ?? []
         ).map((file) => `- ${file}`),
         "",
-        "Tests:",
+        "测试：",
         ...(
           parsedResults.find((result) => result.taskId === task.id)
             ?.verification ?? []
@@ -94,29 +100,29 @@ export async function runArchive(root: string): Promise<CommandResult> {
       ]),
     ].join("\n");
     const archiveReport = [
-      "# Archive Report",
+      "# 归档报告",
       "",
-      "## Change Summary",
+      "## 变更摘要",
       "",
       spec,
       "",
-      "## Completed Tasks",
+      "## 已完成任务",
       "",
       tasksText,
       "",
-      "## Verify Result",
+      "## 验证结果",
       "",
       "PASS",
       "",
-      "## Review Result",
+      "## 审查结果",
       "",
       "PASS",
       "",
-      "## Risk and Rollback",
+      "## 风险与回滚",
       "",
-      "Use version control and documented data migrations to roll back the archived change.",
+      "通过版本控制和有记录的数据迁移来回滚已归档的变更。",
       "",
-      "## Final Result",
+      "## 最终结果",
       "",
       "ARCHIVED",
     ].join("\n");

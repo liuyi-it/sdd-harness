@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { SpecEngine } from "../src/engines/spec/spec-engine.js";
 
+// SpecEngine 测试确认它既能识别信息不足的需求，也能生成最低限度可执行规格。
 describe("SpecEngine", () => {
   it("classifies an underspecified request as a blocker", () => {
     const result = new SpecEngine().analyze("做个订单功能");

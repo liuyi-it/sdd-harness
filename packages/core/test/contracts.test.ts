@@ -7,6 +7,7 @@ import {
   type CommandResult,
 } from "../src/contracts.js";
 
+// 契约测试用于保证公开命令、状态枚举和退出码不会无意漂移。
 describe("core contracts", () => {
   it("defines the complete public command set", () => {
     expect(COMMANDS).toEqual([

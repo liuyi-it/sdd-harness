@@ -16,6 +16,10 @@ import { z } from "zod";
 import { PHASES, type Phase } from "../contracts.js";
 import { SddError } from "../errors.js";
 
+/**
+ * StateStore 负责工作流状态的读取、校验、迁移、原子写入与恢复推断。
+ * 它维护的是 `.sdd/` 事实源中最核心的一份状态文件。
+ */
 const taskStatusSchema = z.enum([
   "PENDING",
   "BUILDING",
@@ -100,6 +104,7 @@ export class StateStore {
         unknown
       >;
       if (raw.schemaVersion === "0.9.0") {
+        // 只允许显式支持的迁移路径，避免在未知版本上做不安全的猜测。
         const migrated = workflowStateSchema.parse({
           ...raw,
           schemaVersion: "1.0.0",
@@ -125,16 +130,18 @@ export class StateStore {
       return parsed;
     } catch (error) {
       try {
+        // 优先回退到上一次完整写入时留下的备份。
         const backup = workflowStateSchema.parse(
           JSON.parse(await readFile(this.backupPath, "utf8")),
         );
         return { ...backup, recoveredFromBackup: true };
       } catch {
+        // 主状态和备份都失效时，再依据制品完整性推断最近稳定阶段。
         const inferred = await this.recoverFromArtifacts();
         if (inferred !== null) return inferred;
         throw new SddError(
           "E_STATE_CORRUPTED",
-          `Unable to read state or backup: ${error instanceof Error ? error.message : String(error)}`,
+          `无法读取状态文件或备份：${error instanceof Error ? error.message : String(error)}`,
           "sdd status",
         );
       }
@@ -154,6 +161,7 @@ export class StateStore {
     await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`, "utf8");
     await handle.sync();
     await handle.close();
+    // 用 rename 做最终替换，尽量避免直接覆盖导致半写入损坏。
     await rename(temporaryPath, this.path);
     try {
       const directory = await open(dirname(this.path), "r");
@@ -190,7 +198,7 @@ export class StateStore {
     } catch {
       throw new SddError(
         "E_STATE_CORRUPTED",
-        `currentChangeId does not exist: ${state.currentChangeId}`,
+        `currentChangeId 指向的变更不存在：${state.currentChangeId}`,
         "sdd status",
       );
     }
@@ -209,6 +217,7 @@ export class StateStore {
     let phase: Phase = "INDEX_READY";
     if (changeId !== null) {
       const change = join(this.root, ".sdd", "changes", changeId);
+      // 从最靠后的稳定制品倒推阶段，避免跨阶段猜测未完成的状态。
       if (await pathExists(join(change, ".archived"))) phase = "ARCHIVED";
       else if (await reportPassed(join(change, "review-report.md")))
         phase = "REVIEW_READY";

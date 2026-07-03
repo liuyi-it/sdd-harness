@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 
+// new 阶段重点验证需求不足时的澄清停顿，以及补充答案后的继续执行行为。
 const roots: string[] = [];
 
 async function initializedProject(): Promise<{ root: string; core: Core }> {

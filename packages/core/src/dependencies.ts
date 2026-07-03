@@ -1,3 +1,7 @@
+/**
+ * 固定外部依赖的来源与版本信息，避免运行时跟随 latest 漂移。
+ * init 阶段会直接把这份信息写入 `.sdd/adapters/<name>/version.json`。
+ */
 export const PINNED_DEPENDENCIES = {
   codebaseMemoryMcp: {
     name: "codebase-memory-mcp",

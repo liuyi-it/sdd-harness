@@ -4,6 +4,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
+/**
+ * GitInspector 用来记录任务执行前后的仓库快照，并计算真实差异。
+ * 这样 build 阶段可以用 Git 证据补全或纠偏执行器返回的 modifiedFiles。
+ */
 const executeFile = promisify(execFile);
 
 export interface GitSnapshot {

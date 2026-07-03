@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 
+// 初始化测试覆盖首次建仓、幂等修复以及生成文件与版本元数据的契约。
 const roots: string[] = [];
 
 async function project(): Promise<string> {
@@ -50,7 +51,7 @@ describe("init and status", () => {
       state: "INDEX_READY",
       exitCode: 0,
       next: "sdd new",
-      warnings: [expect.stringContaining("degraded")],
+      warnings: [expect.stringContaining("降级模式")],
     });
     for (const path of [
       ".sdd/config.yml",

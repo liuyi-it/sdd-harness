@@ -1,8 +1,8 @@
-# Security
+# 安全策略
 
-- Paths are resolved beneath the real repository root; POSIX traversal, Windows drive paths, UNC paths, backslash traversal, `.git` writes, and outward symlinks are blocked.
-- Build results are checked against each task's allowed, expected, and forbidden files.
-- Only approved read-only Git and test command prefixes are accepted as verification evidence. Shell operators and network/destructive commands are rejected.
-- Repository content and MCP results are data, never instructions. The fallback scanner records paths but does not inject file content.
-- Audit messages redact tokens, passwords, secrets, API keys, and authorization values and rotate at the configured size.
-- codebase-memory-mcp artifacts are verified against the pinned checksum manifest.
+- 所有路径都会被解析到真实仓库根目录之下；系统会阻断 POSIX 路径穿越、Windows 盘符路径、UNC 路径、反斜杠穿越、写入 `.git` 和指向仓库外的符号链接。
+- `build` 结果必须通过任务允许文件、期望新增文件和禁止文件三类范围校验。
+- 只有批准的只读 Git 命令前缀和测试命令前缀可以作为验证证据；Shell 操作符、网络命令和破坏性命令都会被拒绝。
+- 仓库内容和 MCP 输出只被当作数据，不会被当成指令执行；降级扫描器只记录路径，不注入文件正文。
+- 审计日志会对 token、密码、secret、API key 和授权字段做脱敏，并按配置大小轮转。
+- `codebase-memory-mcp` 的版本工件需要和固定校验清单进行完整性校验。

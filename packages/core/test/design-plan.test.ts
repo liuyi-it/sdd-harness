@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 
+// 这组测试验证 design/plan 是否会基于真实索引上下文生成稳定制品，并保持幂等/candidate 语义。
 const roots: string[] = [];
 
 async function specifiedProject(): Promise<{ root: string; core: Core }> {
@@ -138,7 +139,7 @@ describe("design and plan", () => {
     expect(changed).toMatchObject({
       ok: true,
       state: "DESIGN_READY",
-      warnings: [expect.stringContaining("candidate")],
+      warnings: [expect.stringContaining("供人工合并")],
     });
     expect(await readFile(designPath, "utf8")).toBe(original);
     await expect(access(`${designPath}.candidate.md`)).resolves.toBeUndefined();
@@ -164,7 +165,7 @@ describe("design and plan", () => {
     expect(changed).toMatchObject({
       ok: true,
       state: "PLAN_READY",
-      warnings: [expect.stringContaining("candidate")],
+      warnings: [expect.stringContaining("供人工合并")],
     });
     await expect(
       access(

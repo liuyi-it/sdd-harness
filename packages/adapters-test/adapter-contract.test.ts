@@ -8,6 +8,7 @@ import {
 import { ClaudeCodeAdapter } from "../claude-code-plugin/src/adapter.js";
 import { CodexAdapter } from "../codex-plugin/src/adapter.js";
 
+// 适配器契约测试保证 Claude Code 与 Codex 只是语法不同，不改变 Core 语义。
 class RecordingCore implements SddCore {
   readonly execute = vi.fn(
     async (request: CommandRequest): Promise<CommandResult> => ({

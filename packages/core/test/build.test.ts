@@ -8,6 +8,7 @@ import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
 
+// build 是行为最复杂的阶段之一，因此这里集中覆盖成功、失败、重试、暂停、超时和并行执行。
 const roots: string[] = [];
 
 async function plannedProject(

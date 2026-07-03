@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
+/**
+ * ArtifactWriter 统一负责阶段制品和元数据落盘。
+ * 这样各命令只需要关心内容本身，不必重复实现摘要与 candidate 逻辑。
+ */
 export interface ArtifactMetadata {
   schemaVersion: "1.0.0";
   generatedBy: "sdd-harness";

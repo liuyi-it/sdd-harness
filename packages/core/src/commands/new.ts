@@ -9,6 +9,10 @@ import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * new 阶段负责接收粗略需求、提出阻塞问题，并在信息充分后生成首批规格制品。
+ * 它同时承担“从 CLARIFYING 继续执行”的恢复逻辑。
+ */
 interface NewArgs {
   requirement?: string;
   changeId?: string;
@@ -36,7 +40,7 @@ export async function runNew(
         state.currentChangeId === null
           ? "E_INVALID_PHASE_COMMAND"
           : "E_ACTIVE_CHANGE_EXISTS",
-        `Cannot start a new change from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下开启新的变更`,
         state.suggestedCommand ?? undefined,
       );
     }
@@ -46,14 +50,11 @@ export async function runNew(
     const startingPhase = state.currentPhase;
     const changeId = continuing ? state.currentChangeId : args.changeId;
     if (changeId === null || changeId === undefined) {
-      throw new SddError("E_MISSING_CHANGE", "A change id is required");
+      throw new SddError("E_MISSING_CHANGE", "缺少必需的变更 id");
     }
     const runId = continuing ? state.currentRunId : `run-${Date.now()}`;
     if (runId === null)
-      throw new SddError(
-        "E_STATE_CORRUPTED",
-        "Clarifying change has no run id",
-      );
+      throw new SddError("E_STATE_CORRUPTED", "处于澄清状态的变更缺少 run id");
     const runDirectory = join(root, ".sdd", "runs", runId);
     const changeDirectory = join(root, ".sdd", "changes", changeId);
     await Promise.all([
@@ -64,10 +65,7 @@ export async function runNew(
       ? await readFile(join(runDirectory, "input.md"), "utf8")
       : args.requirement;
     if (requirement === undefined || requirement.trim() === "") {
-      throw new SddError(
-        "E_MISSING_ARTIFACT",
-        "A non-empty requirement is required",
-      );
+      throw new SddError("E_MISSING_ARTIFACT", "需求内容不能为空");
     }
     if (!continuing)
       await writeFile(join(runDirectory, "input.md"), requirement, "utf8");
@@ -131,7 +129,7 @@ export async function runNew(
         });
         throw new SddError(
           "E_UNRESOLVED_BLOCKER",
-          "BLOCKER questions require answers in non-interactive mode",
+          "非交互模式下 BLOCKER 问题必须提供答案",
           "sdd new",
         );
       }
@@ -146,7 +144,7 @@ export async function runNew(
         phase: "CLARIFYING",
         result: "PAUSED",
         changeId,
-        message: "Waiting for BLOCKER answers",
+        message: "等待 BLOCKER 问题的答复",
       });
       return {
         ok: true,

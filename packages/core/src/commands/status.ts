@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { type CommandResult, type Phase } from "../contracts.js";
 import { StateStore, type WorkflowState } from "../state/state-store.js";
 
+/**
+ * status 是唯一纯只读的公共命令：
+ * - 未初始化时返回 NOT_INITIALIZED
+ * - 已初始化时原样回报当前持久化状态和建议下一步命令
+ */
 export async function runStatus(root: string): Promise<CommandResult> {
   if (!(await exists(join(root, ".sdd", "state.json")))) {
     return {

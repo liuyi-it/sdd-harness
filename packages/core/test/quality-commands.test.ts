@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 
+// 这组测试把 verify/review/archive 串起来，验证“完成证据”最终能沉淀成可追踪归档。
 const roots: string[] = [];
 
 async function builtProject(): Promise<{ root: string; core: Core }> {

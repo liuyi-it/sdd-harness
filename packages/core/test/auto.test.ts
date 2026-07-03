@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 
+// 这组测试验证 auto 是否能按阶段顺序串联整个工作流，并在阻塞点正确停下。
 const roots: string[] = [];
 
 async function initializedCore(): Promise<{ root: string; core: Core }> {

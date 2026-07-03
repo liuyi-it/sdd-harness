@@ -1,3 +1,4 @@
+// 包入口只导出稳定公共接口，避免宿主直接依赖内部文件路径。
 export * from "./contracts.js";
 export * from "./core.js";
 export * from "./engines/spec/spec-engine.js";

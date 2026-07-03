@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { FileLock } from "../src/state/file-lock.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
+// 状态层测试覆盖原子写入、迁移、损坏恢复和文件锁回收等底层保障能力。
 const roots: string[] = [];
 
 async function temporaryRoot(): Promise<string> {

@@ -3,6 +3,10 @@ import { join } from "node:path";
 
 import { SddError } from "../errors.js";
 
+/**
+ * FileLock 为所有写命令提供仓库级串行化保护。
+ * 当锁文件过期时，会结合 pid 存活性决定是否允许抢占。
+ */
 interface LockData {
   pid: number;
   command: string;
@@ -40,6 +44,7 @@ export class FileLock {
     }
 
     const existing = await this.readExisting();
+    // 锁未过期，或者旧进程仍然存活，都说明当前不能继续写入。
     const unexpired =
       existing !== null &&
       Number.isFinite(Date.parse(existing.expiresAt)) &&
@@ -47,7 +52,7 @@ export class FileLock {
     if (existing !== null && (unexpired || isProcessAlive(existing.pid))) {
       throw new SddError(
         "E_CONCURRENT_RUN",
-        `Command ${existing.command} is already running with pid ${existing.pid}`,
+        `命令 ${existing.command} 正在运行（pid ${existing.pid}）`,
         "sdd status",
       );
     }

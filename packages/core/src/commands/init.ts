@@ -11,6 +11,10 @@ import { FileLock } from "../state/file-lock.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
 
+/**
+ * init 负责创建 `.sdd/` 基础目录、安装宿主集成文件，并初始化代码库索引。
+ * 它是整个仓库进入受控工作流的入口。
+ */
 const REQUIRED_DIRECTORIES = [
   "index",
   "changes",
@@ -98,7 +102,7 @@ export async function runInit(
       exitCode: 0,
       next: "sdd new",
       ...(index.degraded
-        ? { warnings: [`degraded mode: ${index.reason ?? "MCP unavailable"}`] }
+        ? { warnings: [`降级模式：${index.reason ?? "MCP 不可用"}`] }
         : {}),
     };
   } finally {

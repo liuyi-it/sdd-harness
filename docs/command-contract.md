@@ -1,7 +1,7 @@
-# Command Contract
+# 命令契约
 
-Public commands are `init`, `auto`, `new`, `design`, `plan`, `build`, `verify`, `review`, `archive`, and `status`.
+公开命令包括 `init`、`auto`、`new`、`design`、`plan`、`build`、`verify`、`review`、`archive` 与 `status`。
 
-Common options are `--json`, `--non-interactive`, `--force`, `--timeout <seconds>`, `--change <id>`, and `--verbose`. Claude Code uses `/sdd.<command>`; Codex uses `sdd <command>`. Both adapters produce the same `CommandRequest` and return the same `CommandResult`.
+通用参数包括 `--json`、`--non-interactive`、`--force`、`--timeout <seconds>`、`--change <id>` 和 `--verbose`。Claude Code 使用 `/sdd.<command>`，Codex 使用 `sdd <command>`。两个适配器都会生成相同的 `CommandRequest`，并返回相同结构的 `CommandResult`。
 
-`CommandResult` contains `ok`, `state`, `exitCode`, optional `changeId`, `next`, `data`, `warnings`, and structured `error`. Exit codes follow `需求文档.md`, including 124 for timeout and 130 for interruption.
+`CommandResult` 包含 `ok`、`state`、`exitCode`，以及可选的 `changeId`、`next`、`data`、`warnings` 和结构化 `error`。退出码定义遵循 `需求文档.md`，其中 `124` 表示超时，`130` 表示用户中断。

@@ -3,3 +3,6 @@ dist/
 coverage/
 *.tsbuildinfo
 .DS_Store
+
+# 测试样本项目的构建产物
+fixtures/**/target/

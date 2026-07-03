@@ -15,29 +15,20 @@ export async function assertSafePath(
   ) {
     throw new SddError(
       "E_PATH_OUTSIDE_REPO",
-      `Absolute path is not allowed: ${candidate}`,
+      `不允许使用绝对路径：${candidate}`,
     );
   }
   const portableCandidate = candidate.replaceAll("\\", "/");
   if (portableCandidate.split("/").includes("..")) {
-    throw new SddError(
-      "E_PATH_OUTSIDE_REPO",
-      `Path escapes repository: ${candidate}`,
-    );
+    throw new SddError("E_PATH_OUTSIDE_REPO", `路径越出仓库范围：${candidate}`);
   }
   const resolved = resolve(rootPath, portableCandidate);
   if (!isInside(rootPath, resolved)) {
-    throw new SddError(
-      "E_PATH_OUTSIDE_REPO",
-      `Path escapes repository: ${candidate}`,
-    );
+    throw new SddError("E_PATH_OUTSIDE_REPO", `路径越出仓库范围：${candidate}`);
   }
   const normalizedRelative = relative(rootPath, resolved).split(sep);
   if (normalizedRelative[0] === ".git") {
-    throw new SddError(
-      "E_SECURITY_BLOCKED",
-      "Direct writes inside .git are forbidden",
-    );
+    throw new SddError("E_SECURITY_BLOCKED", "禁止直接写入 .git 目录");
   }
 
   let cursor = rootPath;
@@ -50,7 +41,7 @@ export async function assertSafePath(
         if (!isInside(rootPath, target)) {
           throw new SddError(
             "E_SYMLINK_BLOCKED",
-            `Symlink resolves outside repository: ${candidate}`,
+            `符号链接解析到仓库之外：${candidate}`,
           );
         }
         cursor = target;

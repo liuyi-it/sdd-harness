@@ -10,6 +10,10 @@ import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 
+/**
+ * plan 阶段把设计稿进一步拆成任务、测试计划和上下文包。
+ * 这里也是后续 build 阶段“允许改哪些文件”的主要事实来源。
+ */
 export async function runPlan(
   root: string,
   engine: TddEngine,
@@ -25,12 +29,12 @@ export async function runPlan(
     ) {
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
-        `Cannot plan from ${state.currentPhase}`,
+        `无法在 ${state.currentPhase} 状态下执行 plan`,
         state.suggestedCommand ?? undefined,
       );
     }
     if (state.currentChangeId === null)
-      throw new SddError("E_MISSING_CHANGE", "No active change");
+      throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
     const changeId = state.currentChangeId;
     const change = join(root, ".sdd", "changes", changeId);
     const input = {
@@ -78,9 +82,7 @@ export async function runPlan(
         exitCode: 0,
         changeId,
         next: "sdd build",
-        warnings: [
-          "plan input changed; generated candidate artifacts for manual merge",
-        ],
+        warnings: ["plan 输入已变化；已生成候选制品供人工合并"],
       };
     }
     await store.update((current) => ({
