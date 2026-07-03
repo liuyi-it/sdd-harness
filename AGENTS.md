@@ -4,6 +4,13 @@
 
 本仓库是一个基于 Node.js workspaces 的多包项目。核心流程在 `packages/core/src`，包括状态机、命令实现、安全校验和安装器；对应测试在 `packages/core/test`。宿主适配层分为 `packages/claude-code-plugin` 与 `packages/codex-plugin`，分别提供命令/技能清单与 Adapter。跨宿主契约测试放在 `packages/adapters-test`，端到端流程测试在 `test/e2e`。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目。
 
+## Karpathy-inspired operating rules:
+
+1. Think Before Coding — state assumptions, surface ambiguity and tradeoffs, ask instead of guessing.
+2. Simplicity First — write the minimum code that solves the requested problem; avoid speculative abstractions.
+3. Surgical Changes — touch only files and lines required by the task; do not refactor unrelated code.
+4. Goal-Driven Execution — define concrete verification steps, prefer tests or checks first, and do not claim success before verification.
+
 ## 构建、测试与开发命令
 
 - `npm install`：安装根项目与 workspaces 依赖。
