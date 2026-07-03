@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/state.schema.json",
+  "title": "sdd-harness workflow state",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "version",
+    "updatedAt",
+    "initialized",
+    "currentPhase",
+    "indexStatus",
+    "tasks",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "version": { "type": "integer", "minimum": 1 },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "initialized": { "type": "boolean" },
+    "currentPhase": {
+      "enum": [
+        "NOT_INITIALIZED",
+        "INITIALIZING",
+        "INDEXING",
+        "INDEX_READY",
+        "NEW_STARTED",
+        "CLARIFYING",
+        "SPEC_READY",
+        "DESIGNING",
+        "DESIGN_READY",
+        "PLANNING",
+        "PLAN_READY",
+        "BUILDING",
+        "BUILD_READY",
+        "VERIFYING",
+        "VERIFY_READY",
+        "REVIEWING",
+        "REVIEW_READY",
+        "ARCHIVING",
+        "ARCHIVED",
+        "FAILED",
+        "PAUSED"
+      ]
+    },
+    "indexStatus": {
+      "enum": ["MISSING", "INDEXING", "INDEX_READY", "STALE", "UNAVAILABLE"]
+    },
+    "tasks": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"]
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": {
+        "enum": ["MISSING", "READY", "CANDIDATE", "STALE"]
+      }
+    }
+  },
+  "additionalProperties": true
+}

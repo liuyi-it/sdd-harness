@@ -1,0 +1,12 @@
+{
+  "name": "sdd-harness",
+  "version": "0.1.0",
+  "description": "Controlled spec-driven development workflow for Claude Code",
+  "author": {
+    "name": "sdd-harness contributors"
+  },
+  "repository": "https://github.com/liuyi-it/sdd-harness",
+  "license": "MIT",
+  "commands": "./commands/",
+  "skills": "./skills/"
+}

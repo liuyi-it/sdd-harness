@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/config.schema.json",
+  "title": "sdd-harness configuration",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "project",
+    "plugins",
+    "codebase",
+    "workflow",
+    "quality",
+    "security"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "project": {
+      "type": "object",
+      "required": ["name"],
+      "properties": { "name": { "type": "string", "minLength": 1 } },
+      "additionalProperties": true
+    },
+    "plugins": { "type": "object" },
+    "codebase": { "type": "object" },
+    "workflow": { "type": "object" },
+    "quality": { "type": "object" },
+    "security": { "type": "object" }
+  },
+  "additionalProperties": true
+}

@@ -1,6 +1,11 @@
 # sdd-harness
 
-`sdd-harness` 是一个面向 **Claude Code** 和 **Codex** 的 SDD 开发流程框架。
+`sdd-harness` 是一个面向 **Claude Code** 和 **Codex** 的插件式 SDD 开发流程框架。
+
+第一版交付形态是插件包和共享执行核心，不发布独立 CLI。文档中的 `sdd init`、`sdd build` 等写法表示统一命令契约：
+
+- 在 Claude Code 中通过 `/sdd.init`、`/sdd.build` 等 slash commands 触发
+- 在 Codex 中通过 `sdd init`、`sdd build` 等项目指令触发
 
 它用于把一次粗略的软件需求，转化为可执行、可验证、可追踪的开发流程，帮助 AI 编码工具按照更稳定的工程步骤完成开发任务。
 
@@ -10,12 +15,12 @@
 
 在日常使用 Claude Code 或 Codex 时，AI 很容易直接根据一句需求开始写代码，导致：
 
-* 需求没有澄清清楚
-* 修改范围不可控
-* 缺少设计和任务拆解
-* 测试和验收不完整
-* 代码审查依赖人工兜底
-* 变更过程不可追踪
+- 需求没有澄清清楚
+- 修改范围不可控
+- 缺少设计和任务拆解
+- 测试和验收不完整
+- 代码审查依赖人工兜底
+- 变更过程不可追踪
 
 `sdd-harness` 希望解决这些问题。
 
@@ -49,12 +54,12 @@
 
 `sdd-harness` 适合用于：
 
-* 使用 Claude Code 或 Codex 开发企业项目
-* 希望 AI 编码过程更可控
-* 希望每次需求变更都有文档记录
-* 希望 AI 在写代码前先做需求澄清和方案设计
-* 希望减少无关修改、过度设计和低质量实现
-* 希望项目变更可以被验证、审查和归档
+- 使用 Claude Code 或 Codex 开发企业项目
+- 希望 AI 编码过程更可控
+- 希望每次需求变更都有文档记录
+- 希望 AI 在写代码前先做需求澄清和方案设计
+- 希望减少无关修改、过度设计和低质量实现
+- 希望项目变更可以被验证、审查和归档
 
 ---
 
@@ -80,10 +85,11 @@ new → design → plan → build → verify → review → archive
 
 ### 4. 自动执行
 
-可以通过一条命令自动完成完整流程：
+可以通过平台命令入口自动完成完整流程：
 
-```bash
-sdd auto "实现订单取消功能"
+```text
+Claude Code: /sdd.auto "实现订单取消功能"
+Codex:       sdd auto "实现订单取消功能"
 ```
 
 如果中途遇到阻塞问题，流程会暂停，并提示下一步操作。
@@ -98,10 +104,11 @@ sdd auto "实现订单取消功能"
 
 ### 1. 初始化项目
 
-在项目根目录执行：
+在项目根目录通过插件命令执行：
 
-```bash
-sdd init
+```text
+Claude Code: /sdd.init
+Codex:       sdd init
 ```
 
 初始化后，项目会生成 SDD 工作目录和 Claude Code / Codex 所需的配置。
@@ -110,8 +117,9 @@ sdd init
 
 ### 2. 自动执行需求
 
-```bash
-sdd auto "实现订单取消功能"
+```text
+Claude Code: /sdd.auto "实现订单取消功能"
+Codex:       sdd auto "实现订单取消功能"
 ```
 
 该命令会自动完成：
@@ -131,8 +139,9 @@ sdd auto "实现订单取消功能"
 
 ### 3. 查看当前状态
 
-```bash
-sdd status
+```text
+Claude Code: /sdd.status
+Codex:       sdd status
 ```
 
 示例输出：
@@ -153,7 +162,17 @@ sdd build
 
 如果不希望全自动执行，也可以手动控制每个阶段。
 
-```bash
+```text
+Claude Code:
+/sdd.new "实现订单取消功能"
+/sdd.design
+/sdd.plan
+/sdd.build
+/sdd.verify
+/sdd.review
+/sdd.archive
+
+Codex:
 sdd new "实现订单取消功能"
 sdd design
 sdd plan
@@ -171,8 +190,9 @@ sdd archive
 
 初始化当前项目，并建立代码库上下文。
 
-```bash
-sdd init
+```text
+Claude Code: /sdd.init
+Codex:       sdd init
 ```
 
 ---
@@ -181,14 +201,9 @@ sdd init
 
 自动执行完整 SDD 流程。
 
-```bash
-sdd auto "粗略需求"
-```
-
-示例：
-
-```bash
-sdd auto "实现订单取消功能"
+```text
+Claude Code: /sdd.auto "粗略需求"
+Codex:       sdd auto "粗略需求"
 ```
 
 ---
@@ -197,8 +212,9 @@ sdd auto "实现订单取消功能"
 
 创建新的需求变更，进行需求分析、澄清和规格生成。
 
-```bash
-sdd new "粗略需求"
+```text
+Claude Code: /sdd.new "粗略需求"
+Codex:       sdd new "粗略需求"
 ```
 
 ---
@@ -207,8 +223,9 @@ sdd new "粗略需求"
 
 基于需求规格生成设计方案。
 
-```bash
-sdd design
+```text
+Claude Code: /sdd.design
+Codex:       sdd design
 ```
 
 ---
@@ -217,8 +234,9 @@ sdd design
 
 基于设计方案拆解开发任务。
 
-```bash
-sdd plan
+```text
+Claude Code: /sdd.plan
+Codex:       sdd plan
 ```
 
 ---
@@ -227,8 +245,9 @@ sdd plan
 
 根据任务计划实现代码。
 
-```bash
-sdd build
+```text
+Claude Code: /sdd.build
+Codex:       sdd build
 ```
 
 ---
@@ -237,8 +256,9 @@ sdd build
 
 验证任务是否完成、功能边界是否满足。
 
-```bash
-sdd verify
+```text
+Claude Code: /sdd.verify
+Codex:       sdd verify
 ```
 
 ---
@@ -247,8 +267,9 @@ sdd verify
 
 审查代码质量、修改范围和实现合理性。
 
-```bash
-sdd review
+```text
+Claude Code: /sdd.review
+Codex:       sdd review
 ```
 
 ---
@@ -257,8 +278,9 @@ sdd review
 
 归档当前需求变更。
 
-```bash
-sdd archive
+```text
+Claude Code: /sdd.archive
+Codex:       sdd archive
 ```
 
 ---
@@ -325,15 +347,15 @@ sdd archive
 
 `sdd-harness` 会为每次需求变更生成对应记录，包括：
 
-* 需求说明
-* 澄清问题
-* 需求规格
-* 设计方案
-* 任务拆解
-* 测试计划
-* 验证报告
-* 审查报告
-* 归档报告
+- 需求说明
+- 澄清问题
+- 需求规格
+- 设计方案
+- 任务拆解
+- 测试计划
+- 验证报告
+- 审查报告
+- 归档报告
 
 这些内容会统一存放在项目的 `.sdd/` 目录中。
 
@@ -373,11 +395,11 @@ sdd archive
 
 优先目标：
 
-* 支持 Claude Code
-* 支持 Codex
-* 支持项目初始化
-* 支持自动 SDD 流程
-* 支持需求澄清、设计、任务拆解、实现、验证、审查和归档
+- 支持 Claude Code
+- 支持 Codex
+- 支持项目初始化
+- 支持自动 SDD 流程
+- 支持需求澄清、设计、任务拆解、实现、验证、审查和归档
 
 ---
 

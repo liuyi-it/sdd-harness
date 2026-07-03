@@ -1,0 +1,49 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  COMMANDS,
+  ERROR_EXIT_CODES,
+  PHASES,
+  type CommandResult,
+} from "../src/contracts.js";
+
+describe("core contracts", () => {
+  it("defines the complete public command set", () => {
+    expect(COMMANDS).toEqual([
+      "init",
+      "auto",
+      "new",
+      "design",
+      "plan",
+      "build",
+      "verify",
+      "review",
+      "archive",
+      "status",
+    ]);
+  });
+
+  it("defines every stable and in-progress workflow phase", () => {
+    expect(PHASES).toContain("DESIGNING");
+    expect(PHASES).toContain("PLANNING");
+    expect(PHASES).toHaveLength(21);
+  });
+
+  it("maps canonical errors to their specified exit codes", () => {
+    expect(ERROR_EXIT_CODES.E_NOT_INITIALIZED).toBe(3);
+    expect(ERROR_EXIT_CODES.E_UNRESOLVED_BLOCKER).toBe(6);
+    expect(ERROR_EXIT_CODES.E_TIMEOUT).toBe(124);
+    expect(ERROR_EXIT_CODES.E_COMPONENT_INTEGRITY_FAILED).toBe(10);
+  });
+
+  it("supports a successful command result", () => {
+    const result: CommandResult = {
+      ok: true,
+      state: "INDEX_READY",
+      exitCode: 0,
+      next: "sdd new",
+    };
+
+    expect(result.ok).toBe(true);
+  });
+});

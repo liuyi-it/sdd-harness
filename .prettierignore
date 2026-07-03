@@ -1,0 +1,8 @@
+需求文档.md
+LICENSE
+vendor/
+node_modules/
+dist/
+coverage/
+package-lock.json
+fixtures/broken-state-project/.sdd/state.json

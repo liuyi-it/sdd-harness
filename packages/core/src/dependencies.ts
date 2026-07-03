@@ -1,0 +1,35 @@
+export const PINNED_DEPENDENCIES = {
+  codebaseMemoryMcp: {
+    name: "codebase-memory-mcp",
+    repository: "https://github.com/DeusData/codebase-memory-mcp",
+    version: "v0.8.1",
+    commit: "f0c9be19c5d74b84f418d807bfdce7b5d6a261ff",
+    license: "MIT",
+    interface: "mcp",
+    localModifications: "none",
+    checksumManifest:
+      "https://github.com/DeusData/codebase-memory-mcp/releases/download/v0.8.1/checksums.txt",
+    checksumManifestSha256:
+      "142399e4e552fb559ede866b2549dbacc942d56f1c8718b52bc701b21f3f94c6",
+  },
+  openSpec: {
+    name: "openspec",
+    repository: "https://github.com/Fission-AI/OpenSpec",
+    version: "v1.4.1",
+    commit: "1b06fddd59d8e592d5b5794a1970b22867e85b1f",
+    license: "MIT",
+    interface: "vendored-module",
+    localModifications:
+      "concepts reimplemented in SpecEngine; upstream source not copied into runtime",
+  },
+  superpowers: {
+    name: "superpowers",
+    repository: "https://github.com/obra/superpowers",
+    version: "v6.1.1",
+    commit: "d884ae04edebef577e82ff7c4e143debd0bbec99",
+    license: "MIT",
+    interface: "vendored-module",
+    localModifications:
+      "concepts reimplemented in TddEngine; upstream source not copied into runtime",
+  },
+} as const;

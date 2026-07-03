@@ -1,0 +1,26 @@
+{
+  "name": "sdd-harness",
+  "version": "0.1.0",
+  "description": "Controlled spec-driven development workflow for Codex",
+  "author": {
+    "name": "sdd-harness contributors"
+  },
+  "repository": "https://github.com/liuyi-it/sdd-harness",
+  "license": "MIT",
+  "keywords": ["sdd", "spec-driven-development", "codex"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "SDD Harness",
+    "shortDescription": "Controlled spec-driven development workflow",
+    "longDescription": "Plan, build, verify, review, and archive code changes through a repository-aware SDD workflow.",
+    "developerName": "sdd-harness contributors",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "websiteURL": "https://github.com/liuyi-it/sdd-harness",
+    "defaultPrompt": [
+      "Initialize SDD in this repository.",
+      "Create an SDD change from my requirement.",
+      "Show the current SDD workflow status."
+    ]
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/task.schema.json",
+  "title": "sdd-harness task",
+  "type": "object",
+  "required": [
+    "id",
+    "title",
+    "status",
+    "requirements",
+    "dependsOn",
+    "allowedFiles",
+    "verification",
+    "doneCriteria"
+  ],
+  "properties": {
+    "id": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" },
+    "title": { "type": "string", "minLength": 1 },
+    "status": { "enum": ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"] },
+    "requirements": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" },
+      "minItems": 1
+    },
+    "dependsOn": { "type": "array", "items": { "type": "string" } },
+    "allowedFiles": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "expectedNewFiles": { "type": "array", "items": { "type": "string" } },
+    "forbiddenFiles": { "type": "array", "items": { "type": "string" } },
+    "verification": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "doneCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false
+}
