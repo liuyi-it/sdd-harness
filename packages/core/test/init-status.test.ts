@@ -135,6 +135,19 @@ describe("init and status", () => {
       license: "MIT",
       interface: "vendored-module",
     });
+    for (const path of [
+      "CLAUDE.md",
+      "AGENTS.md",
+      ".claude/commands/sdd.init.md",
+      ".claude/skills/sdd-harness/SKILL.md",
+      ".codex/skills/sdd-harness/SKILL.md",
+    ]) {
+      const content = await readFile(join(root, path), "utf8");
+      expect(content).toContain("Think Before Coding");
+      expect(content).toContain("Simplicity First");
+      expect(content).toContain("Surgical Changes");
+      expect(content).toContain("Goal-Driven Execution");
+    }
   });
 
   it("is idempotent, preserves user config, and repairs a missing index artifact", async () => {
