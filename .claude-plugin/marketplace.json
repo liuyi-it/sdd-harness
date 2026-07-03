@@ -1,0 +1,20 @@
+{
+  "name": "sdd-harness",
+  "owner": {
+    "name": "sdd-harness contributors",
+    "url": "https://github.com/liuyi-it/sdd-harness"
+  },
+  "metadata": {
+    "description": "Controlled spec-driven development workflow for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "sdd-harness",
+      "source": "./packages/claude-code-plugin",
+      "description": "Controlled spec-driven development workflow: init, new, design, plan, build, verify, review, archive.",
+      "version": "0.1.0",
+      "license": "MIT"
+    }
+  ]
+}

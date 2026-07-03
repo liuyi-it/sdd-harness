@@ -1,17 +1,37 @@
 # sdd-harness
 
-`sdd-harness` 是一个面向 **Claude Code** 和 **Codex** 的插件式 SDD 开发流程框架。
+> 面向 **Claude Code** 和 **Codex** 的插件式 Spec-Driven Development（SDD）工作流框架。
 
-第一版交付形态是插件包和共享执行核心，不发布独立 CLI。文档中的 `sdd init`、`sdd build` 等写法表示统一命令契约：
+`sdd-harness` 把一句粗略的软件需求，转化为**可执行、可验证、可追踪**的开发流程，帮助 AI 编码工具按照稳定的工程步骤完成开发任务，而不是拿到需求就直接写代码。
 
-- 在 Claude Code 中通过 `/sdd.init`、`/sdd.build` 等 slash commands 触发
-- 在 Codex 中通过 `sdd init`、`sdd build` 等项目指令触发
+第一版交付形态是**插件包 + 共享执行核心**，不发布独立 CLI。文档中的 `sdd init`、`sdd build` 等写法表示统一命令契约，在两个宿主中的触发方式不同：
 
-它用于把一次粗略的软件需求，转化为可执行、可验证、可追踪的开发流程，帮助 AI 编码工具按照更稳定的工程步骤完成开发任务。
+| 宿主 | 触发方式 | 示例 |
+| --- | --- | --- |
+| Claude Code | slash command | `/sdd.init`、`/sdd.build` |
+| Codex | 项目指令 | `sdd init`、`sdd build` |
 
 ---
 
-## 项目目标
+## 目录
+
+- [解决什么问题](#解决什么问题)
+- [核心特性](#核心特性)
+- [工作流程](#工作流程)
+- [安装与导入](#安装与导入)
+  - [方式一：在 Claude Code 中导入（推荐）](#方式一在-claude-code-中导入推荐)
+  - [方式二：在 Codex 中导入](#方式二在-codex-中导入)
+  - [从源码构建后导入](#从源码构建后导入)
+- [快速开始](#快速开始)
+- [命令说明](#命令说明)
+- [生成的制品](#生成的制品)
+- [推荐使用方式](#推荐使用方式)
+- [常见问题](#常见问题)
+- [License](#license)
+
+---
+
+## 解决什么问题
 
 在日常使用 Claude Code 或 Codex 时，AI 很容易直接根据一句需求开始写代码，导致：
 
@@ -22,44 +42,14 @@
 - 代码审查依赖人工兜底
 - 变更过程不可追踪
 
-`sdd-harness` 希望解决这些问题。
+`sdd-harness` 通过强制的阶段化工作流和状态机来约束 AI 的行为，让每一次需求变更都经过澄清、设计、拆解、实现、验证、审查和归档，全过程留痕。
 
-它会引导 AI 按照以下流程工作：
+**适用场景**
 
-```text
-初始化项目
-  ↓
-创建需求
-  ↓
-澄清需求
-  ↓
-生成规格文档
-  ↓
-生成设计方案
-  ↓
-拆解任务
-  ↓
-实现代码
-  ↓
-验证功能
-  ↓
-审查代码
-  ↓
-归档记录
-```
-
----
-
-## 适用场景
-
-`sdd-harness` 适合用于：
-
-- 使用 Claude Code 或 Codex 开发企业项目
-- 希望 AI 编码过程更可控
-- 希望每次需求变更都有文档记录
+- 使用 Claude Code 或 Codex 开发企业项目，希望编码过程更可控
 - 希望 AI 在写代码前先做需求澄清和方案设计
 - 希望减少无关修改、过度设计和低质量实现
-- 希望项目变更可以被验证、审查和归档
+- 希望每次需求变更都有文档记录，可验证、可审查、可归档
 
 ---
 
@@ -67,36 +57,166 @@
 
 ### 1. 代码库感知
 
-初始化项目时，`sdd-harness` 会建立当前项目的代码库上下文，让后续需求分析、方案设计和任务拆解基于真实代码结构进行。
+初始化项目时建立当前项目的代码库上下文（优先使用 `codebase-memory-mcp`，不可用时自动降级为受限文件扫描），让后续需求分析、方案设计和任务拆解基于真实代码结构进行。
 
 ### 2. 需求澄清
 
-输入粗略需求后，`sdd-harness` 不会立即写代码，而是先进行需求分析，并自动提出需要确认的问题。
+输入粗略需求后不会立即写代码，而是先进行需求分析，并自动提出需要确认的问题。存在未澄清问题时流程会停在 `CLARIFYING` 状态。
 
 ### 3. 阶段化开发
 
-一次需求会被拆成多个清晰阶段：
+一次需求会被拆成多个清晰阶段，每个阶段都有明确目标和输出：
 
 ```text
 new → design → plan → build → verify → review → archive
 ```
 
-每个阶段都有明确目标和输出。
+### 4. 自动编排
 
-### 4. 自动执行
+`auto` 命令是阶段编排器，从当前状态顺序推进，每次只调用一个单阶段命令，不绕过任何阶段自身的检查。遇到阻塞会暂停并提示下一步。
 
-可以通过平台命令入口自动完成完整流程：
+### 5. 可追踪制品与安全边界
+
+- 每次需求变更都会生成对应的文档和记录，统一存放在项目的 `.sdd/` 目录。
+- 状态文件采用原子写入 + 备份恢复，绝不猜测状态。
+- 内置路径穿越防护、文件范围校验、只读 Git / 测试命令白名单；仓库内容与 MCP 输出**只作为数据**，不会被当作指令执行。
+
+---
+
+## 工作流程
 
 ```text
-Claude Code: /sdd.auto "实现订单取消功能"
-Codex:       sdd auto "实现订单取消功能"
+初始化项目 (init)
+      ↓
+创建 / 澄清需求 (new)
+      ↓
+生成设计方案 (design)
+      ↓
+拆解开发任务 (plan)
+      ↓
+实现代码 (build)
+      ↓
+验证功能 (verify)
+      ↓
+审查代码 (review)
+      ↓
+归档记录 (archive)
 ```
 
-如果中途遇到阻塞问题，流程会暂停，并提示下一步操作。
+对应的状态机主路径：
 
-### 5. 可追踪制品
+```text
+NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
+                → BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
+```
 
-每次需求变更都会生成对应的文档和记录，便于后续回顾、审查和交接。
+---
+
+## 安装与导入
+
+### 前置要求
+
+- Node.js **20 及以上**版本（macOS 或 Windows）
+- Claude Code 或 Codex 宿主环境
+- 可选：`codebase-memory-mcp v0.8.1`（MCP 不可用时自动降级为受限文件扫描）
+
+> sdd-harness 是**插件**而非独立 CLI：所有命令都通过宿主环境（Claude Code / Codex）触发，宿主在加载插件时会创建对应 Adapter 并注入 `TaskExecutor` 与可选的 `McpTransport`。
+
+---
+
+### 方式一：在 Claude Code 中导入（推荐）
+
+Claude Code 通过 **plugin marketplace** 机制加载插件。本仓库根目录已提供 `.claude-plugin/marketplace.json`，指向 `packages/claude-code-plugin`。
+
+**1. 添加 marketplace**
+
+在 Claude Code 会话中执行（任选其一）：
+
+```text
+# 从 GitHub 仓库添加
+/plugin marketplace add liuyi-it/sdd-harness
+
+# 或从本地克隆的目录添加
+/plugin marketplace add /path/to/sdd-harness
+```
+
+**2. 安装插件**
+
+```text
+/plugin install sdd-harness@sdd-harness
+```
+
+或直接打开交互式面板选择安装：
+
+```text
+/plugin
+```
+
+**3. 验证**
+
+安装后重启 / 重载会话，输入 `/sdd.` 应能看到补全出的 slash command：
+
+```text
+/sdd.init  /sdd.new  /sdd.design  /sdd.plan  /sdd.build
+/sdd.verify  /sdd.review  /sdd.archive  /sdd.auto  /sdd.status
+```
+
+在目标项目根目录执行 `/sdd.init` 即可开始。
+
+> 说明：插件命令定义在 `packages/claude-code-plugin/commands/sdd.*.md`，技能约束在 `packages/claude-code-plugin/skills/sdd-harness/SKILL.md`。
+
+---
+
+### 方式二：在 Codex 中导入
+
+Codex 通过 **skill** 机制加载 `packages/codex-plugin`（清单为 `.codex-plugin/plugin.json`）。
+
+**1. 获取插件**
+
+克隆本仓库，或将 `packages/codex-plugin` 目录提供给 Codex 环境：
+
+```bash
+git clone https://github.com/liuyi-it/sdd-harness.git
+```
+
+**2. 注册技能**
+
+将 `packages/codex-plugin/skills/sdd-harness/` 放入项目的 `.codex/skills/sdd-harness/`（或按 Codex 环境的插件加载约定注册 `.codex-plugin`）。Codex 没有独立的 commands 目录，命令契约表述在该 `SKILL.md` 内部。
+
+**3. 验证**
+
+在目标项目根目录执行：
+
+```text
+sdd init
+sdd status
+```
+
+能返回项目状态即表示导入成功。
+
+---
+
+### 从源码构建后导入
+
+若需要本地开发或改动 Core 后再导入，先在仓库根目录构建产物：
+
+```bash
+# 安装依赖（npm workspaces，需 Node ≥ 20）
+npm install
+
+# 编译所有包（生成各插件包的 dist/）
+npm run build
+
+# 可选：跑测试确认核心行为
+npm test
+```
+
+构建完成后：
+
+- **Claude Code**：按[方式一](#方式一在-claude-code-中导入推荐)用本地路径 `/plugin marketplace add /path/to/sdd-harness` 添加。
+- **Codex**：按[方式二](#方式二在-codex-中导入)注册技能目录。
+
+> 卸载（当前 MVP 为手工方式）：保留所需归档后，移除 `.sdd/`、`.claude/commands/sdd.*`、`.claude/skills/sdd-harness` 与 `.codex/skills/sdd-harness`。重复执行 `init` 会保留用户手改过的文件，仅补回缺失的生成文件。
 
 ---
 
@@ -104,38 +224,23 @@ Codex:       sdd auto "实现订单取消功能"
 
 ### 1. 初始化项目
 
-在项目根目录通过插件命令执行：
+在目标项目根目录执行，会建立代码库上下文并生成 SDD 工作目录：
 
 ```text
 Claude Code: /sdd.init
 Codex:       sdd init
 ```
 
-初始化后，项目会生成 SDD 工作目录和 Claude Code / Codex 所需的配置。
-
----
-
 ### 2. 自动执行需求
+
+一条命令跑完整流程（需求澄清 → 规格 → 设计 → 拆解 → 实现 → 验证 → 审查 → 归档）：
 
 ```text
 Claude Code: /sdd.auto "实现订单取消功能"
 Codex:       sdd auto "实现订单取消功能"
 ```
 
-该命令会自动完成：
-
-```text
-需求澄清
-规格生成
-设计方案
-任务拆解
-代码实现
-功能验证
-代码审查
-归档记录
-```
-
----
+遇到阻塞（如需求需要澄清）时会暂停，并提示下一步操作。
 
 ### 3. 查看当前状态
 
@@ -156,228 +261,75 @@ Next:
 sdd build
 ```
 
----
+### 手动控制每个阶段
 
-## 手动流程
-
-如果不希望全自动执行，也可以手动控制每个阶段。
+不想全自动时，可逐阶段执行：
 
 ```text
-Claude Code:
-/sdd.new "实现订单取消功能"
-/sdd.design
-/sdd.plan
-/sdd.build
-/sdd.verify
-/sdd.review
-/sdd.archive
-
-Codex:
-sdd new "实现订单取消功能"
-sdd design
-sdd plan
-sdd build
-sdd verify
-sdd review
-sdd archive
+Claude Code                       Codex
+/sdd.new "实现订单取消功能"        sdd new "实现订单取消功能"
+/sdd.design                       sdd design
+/sdd.plan                         sdd plan
+/sdd.build                        sdd build
+/sdd.verify                       sdd verify
+/sdd.review                       sdd review
+/sdd.archive                      sdd archive
 ```
 
 ---
 
 ## 命令说明
 
-### `sdd init`
+| 命令 | 作用 | Claude Code | Codex |
+| --- | --- | --- | --- |
+| `init` | 初始化项目并建立代码库上下文 | `/sdd.init` | `sdd init` |
+| `auto` | 自动执行完整 SDD 流程 | `/sdd.auto "需求"` | `sdd auto "需求"` |
+| `new` | 创建需求变更，做需求分析、澄清与规格生成 | `/sdd.new "需求"` | `sdd new "需求"` |
+| `design` | 基于规格生成设计方案 | `/sdd.design` | `sdd design` |
+| `plan` | 基于设计拆解开发任务 | `/sdd.plan` | `sdd plan` |
+| `build` | 根据任务计划实现代码 | `/sdd.build` | `sdd build` |
+| `verify` | 验证任务完成度与功能边界 | `/sdd.verify` | `sdd verify` |
+| `review` | 审查代码质量、修改范围与实现合理性 | `/sdd.review` | `sdd review` |
+| `archive` | 归档当前需求变更 | `/sdd.archive` | `sdd archive` |
+| `status` | 查看当前 SDD 状态与下一步建议 | `/sdd.status` | `sdd status` |
 
-初始化当前项目，并建立代码库上下文。
-
-```text
-Claude Code: /sdd.init
-Codex:       sdd init
-```
-
----
-
-### `sdd auto`
-
-自动执行完整 SDD 流程。
-
-```text
-Claude Code: /sdd.auto "粗略需求"
-Codex:       sdd auto "粗略需求"
-```
+**通用参数**：`--json`、`--non-interactive`、`--force`、`--timeout <seconds>`、`--change <id>`、`--verbose`、`--help`。`new` / `auto` 允许第一个非选项参数直接作为自然语言需求。
 
 ---
 
-### `sdd new`
+## 生成的制品
 
-创建新的需求变更，进行需求分析、澄清和规格生成。
+`sdd-harness` 会为每次需求变更生成对应记录，统一存放在项目的 `.sdd/` 目录：
 
-```text
-Claude Code: /sdd.new "粗略需求"
-Codex:       sdd new "粗略需求"
-```
-
----
-
-### `sdd design`
-
-基于需求规格生成设计方案。
-
-```text
-Claude Code: /sdd.design
-Codex:       sdd design
-```
-
----
-
-### `sdd plan`
-
-基于设计方案拆解开发任务。
-
-```text
-Claude Code: /sdd.plan
-Codex:       sdd plan
-```
-
----
-
-### `sdd build`
-
-根据任务计划实现代码。
-
-```text
-Claude Code: /sdd.build
-Codex:       sdd build
-```
-
----
-
-### `sdd verify`
-
-验证任务是否完成、功能边界是否满足。
-
-```text
-Claude Code: /sdd.verify
-Codex:       sdd verify
-```
-
----
-
-### `sdd review`
-
-审查代码质量、修改范围和实现合理性。
-
-```text
-Claude Code: /sdd.review
-Codex:       sdd review
-```
-
----
-
-### `sdd archive`
-
-归档当前需求变更。
-
-```text
-Claude Code: /sdd.archive
-Codex:       sdd archive
-```
-
----
-
-### `sdd status`
-
-查看当前 SDD 状态和下一步建议。
-
-```bash
-sdd status
-```
-
----
-
-## Claude Code 使用方式
-
-在 Claude Code 中，可以使用对应的 Slash Command：
-
-```text
-/sdd.init
-/sdd.auto "实现订单取消功能"
-/sdd.status
-```
-
-也可以手动执行阶段命令：
-
-```text
-/sdd.new "实现订单取消功能"
-/sdd.design
-/sdd.plan
-/sdd.build
-/sdd.verify
-/sdd.review
-/sdd.archive
-```
-
----
-
-## Codex 使用方式
-
-在 Codex 中，可以直接使用：
-
-```text
-sdd init
-sdd auto "实现订单取消功能"
-sdd status
-```
-
-或者手动执行：
-
-```text
-sdd new "实现订单取消功能"
-sdd design
-sdd plan
-sdd build
-sdd verify
-sdd review
-sdd archive
-```
-
----
-
-## 生成内容
-
-`sdd-harness` 会为每次需求变更生成对应记录，包括：
-
-- 需求说明
-- 澄清问题
+- 需求说明与澄清问题
 - 需求规格
 - 设计方案
-- 任务拆解
-- 测试计划
+- 任务拆解与测试计划
 - 验证报告
 - 审查报告
 - 归档报告
 
-这些内容会统一存放在项目的 `.sdd/` 目录中。
+每个 Markdown 制品都配 `*.meta.json` 记录输入摘要与 SHA-256；重复运行相同输入会写 `*.candidate.md` 而非直接覆盖。
 
 ---
 
 ## 推荐使用方式
 
-首次接入项目：
+**首次接入项目**
 
-```bash
+```text
 sdd init
 ```
 
-日常开发需求：
+**日常开发需求**
 
-```bash
+```text
 sdd auto "你的需求描述"
 ```
 
-复杂需求或高风险变更：
+**复杂需求或高风险变更**（逐阶段把控）
 
-```bash
+```text
 sdd new "你的需求描述"
 sdd design
 sdd plan
@@ -389,17 +341,16 @@ sdd archive
 
 ---
 
-## 当前状态
+## 常见问题
 
-项目当前处于设计和 MVP 实现阶段。
+**Q：安装后 `/sdd.*` 命令不出现？**
+确认已 `/plugin install sdd-harness@sdd-harness` 并重载会话；本地路径添加 marketplace 时需指向仓库根目录（含 `.claude-plugin/marketplace.json`）。
 
-优先目标：
+**Q：没有 `codebase-memory-mcp` 能用吗？**
+可以。MCP 不可用时会自动降级为受限文件扫描（跳过 `.git`、`node_modules`、`dist` 等目录），功能可用但代码库上下文精度略低。
 
-- 支持 Claude Code
-- 支持 Codex
-- 支持项目初始化
-- 支持自动 SDD 流程
-- 支持需求澄清、设计、任务拆解、实现、验证、审查和归档
+**Q：流程卡在 `CLARIFYING` / `PAUSED` / `FAILED`？**
+这是设计行为——存在未澄清问题、被中断或阶段校验失败时会停下。执行 `sdd status` 查看 Core 给出的恢复命令。
 
 ---
 
