@@ -74,6 +74,15 @@ describe("仓库元数据与安装文档", () => {
     }
   });
 
+  it("README 提供 Claude Code 与 Codex 的一键安装脚本说明", async () => {
+    const readme = await readFile(join(process.cwd(), "README.md"), "utf8");
+
+    expect(readme).toContain("node scripts/install-claude.mjs");
+    expect(readme).toContain("node scripts/install-codex.mjs");
+    expect(readme).toContain("最后一步宿主内安装/重载");
+    expect(readme).toContain("~/.agents/plugins/marketplace.json");
+  });
+
   it("提供需求文档要求的示例 fixture 目录", async () => {
     for (const path of [
       "fixtures/springboot-order-service",
