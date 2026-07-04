@@ -122,6 +122,28 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 > sdd-harness 是**插件**而非独立 CLI：所有命令都通过宿主环境（Claude Code / Codex）触发，宿主在加载插件时会创建对应 Adapter 并注入 `TaskExecutor` 与可选的 `McpTransport`。
 
+如果你在自定义宿主或测试环境中直接使用插件包，可以显式创建适配器并注入运行时依赖：
+
+```ts
+import { CodexAdapter } from "@sdd-harness/codex-plugin";
+
+const adapter = new CodexAdapter({
+  taskExecutor,
+  mcpTransport, // 可选
+});
+```
+
+Claude Code 插件包同理：
+
+```ts
+import { ClaudeCodeAdapter } from "@sdd-harness/claude-code-plugin";
+
+const adapter = new ClaudeCodeAdapter({
+  taskExecutor,
+  mcpTransport, // 可选
+});
+```
+
 ---
 
 ### 方式一：在 Claude Code 中导入（推荐）

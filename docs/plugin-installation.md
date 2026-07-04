@@ -8,7 +8,23 @@
 
 安装目标插件包后，由宿主环境创建对应 Adapter，并注入宿主提供的 `TaskExecutor` 与可选的 `McpTransport`。随后在 Claude Code 中运行 `/sdd.init`，或在 Codex 中运行 `sdd init`。
 
-重复执行 `init` 时，会保留用户手工修改过的配置和说明文件，同时补回缺失的生成文件。升级流程会检查 `schemaVersion`、备份并迁移 `.sdd/state.json`，同时生成 `.sdd/migration-report.md`。
+如果是自定义集成或测试环境，可直接构造适配器：
+
+```ts
+import { CodexAdapter } from "@sdd-harness/codex-plugin";
+import { ClaudeCodeAdapter } from "@sdd-harness/claude-code-plugin";
+
+const codexAdapter = new CodexAdapter({ taskExecutor, mcpTransport });
+const claudeAdapter = new ClaudeCodeAdapter({ taskExecutor, mcpTransport });
+```
+
+其中：
+
+- `taskExecutor` 为必填，由宿主负责真正执行 build 阶段任务
+- `mcpTransport` 为可选，用于接入 `codebase-memory-mcp`
+- 不提供 `mcpTransport` 时会自动退回 `fallback-file-scan`
+
+重复执行 `init` 时，会保留用户手工修改过的配置和说明文件，同时补回缺失的生成文件。升级流程会检查 `schemaVersion`、先备份整份 `.sdd/` 到 `.sdd.migration.bak/`，并额外保留 `.sdd/state.json.migration.bak`，随后执行迁移并生成 `.sdd/migration-report.md`。
 
 当前 MVP 不提供自动卸载。手工清理分两层：
 

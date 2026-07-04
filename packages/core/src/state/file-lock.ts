@@ -15,6 +15,11 @@ interface LockData {
   expiresAt: string;
 }
 
+interface AcquireOptions {
+  timeoutMs?: number;
+  retryDelayMs?: number;
+}
+
 export class FileLock {
   private ownsLock = false;
   private readonly path: string;
@@ -23,8 +28,25 @@ export class FileLock {
     this.path = join(root, ".sdd", "lock");
   }
 
-  async acquire(command: string, changeId?: string): Promise<void> {
+  async acquire(
+    command: string,
+    changeId?: string,
+    options: AcquireOptions = {},
+  ): Promise<void> {
     await mkdir(join(this.root, ".sdd"), { recursive: true });
+    const deadline =
+      typeof options.timeoutMs === "number" && options.timeoutMs > 0
+        ? Date.now() + options.timeoutMs
+        : undefined;
+    await this.acquireUntil(command, changeId, options, deadline);
+  }
+
+  private async acquireUntil(
+    command: string,
+    changeId: string | undefined,
+    options: AcquireOptions,
+    deadline: number | undefined,
+  ): Promise<void> {
     const createdAt = new Date();
     const data: LockData = {
       pid: process.pid,
@@ -50,6 +72,17 @@ export class FileLock {
       Number.isFinite(Date.parse(existing.expiresAt)) &&
       Date.parse(existing.expiresAt) > Date.now();
     if (existing !== null && (unexpired || isProcessAlive(existing.pid))) {
+      if (deadline !== undefined && Date.now() < deadline) {
+        await delay(options.retryDelayMs ?? 50);
+        return this.acquireUntil(command, changeId, options, deadline);
+      }
+      if (deadline !== undefined) {
+        throw new SddError(
+          "E_LOCK_TIMEOUT",
+          `命令 ${existing.command} 持有锁超时，无法在限定时间内获取写锁`,
+          "sdd status",
+        );
+      }
       throw new SddError(
         "E_CONCURRENT_RUN",
         `命令 ${existing.command} 正在运行（pid ${existing.pid}）`,
@@ -57,7 +90,7 @@ export class FileLock {
       );
     }
     await unlink(this.path).catch(() => undefined);
-    return this.acquire(command, changeId);
+    return this.acquireUntil(command, changeId, options, deadline);
   }
 
   async release(): Promise<void> {
@@ -75,6 +108,10 @@ export class FileLock {
       return null;
     }
   }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function isProcessAlive(pid: number): boolean {

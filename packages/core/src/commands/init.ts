@@ -5,13 +5,26 @@ import { parse, stringify } from "yaml";
 import { z } from "zod";
 
 import { AuditLogger } from "../audit/audit-logger.js";
+import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import { type CommandResult } from "../contracts.js";
 import { PINNED_DEPENDENCIES } from "../dependencies.js";
+import {
+  decodeArtifactContent,
+  resolveCodebaseMemoryArtifactName,
+  verifyChecksumManifest,
+  type ComponentIntegrityEvidence,
+} from "../dependency-integrity.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
+import {
+  assertRecoverableCommandState,
+  normalizeCommandError,
+  persistCommandFailure,
+} from "./recovery.js";
+import { timeoutMilliseconds, withTimeout } from "./timeout.js";
 
 /**
  * init 负责创建 `.sdd/` 基础目录、安装宿主集成文件，并初始化代码库索引。
@@ -53,17 +66,24 @@ const REQUIRED_CONFIG_KEYS = [
 export async function runInit(
   root: string,
   codebase: CodebaseAdapter,
+  args?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
   const lock = new FileLock(root);
-  await lock.acquire("sdd init");
+  await lock.acquire("sdd init", undefined, lockOptions(args));
+  const store = new StateStore(root);
+  let started = false;
+  let inProgressPhase: CommandResult["state"] = "INITIALIZING";
   try {
+    if (await exists(store.path)) {
+      assertRecoverableCommandState(await store.read(), "sdd init");
+    }
     const sddRoot = join(root, ".sdd");
     await Promise.all(
       REQUIRED_DIRECTORIES.map((directory) =>
         mkdir(join(sddRoot, directory), { recursive: true }),
       ),
     );
-    const store = new StateStore(root);
     if (!(await exists(store.path))) await store.write(createInitialState());
     await store.update((state) => ({
       ...state,
@@ -72,12 +92,16 @@ export async function runInit(
       lastCommand: "sdd init",
       lastError: null,
     }));
+    started = true;
     await writeIfMissing(
       join(sddRoot, "config.yml"),
       stringify(defaultConfig(root)),
     );
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
-    const integration = await installProjectIntegration(root);
+    const integration = await installProjectIntegration(root, {
+      force: args?.force === true,
+    });
+    inProgressPhase = "INDEXING";
     await store.update((state) => ({
       ...state,
       currentPhase: "INDEXING",
@@ -85,22 +109,40 @@ export async function runInit(
       indexStatus: "INDEXING",
     }));
 
-    const index = await codebase.initialize(root);
-    await writeFile(
+    const index = await withTimeout(
+      codebase.initialize(root),
+      timeoutMilliseconds(args),
+      "sdd init",
+      signal,
+    );
+    const writer = new ArtifactWriter();
+    const indexInputs = {
+      provider: index.provider,
+      degraded: index.degraded,
+      reason: index.reason ?? null,
+      diagnostics: index.diagnostics,
+    };
+    await writer.write(
       join(sddRoot, "index", "codebase-summary.md"),
-      `${index.codebaseSummary}\n`,
-      "utf8",
+      index.codebaseSummary,
+      indexInputs,
     );
-    await writeFile(
+    await writer.write(
       join(sddRoot, "index", "package-structure.md"),
-      `${index.packageStructure}\n`,
-      "utf8",
+      index.packageStructure,
+      indexInputs,
+    );
+    await writer.write(
+      join(sddRoot, "index", "architecture.md"),
+      index.architecture,
+      indexInputs,
     );
     await writeFile(
-      join(sddRoot, "index", "architecture.md"),
-      `${index.architecture}\n`,
+      join(sddRoot, "index", "codebase-diagnostics.json"),
+      `${JSON.stringify(index.diagnostics, null, 2)}\n`,
       "utf8",
     );
+    await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
 
     const ready = await store.update((state) => ({
@@ -128,6 +170,20 @@ export async function runInit(
       next: "sdd new",
       ...buildWarnings(index, integration.candidateFiles, configWarnings),
     };
+  } catch (error) {
+    const normalized = normalizeCommandError(
+      error,
+      "E_STATE_CORRUPTED",
+      "sdd init",
+    );
+    if (started) {
+      await persistCommandFailure(store, normalized, {
+        command: "sdd init",
+        previousPhase: "NOT_INITIALIZED",
+        inProgressPhase,
+      });
+    }
+    throw normalized;
   } finally {
     await lock.release();
   }
@@ -202,6 +258,112 @@ async function writeIfMissing(path: string, content: string): Promise<void> {
   if (!(await exists(path))) await writeFile(path, content, "utf8");
 }
 
+async function verifyDependencyIntegrityIfProvided(
+  sddRoot: string,
+  args: Record<string, unknown> | undefined,
+): Promise<void> {
+  const evidence = readIntegrityEvidence(args);
+  if (evidence === undefined) {
+    await writeIntegrityReport(sddRoot, {
+      component: "codebase-memory-mcp",
+      status: "skipped",
+      reason: "未提供可校验的组件安装材料",
+    });
+    return;
+  }
+  verifyChecksumManifest({
+    manifestContent: evidence.manifestContent,
+    expectedManifestSha256:
+      evidence.expectedManifestSha256 ??
+      PINNED_DEPENDENCIES.codebaseMemoryMcp.checksumManifestSha256,
+    artifactName:
+      evidence.artifactName ??
+      resolveCodebaseMemoryArtifactName(targetDescriptor(evidence)),
+    artifactContent: decodeArtifactContent(evidence.artifactContentBase64),
+  });
+  await writeIntegrityReport(sddRoot, {
+    component: "codebase-memory-mcp",
+    status: "verified",
+    artifactName:
+      evidence.artifactName ??
+      resolveCodebaseMemoryArtifactName(targetDescriptor(evidence)),
+    verifiedAt: new Date().toISOString(),
+  });
+}
+
+function readIntegrityEvidence(
+  args: Record<string, unknown> | undefined,
+): ComponentIntegrityEvidence | undefined {
+  const integrity = args?.integrity;
+  if (
+    integrity === undefined ||
+    integrity === null ||
+    typeof integrity !== "object"
+  ) {
+    return undefined;
+  }
+  const codebaseMemoryMcp = (integrity as Record<string, unknown>)
+    .codebaseMemoryMcp;
+  if (
+    codebaseMemoryMcp === undefined ||
+    codebaseMemoryMcp === null ||
+    typeof codebaseMemoryMcp !== "object"
+  ) {
+    return undefined;
+  }
+  const input = codebaseMemoryMcp as Record<string, unknown>;
+  if (
+    typeof input.manifestContent !== "string" ||
+    typeof input.artifactContentBase64 !== "string"
+  ) {
+    throw new SddError(
+      "E_COMPONENT_INTEGRITY_FAILED",
+      "组件完整性校验材料格式不正确",
+    );
+  }
+  return {
+    manifestContent: input.manifestContent,
+    ...(typeof input.expectedManifestSha256 === "string"
+      ? { expectedManifestSha256: input.expectedManifestSha256 }
+      : {}),
+    ...(typeof input.artifactName === "string"
+      ? { artifactName: input.artifactName }
+      : {}),
+    ...(input.targetPlatform === "darwin" || input.targetPlatform === "win32"
+      ? { targetPlatform: input.targetPlatform }
+      : {}),
+    ...(input.targetArch === "arm64" || input.targetArch === "x64"
+      ? { targetArch: input.targetArch }
+      : {}),
+    artifactContentBase64: input.artifactContentBase64,
+  };
+}
+
+async function writeIntegrityReport(
+  sddRoot: string,
+  report: Record<string, unknown>,
+): Promise<void> {
+  const directory = join(sddRoot, "adapters", "codebase-memory-mcp");
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    join(directory, "integrity.json"),
+    `${JSON.stringify(report, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function targetDescriptor(evidence: ComponentIntegrityEvidence): {
+  platform?: string;
+  arch?: string;
+} {
+  return {
+    ...(evidence.targetPlatform === undefined
+      ? {}
+      : { platform: evidence.targetPlatform }),
+    ...(evidence.targetArch === undefined ? {} : { arch: evidence.targetArch }),
+  };
+}
+
 function buildWarnings(
   index: { degraded: boolean; reason?: string | null },
   candidateFiles: string[],
@@ -209,7 +371,12 @@ function buildWarnings(
 ): { warnings?: string[] } {
   const warnings: string[] = [];
   if (index.degraded) {
-    warnings.push(`降级模式：${index.reason ?? "MCP 不可用"}`);
+    warnings.push(
+      "降级模式：codebase-memory-mcp 当前不可用，已切换为受限文件扫描",
+    );
+    warnings.push(
+      `安装建议：请先安装并配置 codebase-memory-mcp，官方项目地址：${PINNED_DEPENDENCIES.codebaseMemoryMcp.repository}`,
+    );
   }
   if (candidateFiles.length > 0) {
     warnings.push(
@@ -218,6 +385,13 @@ function buildWarnings(
   }
   warnings.push(...configWarnings);
   return warnings.length === 0 ? {} : { warnings };
+}
+
+function lockOptions(args: Record<string, unknown> | undefined): {
+  timeoutMs?: number;
+} {
+  const timeoutMs = timeoutMilliseconds(args);
+  return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
 async function validateConfig(path: string): Promise<string[]> {

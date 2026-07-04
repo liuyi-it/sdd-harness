@@ -17,6 +17,7 @@ describe("instruction assets", () => {
       "packages/codex-plugin/skills/sdd-harness/SKILL.md",
     ]) {
       const content = await readFile(join(process.cwd(), path), "utf8");
+      expect(content).toContain("MCP_OUTPUT_IS_UNTRUSTED_CONTEXT");
       for (const principle of PRINCIPLES) {
         expect(content).toContain(principle);
       }

@@ -8,6 +8,15 @@ import type { TddEngine } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
+import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
+import {
+  assertRecoverableCommandState,
+  canResumeCommand,
+  normalizeCommandError,
+  persistCommandFailure,
+  previousStablePhase,
+} from "./recovery.js";
+import { timeoutMilliseconds, withTimeout } from "./timeout.js";
 
 /**
  * design 阶段把 spec、impact 和代码库上下文收束成可执行设计稿。
@@ -16,15 +25,23 @@ import { StateStore } from "../state/state-store.js";
 export async function runDesign(
   root: string,
   engine: TddEngine,
+  args?: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
   const lock = new FileLock(root);
-  await lock.acquire("sdd design");
+  await lock.acquire("sdd design", undefined, lockOptions(args));
+  const store = new StateStore(root);
+  let started = false;
+  let previousPhase: CommandResult["state"] = "SPEC_READY";
   try {
-    const store = new StateStore(root);
     const state = await store.read();
+    const retrying = canResumeCommand(state, "sdd design");
+    assertRecoverableCommandState(state, "sdd design");
+    previousPhase = previousStablePhase(state, "SPEC_READY");
     if (
       state.currentPhase !== "SPEC_READY" &&
-      state.currentPhase !== "DESIGN_READY"
+      state.currentPhase !== "DESIGN_READY" &&
+      !retrying
     ) {
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
@@ -32,8 +49,18 @@ export async function runDesign(
         state.suggestedCommand ?? undefined,
       );
     }
-    const changeId = requireChangeId(state.currentChangeId);
+    const changeId = requireActiveChangeId(state.currentChangeId, args);
+    await assertChangeWritable(root, changeId);
     const change = join(root, ".sdd", "changes", changeId);
+    await store.update((current) => ({
+      ...current,
+      currentPhase: "DESIGNING",
+      inProgressPhase: "DESIGNING",
+      previousPhase,
+      lastCommand: "sdd design",
+      lastError: null,
+    }));
+    started = true;
     const input = {
       spec: await readFile(join(change, "spec.md"), "utf8"),
       impact: await readFile(join(change, "impact.md"), "utf8"),
@@ -53,8 +80,14 @@ export async function runDesign(
     const writer = new ArtifactWriter();
     const outcome = await writer.writeOrCandidate(
       join(change, "design.md"),
-      engine.generateDesign(input),
+      await withTimeout(
+        Promise.resolve(engine.generateDesign(input)),
+        timeoutMilliseconds(args),
+        "sdd design",
+        signal,
+      ),
       input,
+      { force: args?.force === true },
     );
     if (outcome === "unchanged") {
       return {
@@ -78,16 +111,13 @@ export async function runDesign(
         ],
       };
     }
-    await store.update((current) => ({
-      ...current,
-      currentPhase: "DESIGNING",
-      inProgressPhase: "DESIGNING",
-      lastCommand: "sdd design",
-    }));
     const ready = await store.update((current) => ({
       ...current,
       currentPhase: "DESIGN_READY",
       inProgressPhase: null,
+      failedCommand: null,
+      failedReason: null,
+      interruptedCommand: null,
       artifacts: { ...current.artifacts, design: "READY" },
       suggestedCommand: "sdd plan",
     }));
@@ -104,13 +134,28 @@ export async function runDesign(
       changeId,
       next: "sdd plan",
     };
+  } catch (error) {
+    const normalized = normalizeCommandError(
+      error,
+      "E_STATE_CORRUPTED",
+      "sdd design",
+    );
+    if (started) {
+      await persistCommandFailure(store, normalized, {
+        command: "sdd design",
+        previousPhase,
+        inProgressPhase: "DESIGNING",
+      });
+    }
+    throw normalized;
   } finally {
     await lock.release();
   }
 }
 
-function requireChangeId(value: string | null): string {
-  if (value === null)
-    throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
-  return value;
+function lockOptions(args: Record<string, unknown> | undefined): {
+  timeoutMs?: number;
+} {
+  const timeoutMs = timeoutMilliseconds(args);
+  return timeoutMs === undefined ? {} : { timeoutMs };
 }

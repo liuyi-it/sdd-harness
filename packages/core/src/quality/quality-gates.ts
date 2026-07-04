@@ -1,5 +1,6 @@
 import { type TaskExecutionResult } from "../build/task-executor.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
+import { type GitSnapshot } from "../git/git-inspector.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 
 /**
@@ -70,4 +71,22 @@ export function reviewGate(
     }
   }
   return { passed: failures.length === 0, failures };
+}
+
+export function driftFailures(
+  baseline: GitSnapshot | null,
+  current: GitSnapshot | null,
+  reportedFiles: string[],
+): string[] {
+  if (baseline === null || current === null) return [];
+  if (!baseline.available || !current.available) return [];
+  const reported = new Set(reportedFiles);
+  return current.files
+    .filter(
+      (file) =>
+        baseline.hashes[file] === undefined ||
+        baseline.hashes[file] !== current.hashes[file],
+    )
+    .filter((file) => !reported.has(file))
+    .map((file) => `未跟踪到任务结果的变更文件：${file}`);
 }

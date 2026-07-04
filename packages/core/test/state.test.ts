@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { AuditLogger } from "../src/audit/audit-logger.js";
 import { FileLock } from "../src/state/file-lock.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
@@ -39,6 +40,22 @@ describe("StateStore", () => {
       version: 2,
       updatedAt: expect.any(String),
     });
+    expect(await new AuditLogger(root).entries()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          command: "state.write",
+          phase: "NOT_INITIALIZED",
+          result: "PASS",
+          message: "state version 1",
+        }),
+        expect.objectContaining({
+          command: "state.write",
+          phase: "INDEX_READY",
+          result: "PASS",
+          message: "state version 2",
+        }),
+      ]),
+    );
   });
 
   it("recovers a corrupted state file from its backup", async () => {
@@ -58,6 +75,14 @@ describe("StateStore", () => {
     const root = await temporaryRoot();
     const store = new StateStore(root);
     await store.write(createInitialState());
+    await mkdir(join(root, ".sdd", "changes", "legacy-change"), {
+      recursive: true,
+    });
+    await writeFile(
+      join(root, ".sdd", "changes", "legacy-change", "spec.md"),
+      "# Legacy spec\n",
+      "utf8",
+    );
     const legacy = {
       ...createInitialState(),
       schemaVersion: "0.9.0",
@@ -87,6 +112,29 @@ describe("StateStore", () => {
     expect(
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
     ).toContain(".sdd/state.json.migration.bak");
+    expect(
+      await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
+    ).toContain(".sdd.migration.bak");
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/migration-report.md.meta.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.0.0",
+      generatedBy: "sdd-harness",
+      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      createdAt: expect.any(String),
+    });
+    await expect(
+      readFile(
+        join(root, ".sdd.migration.bak", "changes", "legacy-change", "spec.md"),
+        "utf8",
+      ),
+    ).resolves.toContain("# Legacy spec");
   });
 
   it("infers and writes a recovered state when state and backup are invalid", async () => {
@@ -220,5 +268,21 @@ describe("FileLock", () => {
 
     await expect(lock.acquire("sdd plan")).resolves.toBeUndefined();
     await lock.release();
+  });
+
+  it("当锁在等待窗口内始终被占用时返回 E_LOCK_TIMEOUT", async () => {
+    const root = await temporaryRoot();
+    const first = new FileLock(root);
+    const second = new FileLock(root);
+    await first.acquire("sdd build");
+
+    await expect(
+      second.acquire("sdd plan", undefined, { timeoutMs: 20, retryDelayMs: 5 }),
+    ).rejects.toMatchObject({
+      code: "E_LOCK_TIMEOUT",
+      exitCode: 9,
+    });
+
+    await first.release();
   });
 });

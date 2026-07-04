@@ -45,7 +45,7 @@ describe("GitInspector", () => {
   it("separates pre-existing changes from current-run changes", async () => {
     const root = await mkdtemp(join(tmpdir(), "sdd-git-"));
     const run = promisify(execFile);
-    await run("git", ["init"], { cwd: root });
+    await run("git", ["init", "-b", "main"], { cwd: root });
     await run("git", ["config", "user.email", "test@example.com"], {
       cwd: root,
     });

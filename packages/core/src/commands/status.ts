@@ -2,6 +2,7 @@ import { access } from "node:fs/promises";
 import { join } from "node:path";
 
 import { type CommandResult, type Phase } from "../contracts.js";
+import { GitInspector } from "../git/git-inspector.js";
 import { StateStore, type WorkflowState } from "../state/state-store.js";
 
 /**
@@ -20,6 +21,23 @@ export async function runStatus(root: string): Promise<CommandResult> {
   }
   const state = await new StateStore(root).read();
   const next = nextCommand(state);
+  const git = await new GitInspector(root).snapshot();
+  const warnings: string[] = [];
+  if (state.recoveredFromBackup) {
+    warnings.push(
+      `状态已从备份或制品恢复，请确认当前阶段后再继续执行${next === undefined ? "" : `：${next}`}`,
+    );
+  }
+  if (state.degraded) {
+    warnings.push(
+      `当前处于降级模式（degraded mode）：${state.degradedReason ?? "codebase-memory-mcp unavailable"}`,
+    );
+  }
+  if (git.available && git.files.length > 0) {
+    warnings.push(
+      `检测到执行前已有未提交修改：${git.files.slice(0, 5).join(", ")}${git.files.length > 5 ? ` 等 ${git.files.length} 个文件` : ""}`,
+    );
+  }
   return {
     ok: true,
     state: state.currentPhase,
@@ -28,13 +46,7 @@ export async function runStatus(root: string): Promise<CommandResult> {
       ? {}
       : { changeId: state.currentChangeId }),
     ...(next === undefined ? {} : { next }),
-    ...(state.recoveredFromBackup
-      ? {
-          warnings: [
-            `状态已从备份或制品恢复，请确认当前阶段后再继续执行${next === undefined ? "" : `：${next}`}`,
-          ],
-        }
-      : {}),
+    ...(warnings.length === 0 ? {} : { warnings }),
     data: state,
   };
 }

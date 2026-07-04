@@ -1,4 +1,10 @@
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -6,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
+import { SpecEngine } from "../src/engines/spec/spec-engine.js";
 
 // new 阶段重点验证需求不足时的澄清停顿，以及补充答案后的继续执行行为。
 const roots: string[] = [];
@@ -47,6 +54,14 @@ describe("sdd new", () => {
         "utf8",
       ),
     ).toContain("BLOCKER");
+    const [runId] = await readdir(join(root, ".sdd/runs"));
+    expect(runId).toBeDefined();
+    await expect(
+      access(join(root, ".sdd/runs", runId!, "input.md")),
+    ).resolves.toBeUndefined();
+    await expect(
+      access(join(root, ".sdd/runs", runId!, "input.md.meta.json")),
+    ).resolves.toBeUndefined();
     await expect(
       access(join(root, ".sdd/changes/add-cancel/spec.md")),
     ).rejects.toThrow();
@@ -130,6 +145,100 @@ describe("sdd new", () => {
       await expect(
         access(join(root, ".sdd/changes/add-order-cancellation", artifact)),
       ).resolves.toBeUndefined();
+      expect(
+        JSON.parse(
+          await readFile(
+            join(
+              root,
+              ".sdd/changes/add-order-cancellation",
+              `${artifact}.meta.json`,
+            ),
+            "utf8",
+          ),
+        ),
+      ).toMatchObject({
+        schemaVersion: "1.0.0",
+        generatedBy: "sdd-harness",
+        inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        createdAt: expect.any(String),
+      });
     }
+  });
+
+  it("new 在规格生成超时后进入 FAILED 并记录恢复上下文", async () => {
+    const { root } = await initializedProject();
+    class SlowSpecEngine extends SpecEngine {
+      override async generate(...args: Parameters<SpecEngine["generate"]>) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return await super.generate(...args);
+      }
+    }
+    const core = new Core({
+      codebase: new CodebaseAdapter(),
+      specEngine: new SlowSpecEngine(),
+    });
+
+    const result = await core.execute({
+      command: "new",
+      cwd: root,
+      args: {
+        requirement:
+          "Implement authenticated order cancellation for pending orders through POST /orders/:id/cancel, including authorization, conflict errors, audit logging, and automated tests.",
+        changeId: "add-order-cancellation",
+        timeout: 0.01,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      exitCode: 124,
+      error: { code: "E_TIMEOUT", next: "sdd new" },
+    });
+  });
+
+  it("new 在收到中断后进入 PAUSED 并记录恢复上下文", async () => {
+    const { root } = await initializedProject();
+    class SlowSpecEngine extends SpecEngine {
+      override async generate(...args: Parameters<SpecEngine["generate"]>) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return await super.generate(...args);
+      }
+    }
+    const core = new Core({
+      codebase: new CodebaseAdapter(),
+      specEngine: new SlowSpecEngine(),
+    });
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 10);
+
+    const result = await core.execute({
+      command: "new",
+      cwd: root,
+      signal: controller.signal,
+      args: {
+        requirement:
+          "Implement authenticated order cancellation for pending orders through POST /orders/:id/cancel, including authorization, conflict errors, audit logging, and automated tests.",
+        changeId: "add-order-cancellation",
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "PAUSED",
+      exitCode: 130,
+      error: { code: "E_INTERRUPTED", next: "sdd new" },
+    });
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({
+      currentPhase: "PAUSED",
+      interruptedCommand: "sdd new",
+      previousPhase: "INDEX_READY",
+      inProgressPhase: "NEW_STARTED",
+      suggestedCommand: "sdd new",
+      lastError: "E_INTERRUPTED",
+    });
   });
 });

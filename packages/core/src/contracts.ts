@@ -95,6 +95,10 @@ export interface CommandResult {
   changeId?: string;
   next?: string;
   data?: unknown;
+  rendered?: {
+    format: "json" | "text";
+    content: string;
+  };
   warnings?: string[];
   error?: CommandError;
 }

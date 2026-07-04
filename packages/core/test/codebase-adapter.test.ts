@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   CodebaseAdapter,
+  MCP_UNAVAILABLE_REASON,
   type McpTransport,
 } from "../src/codebase/codebase-adapter.js";
 import { PINNED_DEPENDENCIES } from "../src/dependencies.js";
@@ -20,6 +21,10 @@ async function project(): Promise<string> {
   await writeFile(
     join(root, "src/services/order.ts"),
     "export class OrderService {}\n",
+  );
+  await writeFile(
+    join(root, "CLAUDE.md.meta.json"),
+    '{"createdAt":"2026-07-04T00:00:00.000Z"}\n',
   );
   await writeFile(join(root, "src/application-prod.yml"), "password: secret\n");
   await writeFile(join(root, "src/server.pem"), "private key\n");
@@ -58,6 +63,10 @@ describe("CodebaseAdapter", () => {
   it("indexes and reads summaries through an available MCP transport", async () => {
     const root = await project();
     const transport: McpTransport = {
+      inspect: vi.fn().mockResolvedValue({
+        installed: true,
+        configured: true,
+      }),
       isAvailable: vi.fn().mockResolvedValue(true),
       index: vi.fn().mockResolvedValue(undefined),
       summarize: vi.fn().mockResolvedValue({
@@ -74,12 +83,26 @@ describe("CodebaseAdapter", () => {
       provider: "codebase-memory-mcp",
       degraded: false,
       codebaseSummary: "MCP summary",
+      diagnostics: {
+        installed: true,
+        configured: true,
+        connected: true,
+        callable: true,
+        indexed: true,
+      },
     });
   });
 
   it("falls back to a bounded repository scan when MCP is unavailable", async () => {
     const root = await project();
     const transport: McpTransport = {
+      inspect: vi.fn().mockResolvedValue({
+        installed: true,
+        configured: true,
+        connected: false,
+        callable: false,
+        indexed: false,
+      }),
       isAvailable: vi.fn().mockResolvedValue(false),
       index: vi.fn(),
       summarize: vi.fn(),
@@ -89,9 +112,50 @@ describe("CodebaseAdapter", () => {
 
     expect(result.provider).toBe("fallback-file-scan");
     expect(result.degraded).toBe(true);
+    expect(result.reason).toBe(MCP_UNAVAILABLE_REASON);
+    expect(result.diagnostics).toMatchObject({
+      installed: true,
+      configured: true,
+      connected: false,
+      callable: false,
+      indexed: false,
+    });
     expect(result.codebaseSummary).toContain("src/services/order.ts");
+    expect(result.codebaseSummary).toContain("## 关键字扫描");
+    expect(result.codebaseSummary).toContain("## 候选文件摘要");
     expect(result.codebaseSummary).not.toContain("node_modules");
     expect(result.codebaseSummary).not.toContain("application-prod.yml");
     expect(result.codebaseSummary).not.toContain("server.pem");
+    expect(result.codebaseSummary).not.toContain("CLAUDE.md.meta.json");
+  });
+
+  it("在 MCP 可见但调用失败时自动降级而不是直接失败", async () => {
+    const root = await project();
+    const transport: McpTransport = {
+      inspect: vi.fn().mockResolvedValue({
+        installed: true,
+        configured: true,
+        connected: true,
+      }),
+      isAvailable: vi.fn().mockResolvedValue(true),
+      index: vi.fn().mockRejectedValue(new Error("MCP 调用失败")),
+      summarize: vi.fn(),
+    };
+
+    const result = await new CodebaseAdapter(transport).initialize(root);
+
+    expect(result).toMatchObject({
+      provider: "fallback-file-scan",
+      degraded: true,
+      reason: MCP_UNAVAILABLE_REASON,
+      diagnostics: {
+        installed: true,
+        configured: true,
+        connected: true,
+        callable: false,
+        indexed: false,
+        message: "MCP 调用失败",
+      },
+    });
   });
 });

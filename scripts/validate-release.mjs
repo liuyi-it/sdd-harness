@@ -62,14 +62,27 @@ export async function validateReleaseLayout(root = repoRoot) {
         `${spec.name} compatibility.coreVersion 必须与 package.json 里的 @sdd-harness/core 依赖一致`,
       );
     }
+    if (manifest.version !== packageJson.version) {
+      throw new Error(
+        `${spec.name} manifest.version 必须与 package.json version 一致`,
+      );
+    }
     if (!manifest.compatibility.hosts.includes(spec.expectedHost)) {
       throw new Error(
         `${spec.name} compatibility.hosts 必须包含 ${spec.expectedHost}`,
       );
     }
+    const allowedOs = ["macos", "windows"];
     for (const os of ["macos", "windows"]) {
       if (!manifest.compatibility.os.includes(os)) {
         throw new Error(`${spec.name} compatibility.os 必须包含 ${os}`);
+      }
+    }
+    for (const os of manifest.compatibility.os) {
+      if (!allowedOs.includes(os)) {
+        throw new Error(
+          `${spec.name} compatibility.os 只允许声明 macos 和 windows`,
+        );
       }
     }
 

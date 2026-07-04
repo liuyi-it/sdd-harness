@@ -1,5 +1,6 @@
 import {
   appendFile,
+  cp,
   copyFile,
   mkdir,
   open,
@@ -13,6 +14,8 @@ import { dirname, join } from "node:path";
 
 import { z } from "zod";
 
+import { AuditLogger } from "../audit/audit-logger.js";
+import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { PHASES, type Phase } from "../contracts.js";
 import { SddError } from "../errors.js";
 
@@ -109,6 +112,7 @@ export class StateStore {
       >;
       if (raw.schemaVersion === "0.9.0") {
         // 只允许显式支持的迁移路径，避免在未知版本上做不安全的猜测。
+        const backupDirectory = await backupSddDirectory(this.root);
         const migrated = workflowStateSchema.parse({
           ...raw,
           schemaVersion: "1.0.0",
@@ -126,18 +130,28 @@ export class StateStore {
           `${new Date().toISOString()} 0.9.0 -> 1.0.0\n`,
           "utf8",
         );
-        await writeFile(
+        await new ArtifactWriter().write(
           join(this.root, ".sdd", "migration-report.md"),
           migrationReport({
             fromSchemaVersion: "0.9.0",
             toSchemaVersion: "1.0.0",
             nextVersion: migrated.version,
             backupPath: ".sdd/state.json.migration.bak",
+            backupDirectory,
             ...(typeof raw.version === "number"
               ? { previousVersion: raw.version }
               : {}),
           }),
-          "utf8",
+          {
+            fromSchemaVersion: "0.9.0",
+            toSchemaVersion: "1.0.0",
+            nextVersion: migrated.version,
+            backupPath: ".sdd/state.json.migration.bak",
+            backupDirectory,
+            ...(typeof raw.version === "number"
+              ? { previousVersion: raw.version }
+              : {}),
+          },
         );
         await this.write(migrated);
         return migrated;
@@ -187,6 +201,15 @@ export class StateStore {
     } catch {
       // Directory fsync is not supported by every Windows filesystem.
     }
+    await new AuditLogger(this.root).write({
+      command: "state.write",
+      phase: validated.currentPhase,
+      result: "PASS",
+      ...(validated.currentChangeId === null
+        ? {}
+        : { changeId: validated.currentChangeId }),
+      message: `state version ${validated.version}`,
+    });
   }
 
   async update(
@@ -360,6 +383,7 @@ function migrationReport(input: {
   previousVersion?: number;
   nextVersion: number;
   backupPath: string;
+  backupDirectory: string;
 }): string {
   return [
     "# 迁移报告",
@@ -372,7 +396,8 @@ function migrationReport(input: {
       ? []
       : [`- 迁移前 version：${input.previousVersion}`]),
     `- 迁移后 version：${input.nextVersion}`,
-    `- 备份文件：${input.backupPath}`,
+    `- 状态备份文件：${input.backupPath}`,
+    `- .sdd 目录备份：${input.backupDirectory}`,
     `- 迁移时间：${new Date().toISOString()}`,
     "",
     "## 结果",
@@ -380,6 +405,18 @@ function migrationReport(input: {
     "PASS",
     "",
   ].join("\n");
+}
+
+async function backupSddDirectory(root: string): Promise<string> {
+  const sddPath = join(root, ".sdd");
+  const backupName = ".sdd.migration.bak";
+  const backupPath = join(root, backupName);
+  await cp(sddPath, backupPath, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+  });
+  return backupName;
 }
 
 const TRANSIENT_PHASE_RECOVERY: Partial<

@@ -34,8 +34,10 @@ export interface PlanArtifacts {
   contextPacks: Record<string, string>;
 }
 
+type MaybePromise<T> = T | Promise<T>;
+
 export class TddEngine {
-  generateDesign(input: DesignInput): string {
+  generateDesign(input: DesignInput): MaybePromise<string> {
     return [
       "# Design",
       "",
@@ -91,7 +93,7 @@ export class TddEngine {
     ].join("\n");
   }
 
-  generatePlan(input: PlanInput): PlanArtifacts {
+  generatePlan(input: PlanInput): MaybePromise<PlanArtifacts> {
     const requirements = extractRequirements(input.spec);
     const task: TaskDefinition = {
       id: "TASK-001",

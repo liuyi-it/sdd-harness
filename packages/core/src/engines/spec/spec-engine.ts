@@ -23,6 +23,8 @@ export interface SpecArtifacts {
   spec: string;
 }
 
+type MaybePromise<T> = T | Promise<T>;
+
 const DETAIL_MARKERS = [
   "api",
   "endpoint",
@@ -58,7 +60,7 @@ export class SpecEngine {
     };
   }
 
-  generate(input: GenerateSpecInput): SpecArtifacts {
+  generate(input: GenerateSpecInput): MaybePromise<SpecArtifacts> {
     const answers = input.answers ?? {};
     const effectiveRequirement = [input.requirement, ...Object.values(answers)]
       .filter(Boolean)

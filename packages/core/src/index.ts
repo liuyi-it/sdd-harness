@@ -13,6 +13,7 @@ export * from "./install/project-installer.js";
 export * from "./git/git-inspector.js";
 export * from "./codebase/codebase-adapter.js";
 export * from "./dependencies.js";
+export * from "./dependency-integrity.js";
 export * from "./errors.js";
 export * from "./audit/audit-logger.js";
 export * from "./security/path-safety.js";

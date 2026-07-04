@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
@@ -20,6 +20,9 @@ export class GitInspector {
   constructor(private readonly root: string) {}
 
   async snapshot(): Promise<GitSnapshot> {
+    if (!(await isGitRepository(this.root))) {
+      return { available: false, files: [], hashes: {} };
+    }
     try {
       const { stdout } = await executeFile(
         "git",
@@ -53,6 +56,42 @@ export class GitInspector {
   }
 }
 
+export function snapshotFromJson(input: unknown): GitSnapshot | null {
+  if (
+    typeof input !== "object" ||
+    input === null ||
+    !("available" in input) ||
+    !("files" in input) ||
+    !("hashes" in input)
+  ) {
+    return null;
+  }
+  const candidate = input as {
+    available?: unknown;
+    files?: unknown;
+    hashes?: unknown;
+  };
+  if (
+    typeof candidate.available !== "boolean" ||
+    !Array.isArray(candidate.files) ||
+    typeof candidate.hashes !== "object" ||
+    candidate.hashes === null
+  ) {
+    return null;
+  }
+  if (
+    !candidate.files.every((file) => typeof file === "string") ||
+    !Object.values(candidate.hashes).every((hash) => typeof hash === "string")
+  ) {
+    return null;
+  }
+  return {
+    available: candidate.available,
+    files: candidate.files,
+    hashes: candidate.hashes as Record<string, string>,
+  };
+}
+
 function parsePorcelain(output: string): string[] {
   const records = output.split("\0").filter(Boolean);
   const files: string[] = [];
@@ -77,5 +116,14 @@ async function fileHash(path: string): Promise<string> {
       .digest("hex");
   } catch {
     return "deleted";
+  }
+}
+
+async function isGitRepository(root: string): Promise<boolean> {
+  try {
+    await access(join(root, ".git"));
+    return true;
+  } catch {
+    return false;
   }
 }

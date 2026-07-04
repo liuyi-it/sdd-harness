@@ -1,12 +1,15 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { artifactInputHash } from "../src/artifacts/artifact-writer.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
+import { createInitialState, StateStore } from "../src/state/state-store.js";
 
 // build 是行为最复杂的阶段之一，因此这里集中覆盖成功、失败、重试、暂停、超时和并行执行。
 const roots: string[] = [];
@@ -17,6 +20,15 @@ async function plannedProject(
   const root = await mkdtemp(join(tmpdir(), "sdd-build-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  execFileSync("git", ["init", "-b", "main"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "test@example.com"], {
+    cwd: root,
+  });
+  execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
+    cwd: root,
+  });
+  execFileSync("git", ["add", "README.md"], { cwd: root });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: root });
   const core = new Core({
     codebase: new CodebaseAdapter(),
     taskExecutor: executor,
@@ -71,6 +83,55 @@ describe("sdd build", () => {
         ),
       ),
     ).toMatchObject([{ taskId: "TASK-001", verification: [{ passed: true }] }]);
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/changes/add-cancel/git-baseline.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      available: true,
+      files: expect.any(Array),
+    });
+  }, 15_000);
+
+  it("warns when build starts with pre-existing uncommitted changes", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+      verification: [{ command: "npm test", passed: true, output: "1 passed" }],
+    });
+    const { root, core } = await plannedProject({ execute });
+    await writeFile(join(root, "README.md"), "# Orders changed\n", "utf8");
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("检测到执行前已有未提交修改"),
+      ]),
+    );
+  });
+
+  it("当 --change 与当前活动变更不一致时拒绝执行 build", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+      verification: [{ command: "npm test", passed: true, output: "1 passed" }],
+    });
+    const { root, core } = await plannedProject({ execute });
+
+    const result = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { changeId: "other-change" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: { code: "E_MISSING_CHANGE" },
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("blocks files outside the task scope", async () => {
@@ -89,6 +150,56 @@ describe("sdd build", () => {
       exitCode: 10,
       error: { code: "E_SECURITY_BLOCKED" },
     });
+  });
+
+  it("当 spec/design/tasks 变化导致 Context Pack 失效时要求重新执行 plan", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      modifiedFiles: ["src/order.ts"],
+      verification: [{ command: "npm test", passed: true, output: "passed" }],
+    });
+    const { root, core } = await plannedProject({ execute });
+    await writeFile(
+      join(root, ".sdd/changes/add-cancel/design.md"),
+      "# 用户修改后的设计\n",
+      "utf8",
+    );
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: {
+        code: "E_MISSING_ARTIFACT",
+        next: "sdd plan",
+      },
+    });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("当代码库索引变化导致 Context Pack 失效时要求重新执行 plan", async () => {
+    const execute = vi.fn().mockResolvedValue({
+      modifiedFiles: ["src/order.ts"],
+      verification: [{ command: "npm test", passed: true, output: "passed" }],
+    });
+    const { root, core } = await plannedProject({ execute });
+    await writeFile(
+      join(root, ".sdd/index/codebase-summary.md"),
+      "# Updated index summary\n",
+      "utf8",
+    );
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: {
+        code: "E_MISSING_ARTIFACT",
+        next: "sdd plan",
+      },
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("marks a failed task and can retry only failed tasks", async () => {
@@ -155,6 +266,40 @@ describe("sdd build", () => {
     });
   });
 
+  it("恢复 build 时若状态上下文与命令不匹配则返回 E_STATE_CORRUPTED", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-build-"));
+    roots.push(root);
+    await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+    await writeFile(join(root, ".sdd/state.json"), "{}\n", "utf8").catch(
+      () => undefined,
+    );
+    const store = new StateStore(root);
+    await store.write({
+      ...createInitialState(),
+      initialized: true,
+      currentChangeId: "add-cancel",
+      currentRunId: "run-1",
+      currentPhase: "FAILED",
+      previousPhase: "SPEC_READY",
+      inProgressPhase: "DESIGNING",
+      failedCommand: "sdd build",
+      suggestedCommand: "sdd build",
+      tasks: { "TASK-001": "DONE" },
+    });
+    const core = new Core({
+      codebase: new CodebaseAdapter(),
+      taskExecutor: { execute: vi.fn() },
+    });
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+  });
+
   it("runs independent non-overlapping tasks in parallel and stores isolated results", async () => {
     let active = 0;
     let peak = 0;
@@ -199,12 +344,54 @@ describe("sdd build", () => {
     ];
     await writeFile(
       join(change, "tasks.json"),
-      `${JSON.stringify(tasks)}\n`,
+      `${JSON.stringify(tasks, null, 2)}\n`,
+      "utf8",
+    );
+    const [spec, design, impact, codebaseSummary] = await Promise.all([
+      readFile(join(change, "spec.md"), "utf8"),
+      readFile(join(change, "design.md"), "utf8"),
+      readFile(join(change, "impact.md"), "utf8"),
+      readFile(join(root, ".sdd/index/codebase-summary.md"), "utf8"),
+    ]);
+    const tasksMarkdown = [
+      "# Tasks",
+      "",
+      "## TASK-001 Orders",
+      "",
+      "## TASK-002 Audit",
+      "",
+    ].join("\n");
+    await writeFile(join(change, "tasks.md"), tasksMarkdown, "utf8");
+    const codebaseIndexHash = artifactInputHash(codebaseSummary);
+    const sourceArtifactHash = artifactInputHash({
+      spec,
+      design,
+      impact,
+      tasksMarkdown,
+      tasksJson: JSON.stringify(tasks, null, 2),
+    });
+    const contextPack = [
+      "<!-- Context Pack Metadata",
+      `Codebase Index Hash: ${codebaseIndexHash}`,
+      `Source Artifact Hash: ${sourceArtifactHash}`,
+      "Generated At: 2026-07-04T00:00:00.000Z",
+      "-->",
+      "",
+      "# TASK",
+      "",
+      "Allowed Files",
+      "",
+      "Risk",
+      "",
+    ].join("\n");
+    await writeFile(
+      join(root, ".sdd/context-packs/add-cancel/TASK-001.md"),
+      contextPack.replace("# TASK", "# TASK-001"),
       "utf8",
     );
     await writeFile(
       join(root, ".sdd/context-packs/add-cancel/TASK-002.md"),
-      "# TASK-002",
+      contextPack.replace("# TASK", "# TASK-002"),
       "utf8",
     );
     const statePath = join(root, ".sdd/state.json");

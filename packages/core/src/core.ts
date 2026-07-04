@@ -9,7 +9,9 @@ import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
 import { runStatus } from "./commands/status.js";
 import {
+  COMMANDS,
   type CommandRequest,
+  type CommandName,
   type CommandResult,
   type SddCore,
 } from "./contracts.js";
@@ -48,9 +50,18 @@ export class Core implements SddCore {
   async execute(request: CommandRequest): Promise<CommandResult> {
     try {
       // status 是纯只读命令，不依赖完整的写命令分发流程。
-      if (request.command === "status") return await runStatus(request.cwd);
+      if (request.command === "status")
+        return withVerboseData(await runStatus(request.cwd), request);
       if (request.command === "init")
-        return await runInit(request.cwd, this.codebase);
+        return withVerboseData(
+          await runInit(
+            request.cwd,
+            this.codebase,
+            request.args,
+            request.signal,
+          ),
+          request,
+        );
       const current = await runStatus(request.cwd);
       // 已归档 change 进入只读模式，只允许重新 archive、查看状态或开启新 change。
       if (
@@ -62,21 +73,60 @@ export class Core implements SddCore {
       }
       if (request.command === "auto") return await this.runAuto(request);
       if (request.command === "new")
-        return await runNew(request.cwd, request.args, this.specEngine);
-      if (request.command === "design")
-        return await runDesign(request.cwd, this.tddEngine);
-      if (request.command === "plan")
-        return await runPlan(request.cwd, this.tddEngine);
-      if (request.command === "build")
-        return await runBuild(
-          request.cwd,
-          this.taskExecutor,
-          request.signal,
-          request.args,
+        return withVerboseData(
+          await runNew(
+            request.cwd,
+            request.args,
+            this.specEngine,
+            request.signal,
+          ),
+          request,
         );
-      if (request.command === "verify") return await runVerify(request.cwd);
-      if (request.command === "review") return await runReview(request.cwd);
-      if (request.command === "archive") return await runArchive(request.cwd);
+      if (request.command === "design")
+        return withVerboseData(
+          await runDesign(
+            request.cwd,
+            this.tddEngine,
+            request.args,
+            request.signal,
+          ),
+          request,
+        );
+      if (request.command === "plan")
+        return withVerboseData(
+          await runPlan(
+            request.cwd,
+            this.tddEngine,
+            request.args,
+            request.signal,
+          ),
+          request,
+        );
+      if (request.command === "build")
+        return withVerboseData(
+          await runBuild(
+            request.cwd,
+            this.taskExecutor,
+            request.signal,
+            request.args,
+          ),
+          request,
+        );
+      if (request.command === "verify")
+        return withVerboseData(
+          await runVerify(request.cwd, request.args, request.signal),
+          request,
+        );
+      if (request.command === "review")
+        return withVerboseData(
+          await runReview(request.cwd, request.args, request.signal),
+          request,
+        );
+      if (request.command === "archive")
+        return withVerboseData(
+          await runArchive(request.cwd, request.args, request.signal),
+          request,
+        );
       const status = await runStatus(request.cwd);
       if (status.state === "NOT_INITIALIZED") {
         throw new SddError(
@@ -97,12 +147,15 @@ export class Core implements SddCore {
         state: "FAILED" as const,
         exitCode: error.exitCode,
       }));
-      return {
-        ok: false,
-        state: status.state,
-        exitCode: error.exitCode,
-        error: error.toCommandError(),
-      };
+      return withVerboseData(
+        {
+          ok: false,
+          state: status.state,
+          exitCode: error.exitCode,
+          error: error.toCommandError(),
+        },
+        request,
+      );
     }
   }
 
@@ -115,28 +168,25 @@ export class Core implements SddCore {
         "sdd init",
       );
     }
-    const commandByPhase = {
-      INDEX_READY: "new",
-      SPEC_READY: "design",
-      DESIGN_READY: "plan",
-      PLAN_READY: "build",
-      BUILD_READY: "verify",
-      VERIFY_READY: "review",
-      REVIEW_READY: "archive",
-    } as const;
+    const commandByPhase: Partial<Record<CommandResult["state"], CommandName>> =
+      {
+        INDEX_READY: "new",
+        SPEC_READY: "design",
+        DESIGN_READY: "plan",
+        PLAN_READY: "build",
+        BUILD_READY: "verify",
+        VERIFY_READY: "review",
+        REVIEW_READY: "archive",
+      };
     // auto 只是阶段编排器，不会绕过任何单阶段命令自身的安全检查。
     for (let step = 0; step < 8; step += 1) {
-      if (status.state === "ARCHIVED" || status.state === "CLARIFYING")
-        return status;
-      const command =
-        commandByPhase[status.state as keyof typeof commandByPhase];
+      if (status.state === "ARCHIVED") return status;
+      const command = autoCommand(status, request.args, commandByPhase);
       if (command === undefined) return status;
       const result = await this.execute({
         command,
         cwd: request.cwd,
-        ...(command === "new" && request.args !== undefined
-          ? { args: request.args }
-          : {}),
+        ...(request.args === undefined ? {} : { args: request.args }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
       if (
@@ -152,4 +202,87 @@ export class Core implements SddCore {
       "auto 流程超过了允许的最大阶段推进次数",
     );
   }
+}
+
+function withVerboseData(
+  result: CommandResult,
+  request: CommandRequest,
+): CommandResult {
+  if (request.args?.verbose !== true) return result;
+  const debug = {
+    command: request.command,
+    cwd: request.cwd,
+    verbose: true,
+    ...(request.args === undefined ? {} : { args: request.args }),
+  };
+  if (
+    result.data !== undefined &&
+    typeof result.data === "object" &&
+    result.data !== null &&
+    !Array.isArray(result.data)
+  ) {
+    return {
+      ...result,
+      data: {
+        ...result.data,
+        debug,
+      },
+    };
+  }
+  return {
+    ...result,
+    data:
+      result.data === undefined
+        ? { debug }
+        : {
+            value: result.data,
+            debug,
+          },
+  };
+}
+
+function autoCommand(
+  status: CommandResult,
+  args: Record<string, unknown> | undefined,
+  commandByPhase: Partial<Record<CommandResult["state"], CommandName>>,
+): CommandName | undefined {
+  if (status.state === "CLARIFYING") {
+    return hasAnswers(args) ? "new" : undefined;
+  }
+  if (status.state === "FAILED" || status.state === "PAUSED") {
+    const state = status.data as
+      | {
+          failedCommand?: string | null;
+          interruptedCommand?: string | null;
+          suggestedCommand?: string | null;
+        }
+      | undefined;
+    return parseCommandName(
+      state?.interruptedCommand ??
+        state?.failedCommand ??
+        state?.suggestedCommand ??
+        status.next,
+    );
+  }
+  return commandByPhase[status.state];
+}
+
+function hasAnswers(args: Record<string, unknown> | undefined): boolean {
+  const answers = args?.answers;
+  return (
+    answers !== undefined &&
+    typeof answers === "object" &&
+    answers !== null &&
+    Object.keys(answers).length > 0
+  );
+}
+
+function parseCommandName(
+  input: string | undefined | null,
+): CommandName | undefined {
+  if (input === undefined || input === null) return undefined;
+  const normalized = input.replace(/^\/?sdd[.\s]/, "") as CommandName;
+  return (COMMANDS as readonly string[]).includes(normalized)
+    ? normalized
+    : undefined;
 }

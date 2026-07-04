@@ -2,10 +2,12 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
+import { artifactInputHash } from "../artifacts/artifact-writer.js";
 import {
   type TaskExecutionResult,
   type TaskExecutor,
 } from "../build/task-executor.js";
+import { assertRecoverableCommandState, canResumeCommand } from "./recovery.js";
 import { type CommandResult } from "../contracts.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
@@ -14,6 +16,7 @@ import { isCommandAllowed } from "../security/shell-policy.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
+import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 
 /**
  * build 阶段负责调度任务执行器、校验真实改动范围，并把执行证据固化到 `.sdd/`。
@@ -30,13 +33,13 @@ export async function runBuild(
   rawArgs?: Record<string, unknown>,
 ): Promise<CommandResult> {
   const lock = new FileLock(root);
-  await lock.acquire("sdd build");
+  await lock.acquire("sdd build", undefined, lockOptions(rawArgs));
   const store = new StateStore(root);
   const activeTasks = new Set<string>();
   try {
     const state = await store.read();
-    const retrying =
-      state.currentPhase === "FAILED" && state.failedCommand === "sdd build";
+    const retrying = canResumeCommand(state, "sdd build");
+    assertRecoverableCommandState(state, "sdd build");
     if (state.currentPhase !== "PLAN_READY" && !retrying) {
       throw new SddError(
         "E_INVALID_PHASE_COMMAND",
@@ -44,13 +47,13 @@ export async function runBuild(
         state.suggestedCommand ?? undefined,
       );
     }
-    if (state.currentChangeId === null)
-      throw new SddError("E_MISSING_CHANGE", "当前没有进行中的变更");
-    const changeId = state.currentChangeId;
+    const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
+    await assertChangeWritable(root, changeId);
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = JSON.parse(
       await readFile(join(change, "tasks.json"), "utf8"),
     ) as TaskDefinition[];
+    await assertFreshContextPacks(root, changeId, tasks);
     const previousResults = await readResults(
       join(change, "task-results.json"),
     );
@@ -76,6 +79,17 @@ export async function runBuild(
     const remaining = tasks.filter((task) => !completed.has(task.id));
     const git = new GitInspector(root);
     let gitBefore = await git.snapshot();
+    const warnings =
+      gitBefore.available && gitBefore.files.length > 0
+        ? [
+            `检测到执行前已有未提交修改：${gitBefore.files.slice(0, 5).join(", ")}${gitBefore.files.length > 5 ? ` 等 ${gitBefore.files.length} 个文件` : ""}`,
+          ]
+        : [];
+    await writeFile(
+      join(change, "git-baseline.json"),
+      `${JSON.stringify(gitBefore, null, 2)}\n`,
+      "utf8",
+    );
     while (remaining.length > 0) {
       // 只有依赖已经全部完成的任务才允许进入当前批次。
       const readyTasks = remaining.filter((task) =>
@@ -197,14 +211,17 @@ export async function runBuild(
       exitCode: 0,
       changeId,
       next: "sdd verify",
+      ...(warnings.length === 0 ? {} : { warnings }),
     };
   } catch (error) {
     if (error instanceof SddError) {
       await store.update((current) => ({
         ...current,
         currentPhase: error.exitCode === 130 ? "PAUSED" : "FAILED",
-        inProgressPhase: null,
+        previousPhase: "PLAN_READY",
+        inProgressPhase: "BUILDING",
         failedCommand: error.exitCode === 130 ? null : "sdd build",
+        failedReason: error.exitCode === 130 ? null : error.message,
         interruptedCommand: error.exitCode === 130 ? "sdd build" : null,
         lastError: error.code,
         suggestedCommand: "sdd build",
@@ -230,6 +247,75 @@ export async function runBuild(
   } finally {
     await lock.release();
   }
+}
+
+function lockOptions(args: Record<string, unknown> | undefined): {
+  timeoutMs?: number;
+} {
+  const timeoutMs = timeoutMilliseconds(args);
+  return timeoutMs === undefined ? {} : { timeoutMs };
+}
+
+async function assertFreshContextPacks(
+  root: string,
+  changeId: string,
+  tasks: TaskDefinition[],
+): Promise<void> {
+  const [spec, design, impact, tasksMarkdown, rawTasksJson, codebaseSummary] =
+    await Promise.all([
+      readFile(join(root, ".sdd", "changes", changeId, "spec.md"), "utf8"),
+      readFile(join(root, ".sdd", "changes", changeId, "design.md"), "utf8"),
+      readFile(join(root, ".sdd", "changes", changeId, "impact.md"), "utf8"),
+      readFile(join(root, ".sdd", "changes", changeId, "tasks.md"), "utf8"),
+      readFile(join(root, ".sdd", "changes", changeId, "tasks.json"), "utf8"),
+      readFile(join(root, ".sdd", "index", "codebase-summary.md"), "utf8"),
+    ]);
+  const tasksJson = JSON.stringify(JSON.parse(rawTasksJson), null, 2);
+  const expectedCodebaseHash = artifactInputHash(codebaseSummary);
+  const expectedSourceHash = artifactInputHash({
+    spec,
+    design,
+    impact,
+    tasksMarkdown,
+    tasksJson,
+  });
+  for (const task of tasks) {
+    const contextPack = await readFile(
+      join(root, ".sdd", "context-packs", changeId, `${task.id}.md`),
+      "utf8",
+    );
+    const metadata = readContextPackMetadata(contextPack);
+    if (
+      metadata.codebaseIndexHash !== expectedCodebaseHash ||
+      metadata.sourceArtifactHash !== expectedSourceHash
+    ) {
+      throw new SddError(
+        "E_MISSING_ARTIFACT",
+        `Context Pack ${task.id} 已失效，请重新执行 sdd plan`,
+        "sdd plan",
+      );
+    }
+  }
+}
+
+function readContextPackMetadata(content: string): {
+  codebaseIndexHash: string;
+  sourceArtifactHash: string;
+} {
+  const codebaseIndexHash = content.match(
+    /^Codebase Index Hash: (sha256:[a-f0-9]{64})$/m,
+  )?.[1];
+  const sourceArtifactHash = content.match(
+    /^Source Artifact Hash: (sha256:[a-f0-9]{64})$/m,
+  )?.[1];
+  if (codebaseIndexHash === undefined || sourceArtifactHash === undefined) {
+    throw new SddError(
+      "E_MISSING_ARTIFACT",
+      "Context Pack 元数据缺失或损坏，请重新执行 sdd plan",
+      "sdd plan",
+    );
+  }
+  return { codebaseIndexHash, sourceArtifactHash };
 }
 
 function selectParallelBatch(tasks: TaskDefinition[]): TaskDefinition[] {

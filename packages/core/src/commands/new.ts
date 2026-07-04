@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
@@ -8,6 +8,14 @@ import type { SpecEngine } from "../engines/spec/spec-engine.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
+import {
+  assertRecoverableCommandState,
+  canResumeCommand,
+  normalizeCommandError,
+  persistCommandFailure,
+  previousStablePhase,
+} from "./recovery.js";
+import { timeoutMilliseconds, withTimeout } from "./timeout.js";
 
 /**
  * new 阶段负责接收粗略需求、提出阻塞问题，并在信息充分后生成首批规格制品。
@@ -24,17 +32,24 @@ export async function runNew(
   root: string,
   rawArgs: Record<string, unknown> | undefined,
   engine: SpecEngine,
+  signal?: AbortSignal,
 ): Promise<CommandResult> {
   const args = parseArgs(rawArgs);
   const lock = new FileLock(root);
-  await lock.acquire("sdd new");
+  await lock.acquire("sdd new", args.changeId, lockOptions(rawArgs));
+  const store = new StateStore(root);
+  let started = false;
+  let previousPhase: CommandResult["state"] = "INDEX_READY";
   try {
-    const store = new StateStore(root);
     let state = await store.read();
+    const retrying = canResumeCommand(state, "sdd new");
+    assertRecoverableCommandState(state, "sdd new");
+    previousPhase = previousStablePhase(state, "INDEX_READY");
     if (
       state.currentPhase !== "INDEX_READY" &&
       state.currentPhase !== "CLARIFYING" &&
-      state.currentPhase !== "ARCHIVED"
+      state.currentPhase !== "ARCHIVED" &&
+      !retrying
     ) {
       throw new SddError(
         state.currentChangeId === null
@@ -44,10 +59,9 @@ export async function runNew(
         state.suggestedCommand ?? undefined,
       );
     }
-    const continuing = state.currentPhase === "CLARIFYING";
+    const continuing = state.currentPhase === "CLARIFYING" || retrying;
     const parentChangeId =
       state.currentPhase === "ARCHIVED" ? state.currentChangeId : null;
-    const startingPhase = state.currentPhase;
     const changeId = continuing ? state.currentChangeId : args.changeId;
     if (changeId === null || changeId === undefined) {
       throw new SddError("E_MISSING_CHANGE", "缺少必需的变更 id");
@@ -67,18 +81,28 @@ export async function runNew(
     if (requirement === undefined || requirement.trim() === "") {
       throw new SddError("E_MISSING_ARTIFACT", "需求内容不能为空");
     }
-    if (!continuing)
-      await writeFile(join(runDirectory, "input.md"), requirement, "utf8");
+    if (!continuing) {
+      await new ArtifactWriter().write(
+        join(runDirectory, "input.md"),
+        requirement,
+        {
+          changeId,
+          requirement,
+        },
+      );
+    }
     state = await store.update((current) => ({
       ...current,
       currentChangeId: changeId,
       currentRunId: runId,
       currentPhase: "NEW_STARTED",
       inProgressPhase: "NEW_STARTED",
-      previousPhase: startingPhase,
+      previousPhase,
       lastCommand: "sdd new",
+      lastError: null,
       suggestedCommand: "sdd new",
     }));
+    started = true;
 
     const codebaseSummary = await readFile(
       join(root, ".sdd/index/codebase-summary.md"),
@@ -94,7 +118,12 @@ export async function runNew(
       codebaseSummary,
       ...(args.answers === undefined ? {} : { answers: args.answers }),
     };
-    const preview = engine.generate(generationInput);
+    const preview = await withTimeout(
+      Promise.resolve(engine.generate(generationInput)),
+      timeoutMilliseconds(rawArgs),
+      "sdd new",
+      signal,
+    );
     if (parentChangeId !== null) {
       preview.proposal = `${preview.proposal}\n\n## Based On Archived Change\n\n- ${parentChangeId}`;
     }
@@ -114,9 +143,12 @@ export async function runNew(
         await store.update((current) => ({
           ...current,
           currentPhase: "FAILED",
-          inProgressPhase: null,
-          previousPhase: "INDEX_READY",
+          inProgressPhase: "NEW_STARTED",
+          previousPhase,
           failedCommand: "sdd new",
+          failedReason: "非交互模式下 BLOCKER 问题必须提供答案",
+          interruptedCommand: null,
+          recoverable: true,
           lastError: "E_UNRESOLVED_BLOCKER",
           suggestedCommand: "sdd new",
         }));
@@ -155,7 +187,12 @@ export async function runNew(
       };
     }
 
-    const artifacts = engine.generate(generationInput);
+    const artifacts = await withTimeout(
+      Promise.resolve(engine.generate(generationInput)),
+      timeoutMilliseconds(rawArgs),
+      "sdd new",
+      signal,
+    );
     for (const [name, content] of Object.entries({
       "answers.md": artifacts.answers,
       "assumptions.md": artifacts.assumptions,
@@ -177,6 +214,9 @@ export async function runNew(
         impact: "READY",
         spec: "READY",
       },
+      failedReason: null,
+      interruptedCommand: null,
+      recoverable: true,
       suggestedCommand: "sdd design",
       lastError: null,
       failedCommand: null,
@@ -194,9 +234,30 @@ export async function runNew(
       changeId,
       next: "sdd design",
     };
+  } catch (error) {
+    const normalized = normalizeCommandError(
+      error,
+      "E_STATE_CORRUPTED",
+      "sdd new",
+    );
+    if (started && normalized.code !== "E_UNRESOLVED_BLOCKER") {
+      await persistCommandFailure(store, normalized, {
+        command: "sdd new",
+        previousPhase,
+        inProgressPhase: "NEW_STARTED",
+      });
+    }
+    throw normalized;
   } finally {
     await lock.release();
   }
+}
+
+function lockOptions(args: Record<string, unknown> | undefined): {
+  timeoutMs?: number;
+} {
+  const timeoutMs = timeoutMilliseconds(args);
+  return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
 function parseArgs(args: Record<string, unknown> | undefined): NewArgs {

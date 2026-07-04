@@ -55,7 +55,12 @@ export class ArtifactWriter {
     path: string,
     content: string,
     inputs: unknown,
+    options: { force?: boolean } = {},
   ): Promise<"written" | "unchanged" | "candidate"> {
+    if (options.force === true) {
+      await this.write(path, content, inputs);
+      return "written";
+    }
     try {
       const [currentContent, metadataText] = await Promise.all([
         readFile(path, "utf8"),

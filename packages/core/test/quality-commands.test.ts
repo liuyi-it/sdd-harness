@@ -1,11 +1,16 @@
-import { access, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
+import { GitInspector } from "../src/git/git-inspector.js";
+
+type RmFunction = typeof rm;
 
 // 这组测试把 verify/review/archive 串起来，验证“完成证据”最终能沉淀成可追踪归档。
 const roots: string[] = [];
@@ -14,6 +19,15 @@ async function builtProject(): Promise<{ root: string; core: Core }> {
   const root = await mkdtemp(join(tmpdir(), "sdd-quality-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  execFileSync("git", ["init", "-b", "main"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "test@example.com"], {
+    cwd: root,
+  });
+  execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
+    cwd: root,
+  });
+  execFileSync("git", ["add", "README.md"], { cwd: root });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: root });
   const core = new Core({
     codebase: new CodebaseAdapter(),
     taskExecutor: {
@@ -41,15 +55,38 @@ async function builtProject(): Promise<{ root: string; core: Core }> {
 
 afterEach(async () => {
   const { rm } = await import("node:fs/promises");
-  await Promise.all(
-    roots.splice(0).map((root) => rm(root, { recursive: true })),
-  );
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  await Promise.all(roots.splice(0).map((root) => removeRetry(root, rm)));
+  vi.restoreAllMocks();
 });
+
+async function removeRetry(root: string, rm: RmFunction): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await rm(root, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (
+        !(error instanceof Error) ||
+        !("code" in error) ||
+        error.code !== "ENOTEMPTY" ||
+        attempt === 4
+      ) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  }
+}
 
 describe("quality commands", () => {
   it("verifies requirement, task, acceptance, and test coverage", async () => {
     const { root, core } = await builtProject();
-    const result = await core.execute({ command: "verify", cwd: root });
+    const result = await core.execute({
+      command: "verify",
+      cwd: root,
+      args: { changeId: "add-cancel" },
+    });
     expect(result).toMatchObject({
       ok: true,
       state: "VERIFY_READY",
@@ -61,12 +98,108 @@ describe("quality commands", () => {
         "utf8",
       ),
     ).toContain("## Result\n\nPASS");
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/changes/add-cancel/verify-report.md.meta.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.0.0",
+      generatedBy: "sdd-harness",
+      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      createdAt: expect.any(String),
+    });
+  }, 15_000);
+
+  it("当 Git 未变化时重复执行 verify 直接复用上次结果", async () => {
+    const { root, core } = await builtProject();
+
+    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
+      ok: true,
+      state: "VERIFY_READY",
+      next: "sdd review",
+    });
+
+    const repeated = await core.execute({ command: "verify", cwd: root });
+
+    expect(repeated).toMatchObject({
+      ok: true,
+      state: "VERIFY_READY",
+      next: "sdd review",
+      data: { alreadyReady: true },
+    });
+  });
+
+  it("当 --change 与当前活动变更不一致时拒绝执行 verify", async () => {
+    const { root, core } = await builtProject();
+
+    const result = await core.execute({
+      command: "verify",
+      cwd: root,
+      args: { changeId: "other-change" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "BUILD_READY",
+      error: { code: "E_MISSING_CHANGE" },
+    });
+  });
+
+  it("fails verify when post-build drift introduces files outside task results", async () => {
+    const { root, core } = await builtProject();
+    await writeFile(join(root, "notes.txt"), "manual drift\n", "utf8");
+
+    const result = await core.execute({ command: "verify", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: { code: "E_VERIFY_FAILED", next: "sdd verify" },
+    });
+    expect(
+      await readFile(
+        join(root, ".sdd/changes/add-cancel/verify-report.md"),
+        "utf8",
+      ),
+    ).toContain("未跟踪到任务结果的变更文件：notes.txt");
+  });
+
+  it("verify 在超时后进入 FAILED", async () => {
+    const { root, core } = await builtProject();
+    const originalSnapshot = GitInspector.prototype.snapshot;
+    vi.spyOn(GitInspector.prototype, "snapshot").mockImplementation(
+      async function (this: GitInspector) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return await originalSnapshot.call(this);
+      },
+    );
+
+    const result = await core.execute({
+      command: "verify",
+      cwd: root,
+      args: { timeout: 0.01 },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      exitCode: 124,
+      error: { code: "E_TIMEOUT", next: "sdd verify" },
+    });
   });
 
   it("reviews scope and implementation evidence", async () => {
     const { root, core } = await builtProject();
     await core.execute({ command: "verify", cwd: root });
-    const result = await core.execute({ command: "review", cwd: root });
+    const result = await core.execute({
+      command: "review",
+      cwd: root,
+      args: { changeId: "add-cancel" },
+    });
     expect(result).toMatchObject({
       ok: true,
       state: "REVIEW_READY",
@@ -78,6 +211,102 @@ describe("quality commands", () => {
         "utf8",
       ),
     ).toContain("## Result\n\nPASS");
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/changes/add-cancel/review-report.md.meta.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.0.0",
+      generatedBy: "sdd-harness",
+      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      createdAt: expect.any(String),
+    });
+  });
+
+  it("当 Git 未变化时重复执行 review 直接复用上次结果", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+
+    expect(await core.execute({ command: "review", cwd: root })).toMatchObject({
+      ok: true,
+      state: "REVIEW_READY",
+      next: "sdd archive",
+    });
+
+    const repeated = await core.execute({ command: "review", cwd: root });
+
+    expect(repeated).toMatchObject({
+      ok: true,
+      state: "REVIEW_READY",
+      next: "sdd archive",
+      data: { alreadyReady: true },
+    });
+  });
+
+  it("当 --change 与当前活动变更不一致时拒绝执行 review", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+
+    const result = await core.execute({
+      command: "review",
+      cwd: root,
+      args: { changeId: "other-change" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "VERIFY_READY",
+      error: { code: "E_MISSING_CHANGE" },
+    });
+  });
+
+  it("fails review when verify之后又出现无关改动", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await writeFile(join(root, "notes.txt"), "manual drift\n", "utf8");
+
+    const result = await core.execute({ command: "review", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: { code: "E_REVIEW_FAILED", next: "sdd review" },
+    });
+    expect(
+      await readFile(
+        join(root, ".sdd/changes/add-cancel/review-report.md"),
+        "utf8",
+      ),
+    ).toContain("未跟踪到任务结果的变更文件：notes.txt");
+  });
+
+  it("review 在超时后进入 FAILED", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    const originalSnapshot = GitInspector.prototype.snapshot;
+    vi.spyOn(GitInspector.prototype, "snapshot").mockImplementation(
+      async function (this: GitInspector) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return await originalSnapshot.call(this);
+      },
+    );
+
+    const result = await core.execute({
+      command: "review",
+      cwd: root,
+      args: { timeout: 0.01 },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      exitCode: 124,
+      error: { code: "E_TIMEOUT", next: "sdd review" },
+    });
   });
 
   it("archives traceability and makes the change read-only", async () => {
@@ -94,6 +323,34 @@ describe("quality commands", () => {
     await expect(
       access(join(root, ".sdd/changes/add-cancel/archive-report.md")),
     ).resolves.toBeUndefined();
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/changes/add-cancel/traceability.md.meta.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.0.0",
+      generatedBy: "sdd-harness",
+      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      createdAt: expect.any(String),
+    });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/changes/add-cancel/archive-report.md.meta.json"),
+          "utf8",
+        ),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.0.0",
+      generatedBy: "sdd-harness",
+      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      createdAt: expect.any(String),
+    });
     await expect(
       access(join(root, ".sdd/changes/add-cancel/.archived")),
     ).resolves.toBeUndefined();
@@ -111,6 +368,84 @@ describe("quality commands", () => {
       error: { code: "E_ARCHIVED_READONLY" },
     });
   });
+
+  it("即使 state 被误改，只要存在 .archived 也拒绝再次写入", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    await core.execute({ command: "archive", cwd: root });
+
+    const statePath = join(root, ".sdd/state.json");
+    const state = JSON.parse(await readFile(statePath, "utf8")) as {
+      currentPhase: string;
+      suggestedCommand: string | null;
+    };
+    await writeFile(
+      statePath,
+      `${JSON.stringify(
+        {
+          ...state,
+          currentPhase: "BUILD_READY",
+          suggestedCommand: "sdd verify",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
+
+    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_ARCHIVED_READONLY" },
+    });
+  });
+
+  it("当 --change 与当前活动变更不一致时拒绝执行 archive", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+
+    const result = await core.execute({
+      command: "archive",
+      cwd: root,
+      args: { changeId: "other-change" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "REVIEW_READY",
+      error: { code: "E_MISSING_CHANGE" },
+    });
+  });
+
+  it("archive 在超时后进入 FAILED", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const originalWrite = ArtifactWriter.prototype.write;
+    vi.spyOn(ArtifactWriter.prototype, "write").mockImplementation(
+      async function (
+        this: ArtifactWriter,
+        ...args: Parameters<ArtifactWriter["write"]>
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return await originalWrite.apply(this, args);
+      },
+    );
+
+    const result = await core.execute({
+      command: "archive",
+      cwd: root,
+      args: { timeout: 0.01 },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      exitCode: 124,
+      error: { code: "E_TIMEOUT", next: "sdd archive" },
+    });
+  }, 15_000);
 
   it("allows a new change after archive and references the archived change", async () => {
     const { root, core } = await builtProject();
@@ -140,4 +475,41 @@ describe("quality commands", () => {
       ),
     ).toContain("add-cancel");
   });
+
+  it("persists FAILED recovery context when archive lacks required artifacts and can retry", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const reviewReportPath = join(
+      root,
+      ".sdd/changes/add-cancel/review-report.md",
+    );
+    const reviewReport = await readFile(reviewReportPath, "utf8");
+    await rm(reviewReportPath);
+
+    const failed = await core.execute({ command: "archive", cwd: root });
+
+    expect(failed).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: { code: "E_MISSING_ARTIFACT", next: "sdd archive" },
+    });
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({
+      currentPhase: "FAILED",
+      previousPhase: "REVIEW_READY",
+      inProgressPhase: "ARCHIVING",
+      failedCommand: "sdd archive",
+      suggestedCommand: "sdd archive",
+    });
+
+    await writeFile(reviewReportPath, reviewReport, "utf8");
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      {
+        ok: true,
+        state: "ARCHIVED",
+      },
+    );
+  }, 15_000);
 });
