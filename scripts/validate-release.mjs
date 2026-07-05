@@ -1,7 +1,8 @@
 /* global URL, console, process */
 
-import { access, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { access, readdir, readFile } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
@@ -20,6 +21,31 @@ const pluginSpecs = [
     manifestPath: "packages/codex-plugin/.codex-plugin/plugin.json",
     entryDir: "packages/codex-plugin",
     expectedHost: "codex",
+  },
+];
+
+const vendorSpecs = [
+  {
+    directory: "openspec",
+    metadata: {
+      name: "OpenSpec",
+      version: "v1.4.1",
+      commit: "1b06fddd59d8e592d5b5794a1970b22867e85b1f",
+      repository: "https://github.com/Fission-AI/OpenSpec",
+      license: "MIT",
+      localModifications: "None; adapters live outside upstream/.",
+    },
+  },
+  {
+    directory: "superpowers",
+    metadata: {
+      name: "Superpowers",
+      version: "v6.1.1",
+      commit: "d884ae04edebef577e82ff7c4e143debd0bbec99",
+      repository: "https://github.com/obra/superpowers",
+      license: "MIT",
+      localModifications: "None; adapters live outside upstream/.",
+    },
   },
 ];
 
@@ -88,6 +114,90 @@ export async function validateReleaseLayout(root = repoRoot) {
 
     await ensureReadable(join(root, spec.entryDir, manifest.entry));
   }
+
+  for (const spec of vendorSpecs) {
+    await validateVendorSnapshot(root, spec);
+  }
+}
+
+async function validateVendorSnapshot(root, spec) {
+  const vendorRoot = join(root, "vendor", spec.directory);
+  const upstreamRoot = join(vendorRoot, "upstream");
+  const metadata = JSON.parse(
+    await readFile(join(vendorRoot, "VERSION.json"), "utf8"),
+  );
+
+  for (const [field, expected] of Object.entries(spec.metadata)) {
+    if (metadata[field] !== expected) {
+      throw new Error(
+        `${spec.directory} VERSION.json 的 ${field} 必须是 ${expected}`,
+      );
+    }
+  }
+
+  await ensureReadable(join(upstreamRoot, "LICENSE"));
+  const manifest = parseManifest(
+    await readFile(join(vendorRoot, "MANIFEST.sha256"), "utf8"),
+    spec.directory,
+  );
+  const actualPaths = await listFiles(upstreamRoot);
+  const actualSet = new Set(actualPaths);
+
+  for (const path of manifest.keys()) {
+    if (!actualSet.has(path)) {
+      throw new Error(`${spec.directory} 快照缺少清单文件：upstream/${path}`);
+    }
+  }
+  for (const path of actualPaths) {
+    if (!manifest.has(path)) {
+      throw new Error(`${spec.directory} 快照存在清单外文件：upstream/${path}`);
+    }
+  }
+  for (const [path, expectedDigest] of manifest) {
+    const digest = createHash("sha256")
+      .update(await readFile(join(upstreamRoot, path)))
+      .digest("hex");
+    if (digest !== expectedDigest) {
+      throw new Error(`${spec.directory} 快照文件摘要不一致：upstream/${path}`);
+    }
+  }
+}
+
+function parseManifest(content, directory) {
+  const entries = new Map();
+  for (const line of content.trimEnd().split("\n")) {
+    const match = /^([a-f0-9]{64}) {2}upstream\/(.+)$/.exec(line);
+    if (
+      !match ||
+      match[2].startsWith("/") ||
+      match[2].split("/").includes("..")
+    ) {
+      throw new Error(`${directory} MANIFEST.sha256 包含无效条目：${line}`);
+    }
+    if (entries.has(match[2])) {
+      throw new Error(`${directory} MANIFEST.sha256 包含重复条目：${match[2]}`);
+    }
+    entries.set(match[2], match[1]);
+  }
+  return entries;
+}
+
+async function listFiles(root) {
+  const files = [];
+
+  async function visit(directory) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolutePath = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        await visit(absolutePath);
+      } else {
+        files.push(relative(root, absolutePath).split(sep).join("/"));
+      }
+    }
+  }
+
+  await visit(root);
+  return files.sort();
 }
 
 function assertString(value, field) {

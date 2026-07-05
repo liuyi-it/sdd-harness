@@ -24,13 +24,47 @@ describe("第三方依赖元数据", () => {
     }
 
     for (const path of [
-      "vendor/openspec/LICENSE",
-      "vendor/superpowers/LICENSE",
+      "vendor/openspec/upstream/LICENSE",
+      "vendor/superpowers/upstream/LICENSE",
     ]) {
       await expect(access(join(process.cwd(), path))).resolves.toBeUndefined();
       expect(await readFile(join(process.cwd(), path), "utf8")).toContain(
         "MIT License",
       );
+    }
+  });
+
+  it("固定完整上游快照的来源、版本与本地修改声明", async () => {
+    const expected = {
+      openspec: {
+        name: "OpenSpec",
+        version: "v1.4.1",
+        commit: "1b06fddd59d8e592d5b5794a1970b22867e85b1f",
+        repository: "https://github.com/Fission-AI/OpenSpec",
+        license: "MIT",
+        localModifications: "None; adapters live outside upstream/.",
+      },
+      superpowers: {
+        name: "Superpowers",
+        version: "v6.1.1",
+        commit: "d884ae04edebef577e82ff7c4e143debd0bbec99",
+        repository: "https://github.com/obra/superpowers",
+        license: "MIT",
+        localModifications: "None; adapters live outside upstream/.",
+      },
+    };
+
+    for (const [directory, metadata] of Object.entries(expected)) {
+      const vendorRoot = join(process.cwd(), "vendor", directory);
+      expect(
+        JSON.parse(await readFile(join(vendorRoot, "VERSION.json"), "utf8")),
+      ).toEqual(metadata);
+      expect(
+        await readFile(join(vendorRoot, "MANIFEST.sha256"), "utf8"),
+      ).toMatch(/^[a-f0-9]{64} {2}upstream\/.+$/m);
+      expect(
+        await readFile(join(vendorRoot, "upstream/LICENSE"), "utf8"),
+      ).toContain("MIT License");
     }
   });
 });

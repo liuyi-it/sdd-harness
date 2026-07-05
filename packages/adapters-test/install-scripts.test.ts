@@ -8,6 +8,7 @@ import {
   installCodexPlugin,
   prepareClaudeInstall,
 } from "../../scripts/install-shared.mjs";
+import { createVendorManifest } from "../../scripts/vendor-manifest.mjs";
 
 const roots: string[] = [];
 
@@ -230,6 +231,21 @@ async function createPluginRepo() {
     "export {};",
     "utf8",
   );
+  for (const vendor of ["openspec", "superpowers"]) {
+    const vendorRoot = join(root, "vendor", vendor);
+    await mkdir(join(vendorRoot, "upstream"), { recursive: true });
+    await writeFile(
+      join(vendorRoot, "VERSION.json"),
+      await readFile(join(process.cwd(), "vendor", vendor, "VERSION.json")),
+    );
+    await writeFile(
+      join(vendorRoot, "upstream", "LICENSE"),
+      await readFile(
+        join(process.cwd(), "vendor", vendor, "upstream", "LICENSE"),
+      ),
+    );
+    await createVendorManifest(vendorRoot);
+  }
 
   return root;
 }

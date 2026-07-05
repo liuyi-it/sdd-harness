@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -219,4 +219,51 @@ describe("release validation", () => {
       /compatibility\.os 只允许声明 macos 和 windows/,
     );
   });
+
+  it("fails when an upstream snapshot file digest does not match", async () => {
+    const root = await makeReleaseCopy();
+    await mkdir(join(root, "vendor/openspec/upstream"), { recursive: true });
+    await writeFile(
+      join(root, "vendor/openspec/upstream/LICENSE"),
+      "tampered\n",
+      "utf8",
+    );
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(/摘要不一致/);
+  });
+
+  it("fails when an upstream snapshot contains an unlisted file", async () => {
+    const root = await makeReleaseCopy();
+    await mkdir(join(root, "vendor/superpowers/upstream"), { recursive: true });
+    await writeFile(
+      join(root, "vendor/superpowers/upstream/EXTRA"),
+      "unexpected\n",
+      "utf8",
+    );
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(/清单外文件/);
+  });
 });
+
+async function makeReleaseCopy() {
+  const root = await mkdtemp(join(tmpdir(), "sdd-release-vendor-"));
+  roots.push(root);
+  for (const path of [
+    "packages/claude-code-plugin/package.json",
+    "packages/claude-code-plugin/.claude-plugin/plugin.json",
+    "packages/claude-code-plugin/src/index.ts",
+    "packages/codex-plugin/package.json",
+    "packages/codex-plugin/.codex-plugin/plugin.json",
+    "packages/codex-plugin/src/index.ts",
+  ]) {
+    await mkdir(join(root, path, ".."), { recursive: true });
+    await writeFile(
+      join(root, path),
+      await readFile(join(process.cwd(), path)),
+    );
+  }
+  await cp(join(process.cwd(), "vendor"), join(root, "vendor"), {
+    recursive: true,
+  });
+  return root;
+}
