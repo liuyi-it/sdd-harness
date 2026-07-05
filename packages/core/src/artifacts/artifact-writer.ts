@@ -96,22 +96,37 @@ export class ArtifactWriter {
     }
     const states = await Promise.all(
       artifacts.map(async (artifact) => {
+        let content: string;
         try {
-          const [content, metadataText] = await Promise.all([
-            readFile(artifact.path, "utf8"),
-            readFile(`${artifact.path}.meta.json`, "utf8"),
-          ]);
-          const metadata = JSON.parse(metadataText) as ArtifactMetadata;
-          return {
-            kind:
-              metadata.artifactHash === sha256(content)
-                ? ("unmodified" as const)
-                : ("modified" as const),
-            sameInput: metadata.inputHash === artifactInputHash(inputs),
-          };
-        } catch {
+          content = await readFile(artifact.path, "utf8");
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
           return { kind: "missing" as const, sameInput: true };
         }
+        let metadataText: string;
+        try {
+          metadataText = await readFile(`${artifact.path}.meta.json`, "utf8");
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
+          return { kind: "modified" as const, sameInput: false };
+        }
+        let metadata: ArtifactMetadata;
+        try {
+          const parsed: unknown = JSON.parse(metadataText);
+          if (!isArtifactMetadata(parsed))
+            return { kind: "modified" as const, sameInput: false };
+          metadata = parsed;
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+          return { kind: "modified" as const, sameInput: false };
+        }
+        return {
+          kind:
+            metadata.artifactHash === sha256(content)
+              ? ("unmodified" as const)
+              : ("modified" as const),
+          sameInput: metadata.inputHash === artifactInputHash(inputs),
+        };
       }),
     );
     const requiresCandidates = states.some(
@@ -136,6 +151,28 @@ export class ArtifactWriter {
     );
     return "written";
   }
+}
+
+function isEnoent(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === "ENOENT"
+  );
+}
+
+function isArtifactMetadata(value: unknown): value is ArtifactMetadata {
+  if (typeof value !== "object" || value === null) return false;
+  const metadata = value as Partial<ArtifactMetadata>;
+  return (
+    metadata.schemaVersion === "1.0.0" &&
+    metadata.generatedBy === "sdd-harness" &&
+    typeof metadata.inputHash === "string" &&
+    /^sha256:[a-f0-9]{64}$/.test(metadata.inputHash) &&
+    typeof metadata.artifactHash === "string" &&
+    /^sha256:[a-f0-9]{64}$/.test(metadata.artifactHash) &&
+    typeof metadata.createdAt === "string"
+  );
 }
 
 function sha256(value: string): string {

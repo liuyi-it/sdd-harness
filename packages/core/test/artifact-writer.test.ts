@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -88,6 +88,34 @@ describe("ArtifactWriter.writeOrCandidate", () => {
       ).resolves.toBe("candidate");
       if (mode === "missing+changed")
         await expect(readFile(paths[2]!, "utf8")).rejects.toThrow();
+      for (const path of paths)
+        expect(await readFile(`${path}.candidate.md`, "utf8")).toBe("new\n");
+    },
+  );
+
+  it.each(["missing-meta", "invalid-json", "missing-fields"])(
+    "protects existing primary files when metadata is %s",
+    async (mode) => {
+      const root = await mkdtemp(join(tmpdir(), "sdd-writer-meta-"));
+      const writer = new ArtifactWriter();
+      const paths = ["spec.md", "spec.delta.md", "spec.model.json"].map(
+        (name) => join(root, name),
+      );
+      for (const path of paths) await writer.write(path, "old", { version: 1 });
+      await writeFile(paths[0]!, "manual\n", "utf8");
+      const metaPath = `${paths[0]}.meta.json`;
+      if (mode === "missing-meta") await rm(metaPath);
+      else if (mode === "invalid-json")
+        await writeFile(metaPath, "{bad", "utf8");
+      else await writeFile(metaPath, '{"schemaVersion":"1.0.0"}\n', "utf8");
+
+      await expect(
+        writer.writeGroupOrCandidates(
+          paths.map((path) => ({ path, content: "new" })),
+          { version: 1 },
+        ),
+      ).resolves.toBe("candidate");
+      expect(await readFile(paths[0]!, "utf8")).toBe("manual\n");
       for (const path of paths)
         expect(await readFile(`${path}.candidate.md`, "utf8")).toBe("new\n");
     },
