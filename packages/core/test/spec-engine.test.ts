@@ -30,6 +30,28 @@ describe("SpecEngine", () => {
     expect(result.questions).toEqual([]);
   });
 
+  it("requires each compound semantic slot independently", () => {
+    const engine = new SpecEngine();
+    const incomplete = engine.analyze("用户取消订单，失败返回错误，需要测试");
+
+    expect(incomplete.questions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "Q-AUTHORIZATION" }),
+        expect.objectContaining({ id: "Q-INTERFACE" }),
+        expect.objectContaining({ id: "Q-PRECONDITION" }),
+        expect.objectContaining({ id: "Q-RESULT" }),
+      ]),
+    );
+    expect(
+      engine.analyze("用户取消订单，失败返回错误，需要测试", {
+        "Q-AUTHORIZATION": "仅授权用户可以操作，未授权用户被拒绝",
+        "Q-INTERFACE": "通过 API 请求取消",
+        "Q-PRECONDITION": "订单必须处于待处理状态",
+        "Q-RESULT": "成功后订单状态变为已取消",
+      }).questions,
+    ).toEqual([]);
+  });
+
   it("produces multiple validated OpenSpec requirements from Chinese behaviors", () => {
     const result = new SpecEngine().generate({
       requirement:
@@ -45,6 +67,16 @@ describe("SpecEngine", () => {
     expect(result.delta).toContain("## ADDED Requirements");
     expect(result.spec).toBe(result.delta);
     expect(parseSpec(result.spec)).toEqual(result.model);
+    expect(result.spec).toContain("GIVEN 授权用户和待处理订单");
+    expect(result.spec).toContain("WHEN 授权用户通过 API 请求取消订单");
+    expect(result.spec).toContain("THEN 订单被取消");
+    expect(result.spec).toContain("GIVEN 订单已取消");
+    expect(result.spec).toContain("WHEN 再次请求取消订单");
+    expect(result.spec).toContain("THEN 返回冲突错误");
+    expect(result.spec).toContain("GIVEN 订单取消成功");
+    expect(result.spec).toContain("WHEN 系统写入审计日志");
+    expect(result.spec).toContain("THEN 产生可追踪的审计记录");
+    expect(result.spec).not.toMatch(/described|requested business result/i);
     expect(result.impact).toContain("MCP_OUTPUT_IS_UNTRUSTED_CONTEXT");
   });
 
@@ -62,5 +94,10 @@ describe("SpecEngine", () => {
     ).toEqual([]);
     expect(result.model.requirements.length).toBeGreaterThanOrEqual(3);
     expect(validateSpec(result.model)).toEqual([]);
+    expect(result.spec).toMatch(/GIVEN .*authenticated|GIVEN .*authorized/i);
+    expect(result.spec).toMatch(/WHEN .*API.*cancel/i);
+    expect(result.spec).toMatch(/THEN .*conflict/i);
+    expect(result.spec).toMatch(/THEN .*audit/i);
+    expect(result.spec).not.toMatch(/described|requested business result/i);
   });
 });

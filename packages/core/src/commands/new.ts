@@ -82,7 +82,10 @@ export async function runNew(
       mkdir(changeDirectory, { recursive: true }),
     ]);
     const requirement = continuing
-      ? await readFile(join(runDirectory, "input.md"), "utf8")
+      ? (await readFile(join(runDirectory, "input.md"), "utf8")).replace(
+          /\n$/,
+          "",
+        )
       : args.requirement;
     if (requirement === undefined || requirement.trim() === "") {
       throw new SddError("E_MISSING_ARTIFACT", "需求内容不能为空");
@@ -134,16 +137,26 @@ export async function runNew(
       preview.proposal = `${preview.proposal}\n\n## Based On Archived Change\n\n- ${parentChangeId}`;
     }
     const writer = new ArtifactWriter();
-    for (const [name, content] of Object.entries({
-      "proposal.md": preview.proposal,
-      "impact.md": preview.impact,
-      "questions.md": preview.questions,
-    })) {
-      await writer.write(join(changeDirectory, name), content, {
+    const requirementInputs = {
+      requirement,
+      answers: args.answers ?? {},
+    };
+    await Promise.all([
+      writer.write(
+        join(changeDirectory, "proposal.md"),
+        preview.proposal,
+        requirementInputs,
+      ),
+      writer.write(join(changeDirectory, "impact.md"), preview.impact, {
         requirement,
         codebaseSummary,
-      });
-    }
+      }),
+      writer.write(
+        join(changeDirectory, "questions.md"),
+        preview.questions,
+        requirementInputs,
+      ),
+    ]);
     if (unansweredBlockers.length > 0) {
       if (args.nonInteractive) {
         await store.update((current) => ({
@@ -206,15 +219,10 @@ export async function runNew(
     })) {
       await writer.write(join(changeDirectory, name), content, {
         requirement,
-        codebaseSummary,
         answers: args.answers ?? {},
       });
     }
-    const structuredInputs = {
-      requirement,
-      codebaseSummary,
-      answers: args.answers ?? {},
-    };
+    const structuredInputs = requirementInputs;
     const structuredOutcomes = await Promise.all([
       writer.writeOrCandidate(
         join(changeDirectory, "spec.delta.md"),

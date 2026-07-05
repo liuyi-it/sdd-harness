@@ -279,6 +279,63 @@ describe("sdd new", () => {
     expect(await readFile(metadataPath, "utf8")).toBe(before);
   });
 
+  it("isolates codebase summary from non-impact artifact metadata", async () => {
+    const { root, core } = await initializedProject();
+    const args = {
+      requirement:
+        "Implement authenticated order cancellation through an API endpoint with authorization, conflict errors, audit logging, and automated tests.",
+      changeId: "summary-isolation",
+    };
+    await core.execute({ command: "new", cwd: root, args });
+    const change = join(root, ".sdd/changes/summary-isolation");
+    const metadata = async (name: string) =>
+      JSON.parse(await readFile(join(change, `${name}.meta.json`), "utf8")) as {
+        inputHash: string;
+      };
+    const before = Object.fromEntries(
+      await Promise.all(
+        [
+          "proposal.md",
+          "questions.md",
+          "answers.md",
+          "assumptions.md",
+          "spec.md",
+          "spec.delta.md",
+          "spec.model.json",
+          "impact.md",
+        ].map(async (name) => [name, (await metadata(name)).inputHash]),
+      ),
+    );
+    await writeFile(
+      join(root, ".sdd/index/codebase-summary.md"),
+      "# changed untrusted summary\n",
+      "utf8",
+    );
+
+    await core.execute({ command: "new", cwd: root, args });
+
+    for (const name of [
+      "proposal.md",
+      "questions.md",
+      "answers.md",
+      "assumptions.md",
+      "spec.md",
+      "spec.delta.md",
+      "spec.model.json",
+    ]) {
+      expect((await metadata(name)).inputHash).toBe(before[name]);
+    }
+    expect((await metadata("impact.md")).inputHash).not.toBe(
+      before["impact.md"],
+    );
+    await expect(
+      access(join(change, "spec.delta.md.candidate.md")),
+    ).rejects.toThrow();
+    await expect(
+      access(join(change, "spec.model.json.candidate.md")),
+    ).rejects.toThrow();
+  });
+
   it("new 在规格生成超时后进入 FAILED 并记录恢复上下文", async () => {
     const { root } = await initializedProject();
     class SlowSpecEngine extends SpecEngine {

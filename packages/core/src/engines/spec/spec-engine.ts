@@ -39,20 +39,38 @@ const SEMANTIC_SLOTS: ReadonlyArray<{
   {
     id: "Q-ACTOR",
     pattern:
-      /\b(authenticated|authorized|authorization|permission|user|creator|owner)\b|授权|鉴权|权限|用户|创建者|所有者/i,
-    question: "谁可以执行该行为，未授权请求应如何处理？",
+      /\b(authenticated|authorized user|user|creator|owner|actor)\b|用户|创建者|所有者|操作者/i,
+    question: "请明确谁是执行该行为的业务角色。",
+  },
+  {
+    id: "Q-AUTHORIZATION",
+    pattern:
+      /\b(authorization|authorized|permission|unauthorized|forbidden)\b|授权|鉴权|权限|未授权|无权限|仅允许/i,
+    question: "请明确授权规则以及未授权请求的处理方式。",
   },
   {
     id: "Q-ACTION",
     pattern:
-      /\b(api|endpoint|request|cancel|create|update|delete|return|respond)\b|接口|请求|取消|创建|更新|删除|返回/i,
-    question: "请明确要执行的动作及 API/接口行为。",
+      /\b(cancel|cancellation|create|update|delete|return|respond)\b|取消|创建|更新|删除|返回/i,
+    question: "请明确要执行的业务动作。",
+  },
+  {
+    id: "Q-INTERFACE",
+    pattern:
+      /\b(api|endpoint|request|GET|POST|PUT|PATCH|DELETE)\b|接口|API|请求/i,
+    question: "请明确承载该动作的 API 或接口行为。",
+  },
+  {
+    id: "Q-PRECONDITION",
+    pattern:
+      /\b(pending|precondition|eligible|authenticated)\b|待处理|未完成|前置|满足条件/i,
+    question: "请明确业务前置条件，例如允许操作的资源状态。",
   },
   {
     id: "Q-RESULT",
     pattern:
-      /\b(pending|precondition|result|success|successful|state|cancel(?:led|lation)?)\b|待处理|未完成|前置|结果|成功|状态|取消/i,
-    question: "请明确业务前置条件和成功结果。",
+      /\b(result|success|successful|cancelled|canceled|cancellation)\b|结果|成功|已取消|取消成功|取消(?:未完成|待处理)订单/i,
+    question: "请明确成功后的业务结果。",
   },
   {
     id: "Q-FAILURE",
@@ -234,34 +252,67 @@ function scenarioFor(
 ): { title: string; given: string; when: string; then: string } {
   switch (kind) {
     case "rejection":
-      return {
-        title: "Request is rejected",
-        given: "the request violates the described authorization or state rule",
-        when: "the client performs the described API operation",
-        then: behavior,
-      };
+      return isChinese(behavior)
+        ? {
+            title: "重复取消返回冲突",
+            given: "订单已取消",
+            when: "再次请求取消订单",
+            then: "返回冲突错误",
+          }
+        : {
+            title: "Repeated cancellation returns a conflict",
+            given: "the order is already cancelled",
+            when: "the authenticated client repeats the API cancellation request",
+            then: "the API returns a conflict error",
+          };
     case "audit":
-      return {
-        title: "Successful operation is audited",
-        given: "the described operation completes successfully",
-        when: "the success result is committed",
-        then: behavior,
-      };
+      return isChinese(behavior)
+        ? {
+            title: "成功取消写入审计",
+            given: "订单取消成功",
+            when: "系统写入审计日志",
+            then: "产生可追踪的审计记录",
+          }
+        : {
+            title: "Successful cancellation is audited",
+            given: "the authenticated order cancellation succeeds",
+            when: "the system writes the cancellation audit log",
+            then: "a traceable audit record is stored",
+          };
     case "test":
-      return {
-        title: "Required behavior is covered by automation",
-        given: "the success and rejection paths are available",
-        when: "the automated verification suite runs",
-        then: behavior,
-      };
+      return isChinese(behavior)
+        ? {
+            title: "自动化验证取消行为",
+            given: "成功、未授权和冲突场景均已定义",
+            when: "运行订单取消自动化测试",
+            then: "三个场景均得到断言和验证",
+          }
+        : {
+            title: "Cancellation behavior is automated",
+            given: "success, unauthorized, and conflict cases are defined",
+            when: "the automated order cancellation tests run",
+            then: "the API outcomes for every case are asserted",
+          };
     case "success":
-      return {
-        title: "Authorized request succeeds",
-        given: "the described actor and business preconditions are satisfied",
-        when: behavior,
-        then: "the requested business result is returned by the API",
-      };
+      return isChinese(behavior)
+        ? {
+            title: "授权用户取消待处理订单",
+            given: "授权用户和待处理订单",
+            when: "授权用户通过 API 请求取消订单",
+            then: "订单被取消",
+          }
+        : {
+            title: "Authorized actor cancels a pending order",
+            given:
+              "an authenticated actor with authorization and a pending order",
+            when: "the actor sends the API cancellation request",
+            then: "the order is cancelled",
+          };
   }
+}
+
+function isChinese(value: string): boolean {
+  return /[\u3400-\u9fff]/.test(value);
 }
 
 function normalizeStatement(behavior: string): string {
