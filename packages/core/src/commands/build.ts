@@ -16,6 +16,10 @@ import { isCommandAllowed } from "../security/shell-policy.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 import { FileLock } from "../state/file-lock.js";
 import { scopePatternsOverlap } from "../security/scope-overlap.js";
+import {
+  taskEvidenceFailures,
+  tddChainFailures,
+} from "../quality/tdd-evidence.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 
@@ -58,11 +62,15 @@ export async function runBuild(
     const previousResults = await readResults(
       join(change, "task-results.json"),
     );
-    const results = [
-      ...previousResults.filter(
-        (result) => state.tasks[result.taskId] === "DONE",
-      ),
-    ];
+    const trustedPreviousResults = previousResults.filter((result) => {
+      const task = tasks.find((candidate) => candidate.id === result.taskId);
+      return (
+        task !== undefined && taskEvidenceFailures(task, result).length === 0
+      );
+    });
+    const results = trustedPreviousResults.filter(
+      (result) => state.tasks[result.taskId] === "DONE",
+    );
     await store.update((current) => ({
       ...current,
       currentPhase: "BUILDING",
@@ -72,11 +80,7 @@ export async function runBuild(
       lastError: null,
     }));
 
-    const completed = new Set(
-      Object.entries(state.tasks)
-        .filter(([, status]) => status === "DONE")
-        .map(([taskId]) => taskId),
-    );
+    const completed = new Set(results.map((result) => result.taskId));
     const remaining = tasks.filter((task) => !completed.has(task.id));
     const git = new GitInspector(root);
     let gitBefore = await git.snapshot();
@@ -141,6 +145,22 @@ export async function runBuild(
       for (const { task, result } of executions) {
         const modifiedFiles = [...new Set(result.modifiedFiles)];
         validateTaskFiles(modifiedFiles, task);
+        const evidenceFailures = taskEvidenceFailures(task, result);
+        if (evidenceFailures.length > 0) {
+          const blockedCommand = result.tddEvidence?.find(
+            (entry) => !isCommandAllowed(entry.command),
+          )?.command;
+          if (blockedCommand !== undefined)
+            throw new SddError(
+              "E_SECURITY_BLOCKED",
+              `TDD 证据命令未在允许清单内：${blockedCommand}`,
+            );
+          throw new SddError(
+            "E_TDD_EVIDENCE_REQUIRED",
+            evidenceFailures.join("；"),
+            "sdd build",
+          );
+        }
         for (const evidence of result.verification) {
           if (!isCommandAllowed(evidence.command)) {
             throw new SddError(
@@ -149,10 +169,7 @@ export async function runBuild(
             );
           }
         }
-        if (
-          result.verification.length === 0 ||
-          result.verification.some((evidence) => !evidence.passed)
-        ) {
+        if (result.verification.some((evidence) => !evidence.passed)) {
           throw new SddError(
             "E_VERIFY_FAILED",
             `任务 ${task.id} 验证失败`,
@@ -191,6 +208,14 @@ export async function runBuild(
       );
       gitBefore = gitAfter;
     }
+
+    const chainFailures = tddChainFailures(tasks, results);
+    if (chainFailures.length > 0)
+      throw new SddError(
+        "E_TDD_EVIDENCE_REQUIRED",
+        chainFailures.join("；"),
+        "sdd build",
+      );
 
     const ready = await store.update((current) => ({
       ...current,

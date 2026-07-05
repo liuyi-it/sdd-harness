@@ -356,6 +356,10 @@ const HELP_EXIT_CODES: Record<
   plan: COMMON_EXIT_CODES,
   build: [
     { code: 0, meaning: "成功" },
+    {
+      code: ERROR_EXIT_CODES.E_TDD_EVIDENCE_REQUIRED,
+      meaning: "缺少有效的 TDD 阶段证据",
+    },
     { code: ERROR_EXIT_CODES.E_VERIFY_FAILED, meaning: "任务验证失败" },
     {
       code: ERROR_EXIT_CODES.E_SECURITY_BLOCKED,

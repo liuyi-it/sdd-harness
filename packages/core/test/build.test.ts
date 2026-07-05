@@ -11,6 +11,26 @@ import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
+function evidenceFor(phase: "RED" | "GREEN" | "REFACTOR" | "VERIFY") {
+  return {
+    tddEvidence: [
+      phase === "RED"
+        ? {
+            phase,
+            command: "npm test",
+            passed: false,
+            expectedFailure: true,
+            output: "1 failed",
+          }
+        : { phase, command: "npm test", passed: true, output: "1 passed" },
+    ],
+    verification:
+      phase === "VERIFY"
+        ? [{ command: "npm test", passed: true, output: "1 passed" }]
+        : [],
+  };
+}
+
 // build 是行为最复杂的阶段之一，因此这里集中覆盖成功、失败、重试、暂停、超时和并行执行。
 const roots: string[] = [];
 
@@ -39,7 +59,17 @@ async function plannedProject(
   execFileSync("git", ["commit", "-m", "init"], { cwd: root });
   const core = new Core({
     codebase: new CodebaseAdapter(),
-    taskExecutor: executor,
+    taskExecutor: {
+      execute: async (request) => {
+        const result = await executor.execute(request);
+        return {
+          ...result,
+          ...(result.tddEvidence === undefined
+            ? { tddEvidence: evidenceFor(request.task.phase).tddEvidence }
+            : {}),
+        };
+      },
+    },
   });
   await core.execute({ command: "init", cwd: root });
   await core.execute({
@@ -64,6 +94,81 @@ afterEach(async () => {
 });
 
 describe("sdd build", () => {
+  it("缺少 TDD 证据时拒绝完成任务", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi
+        .fn()
+        .mockResolvedValue({ modifiedFiles: [], verification: [] }),
+    });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      exitCode: 7,
+      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+    });
+  });
+
+  it.each([
+    [
+      "RED 证据错误地通过",
+      {
+        phase: "RED",
+        command: "npm test",
+        passed: true,
+        expectedFailure: true,
+        output: "pass",
+      },
+    ],
+    [
+      "RED 证据未标记预期失败",
+      { phase: "RED", command: "npm test", passed: false, output: "fail" },
+    ],
+    [
+      "证据阶段与任务不匹配",
+      { phase: "GREEN", command: "npm test", passed: true, output: "pass" },
+    ],
+  ])("%s 时拒绝完成任务", async (_name, evidence) => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn().mockResolvedValue({
+        modifiedFiles: [],
+        tddEvidence: [evidence],
+        verification: [],
+      }),
+    });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+    });
+  });
+
+  it("持久化各阶段真实证据并允许完整链完成", async () => {
+    const execute = vi.fn(async ({ task }) => ({
+      modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+      ...evidenceFor(task.phase),
+    }));
+    const { core, root } = await plannedProject({ execute });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+    const results = JSON.parse(
+      await readFile(
+        join(root, ".sdd/changes/add-cancel/task-results.json"),
+        "utf8",
+      ),
+    );
+    expect(results[0].tddEvidence[0]).toMatchObject({
+      phase: "RED",
+      passed: false,
+      expectedFailure: true,
+    });
+    expect(results.at(-1).tddEvidence[0]).toMatchObject({
+      phase: "VERIFY",
+      passed: true,
+    });
+  });
   it("executes pending tasks and records verification evidence", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts", "test/order.test.ts"],
@@ -322,7 +427,7 @@ describe("sdd build", () => {
       peak = Math.max(peak, active);
       await new Promise((resolve) => setTimeout(resolve, 20));
       active -= 1;
-      const area = task.id === "TASK-001" ? "orders" : "audit";
+      const area = task.id.startsWith("TASK-001") ? "orders" : "audit";
       return {
         modifiedFiles: [`src/${area}/index.ts`],
         verification: [{ command: "npm test", passed: true, output: "passed" }],
@@ -330,31 +435,36 @@ describe("sdd build", () => {
     });
     const { root, core } = await plannedProject({ execute });
     const change = join(root, ".sdd/changes/add-cancel");
+    const phases = ["RED", "GREEN", "REFACTOR", "VERIFY"] as const;
     const tasks = [
-      {
-        id: "TASK-001",
+      ...phases.map((phase, index) => ({
+        id: `TASK-001-${phase}`,
         title: "Orders",
-        status: "PENDING",
+        phase,
+        status: "PENDING" as const,
         requirements: ["REQ-001"],
-        dependsOn: [],
+        scenarios: ["SCN-001"],
+        dependsOn: index === 0 ? [] : [`TASK-001-${phases[index - 1]}`],
         allowedFiles: ["src/orders/**"],
         expectedNewFiles: ["src/orders/**"],
         forbiddenFiles: [".git/**"],
         verification: ["npm test"],
         doneCriteria: ["done"],
-      },
-      {
-        id: "TASK-002",
+      })),
+      ...phases.map((phase, index) => ({
+        id: `TASK-002-${phase}`,
         title: "Audit",
-        status: "PENDING",
+        phase,
+        status: "PENDING" as const,
         requirements: ["REQ-001"],
-        dependsOn: [],
+        scenarios: ["SCN-002"],
+        dependsOn: index === 0 ? [] : [`TASK-002-${phases[index - 1]}`],
         allowedFiles: ["src/audit/**"],
         expectedNewFiles: ["src/audit/**"],
         forbiddenFiles: [".git/**"],
         verification: ["npm test"],
         doneCriteria: ["done"],
-      },
+      })),
     ];
     await writeFile(
       join(change, "tasks.json"),
@@ -370,10 +480,7 @@ describe("sdd build", () => {
     const tasksMarkdown = [
       "# Tasks",
       "",
-      "## TASK-001 Orders",
-      "",
-      "## TASK-002 Audit",
-      "",
+      ...tasks.map((task) => `## ${task.id} ${task.title}\n`),
     ].join("\n");
     await writeFile(join(change, "tasks.md"), tasksMarkdown, "utf8");
     const codebaseIndexHash = artifactInputHash(codebaseSummary);
@@ -398,19 +505,18 @@ describe("sdd build", () => {
       "Risk",
       "",
     ].join("\n");
-    await writeFile(
-      join(root, ".sdd/context-packs/add-cancel/TASK-001.md"),
-      contextPack.replace("# TASK", "# TASK-001"),
-      "utf8",
-    );
-    await writeFile(
-      join(root, ".sdd/context-packs/add-cancel/TASK-002.md"),
-      contextPack.replace("# TASK", "# TASK-002"),
-      "utf8",
+    await Promise.all(
+      tasks.map((task) =>
+        writeFile(
+          join(root, ".sdd/context-packs/add-cancel", `${task.id}.md`),
+          contextPack.replace("# TASK", `# ${task.id}`),
+          "utf8",
+        ),
+      ),
     );
     const statePath = join(root, ".sdd/state.json");
     const state = JSON.parse(await readFile(statePath, "utf8"));
-    state.tasks = { "TASK-001": "PENDING", "TASK-002": "PENDING" };
+    state.tasks = Object.fromEntries(tasks.map((task) => [task.id, "PENDING"]));
     await writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8");
 
     const result = await core.execute({ command: "build", cwd: root });

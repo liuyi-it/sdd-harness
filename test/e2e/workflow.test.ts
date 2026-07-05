@@ -32,10 +32,29 @@ function core(): Core {
   return new Core({
     codebase: new CodebaseAdapter(),
     taskExecutor: {
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn(async ({ task }) => ({
         modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
-      }),
+        tddEvidence: [
+          task.phase === "RED"
+            ? {
+                phase: task.phase,
+                command: "npm test",
+                passed: false,
+                expectedFailure: true,
+                output: "failed",
+              }
+            : {
+                phase: task.phase,
+                command: "npm test",
+                passed: true,
+                output: "passed",
+              },
+        ],
+        verification:
+          task.phase === "VERIFY"
+            ? [{ command: "npm test", passed: true, output: "passed" }]
+            : [],
+      })),
     },
   });
 }

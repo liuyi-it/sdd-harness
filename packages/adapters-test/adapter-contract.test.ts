@@ -263,10 +263,29 @@ describe("适配器契约一致性", () => {
 
   it("支持通过宿主运行时依赖创建 CodexAdapter", async () => {
     const executor: TaskExecutor = {
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn(async ({ task }) => ({
         modifiedFiles: ["src/order.ts"],
-        verification: [{ command: "npm test", passed: true, output: "ok" }],
-      }),
+        tddEvidence: [
+          task.phase === "RED"
+            ? {
+                phase: task.phase,
+                command: "npm test",
+                passed: false,
+                expectedFailure: true,
+                output: "failed",
+              }
+            : {
+                phase: task.phase,
+                command: "npm test",
+                passed: true,
+                output: "ok",
+              },
+        ],
+        verification:
+          task.phase === "VERIFY"
+            ? [{ command: "npm test", passed: true, output: "ok" }]
+            : [],
+      })),
     };
     const transport: McpTransport = {
       isAvailable: vi.fn().mockResolvedValue(true),
@@ -313,10 +332,29 @@ describe("适配器契约一致性", () => {
 
   it("支持通过宿主运行时依赖创建 ClaudeCodeAdapter", async () => {
     const executor: TaskExecutor = {
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn(async ({ task }) => ({
         modifiedFiles: ["src/order.ts"],
-        verification: [{ command: "npm test", passed: true, output: "ok" }],
-      }),
+        tddEvidence: [
+          task.phase === "RED"
+            ? {
+                phase: task.phase,
+                command: "npm test",
+                passed: false,
+                expectedFailure: true,
+                output: "failed",
+              }
+            : {
+                phase: task.phase,
+                command: "npm test",
+                passed: true,
+                output: "ok",
+              },
+        ],
+        verification:
+          task.phase === "VERIFY"
+            ? [{ command: "npm test", passed: true, output: "ok" }]
+            : [],
+      })),
     };
     const transport: McpTransport = {
       isAvailable: vi.fn().mockResolvedValue(true),

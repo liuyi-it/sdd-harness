@@ -33,6 +33,7 @@ describe("core contracts", () => {
   it("maps canonical errors to their specified exit codes", () => {
     expect(ERROR_EXIT_CODES.E_NOT_INITIALIZED).toBe(3);
     expect(ERROR_EXIT_CODES.E_UNRESOLVED_BLOCKER).toBe(6);
+    expect(ERROR_EXIT_CODES.E_TDD_EVIDENCE_REQUIRED).toBe(7);
     expect(ERROR_EXIT_CODES.E_TIMEOUT).toBe(124);
     expect(ERROR_EXIT_CODES.E_COMPONENT_INTEGRITY_FAILED).toBe(10);
   });

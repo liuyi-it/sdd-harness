@@ -46,10 +46,29 @@ async function builtProject(): Promise<{ root: string; core: Core }> {
   const core = new Core({
     codebase: new CodebaseAdapter(),
     taskExecutor: {
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn(async ({ task }) => ({
         modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
-      }),
+        tddEvidence: [
+          task.phase === "RED"
+            ? {
+                phase: task.phase,
+                command: "npm test",
+                passed: false,
+                expectedFailure: true,
+                output: "failed",
+              }
+            : {
+                phase: task.phase,
+                command: "npm test",
+                passed: true,
+                output: "passed",
+              },
+        ],
+        verification:
+          task.phase === "VERIFY"
+            ? [{ command: "npm test", passed: true, output: "passed" }]
+            : [],
+      })),
     },
   });
   await core.execute({ command: "init", cwd: root });
@@ -181,6 +200,25 @@ describe("quality commands", () => {
         "utf8",
       ),
     ).toContain("未跟踪到任务结果的变更文件：notes.txt");
+  });
+
+  it("verify 会复核持久化的 TDD 证据", async () => {
+    const { root, core } = await builtProject();
+    const resultPath = join(root, ".sdd/changes/add-cancel/task-results.json");
+    const results = JSON.parse(await readFile(resultPath, "utf8"));
+    results[0].tddEvidence = [];
+    await writeFile(
+      resultPath,
+      `${JSON.stringify(results, null, 2)}\n`,
+      "utf8",
+    );
+
+    const result = await core.execute({ command: "verify", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_VERIFY_FAILED" },
+    });
   });
 
   it("verify 在超时后进入 FAILED", async () => {

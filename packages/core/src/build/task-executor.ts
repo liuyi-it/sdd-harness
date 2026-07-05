@@ -7,6 +7,14 @@ export interface VerificationEvidence {
   output: string;
 }
 
+export interface TddEvidence {
+  phase: "RED" | "GREEN" | "REFACTOR" | "VERIFY";
+  command: string;
+  passed: boolean;
+  expectedFailure?: boolean;
+  output: string;
+}
+
 export interface TaskExecutionRequest {
   root: string;
   task: TaskDefinition;
@@ -20,6 +28,7 @@ export interface TaskExecutionRequest {
  */
 export interface TaskExecutionResult {
   modifiedFiles: string[];
+  tddEvidence: TddEvidence[];
   verification: VerificationEvidence[];
 }
 

@@ -29,10 +29,29 @@ async function initializedCore(): Promise<{ root: string; core: Core }> {
   const core = new Core({
     codebase: new CodebaseAdapter(),
     taskExecutor: {
-      execute: vi.fn().mockResolvedValue({
+      execute: vi.fn(async ({ task }) => ({
         modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
-      }),
+        tddEvidence: [
+          task.phase === "RED"
+            ? {
+                phase: task.phase,
+                command: "npm test",
+                passed: false,
+                expectedFailure: true,
+                output: "failed",
+              }
+            : {
+                phase: task.phase,
+                command: "npm test",
+                passed: true,
+                output: "passed",
+              },
+        ],
+        verification:
+          task.phase === "VERIFY"
+            ? [{ command: "npm test", passed: true, output: "passed" }]
+            : [],
+      })),
     },
   });
   await core.execute({ command: "init", cwd: root });
@@ -106,13 +125,40 @@ describe("sdd auto", () => {
 
   it("resumes from FAILED by retrying the recorded stage", async () => {
     const execute = vi
-      .fn()
-      .mockResolvedValue({
+      .fn(async ({ task }) => ({
         modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
-      })
+        tddEvidence: [
+          task.phase === "RED"
+            ? {
+                phase: task.phase,
+                command: "npm test",
+                passed: false,
+                expectedFailure: true,
+                output: "failed",
+              }
+            : {
+                phase: task.phase,
+                command: "npm test",
+                passed: true,
+                output: "passed",
+              },
+        ],
+        verification:
+          task.phase === "VERIFY"
+            ? [{ command: "npm test", passed: true, output: "passed" }]
+            : [],
+      }))
       .mockResolvedValueOnce({
         modifiedFiles: ["src/order.ts"],
+        tddEvidence: [
+          {
+            phase: "RED",
+            command: "npm test",
+            passed: false,
+            expectedFailure: true,
+            output: "failed",
+          },
+        ],
         verification: [
           { command: "npm test", passed: false, output: "failed" },
         ],

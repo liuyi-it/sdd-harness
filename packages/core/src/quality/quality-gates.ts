@@ -3,6 +3,7 @@ import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { extractRequirementIds } from "../engines/openspec/requirement-ids.js";
 import { type GitSnapshot } from "../git/git-inspector.js";
 import { validateTaskFiles } from "../security/task-scope.js";
+import { taskEvidenceFailures, tddChainFailures } from "./tdd-evidence.js";
 
 /**
  * verify / review 阶段共享的质量闸门检查逻辑。
@@ -24,18 +25,14 @@ export function verifyGate(
   statuses: Record<string, string>,
 ): GateResult {
   const failures: string[] = [];
+  failures.push(...tddChainFailures(tasks, results));
   for (const task of tasks) {
     // verify 阶段同时检查“任务状态已完成”和“任务确实有通过的验证证据”。
     if (statuses[task.id] !== "DONE")
       failures.push(`${task.id} 未完成（DONE）`);
     const result = results.find((entry) => entry.taskId === task.id);
     if (result === undefined) failures.push(`${task.id} 缺少执行证据`);
-    else if (
-      result.verification.length === 0 ||
-      result.verification.some((entry) => !entry.passed)
-    ) {
-      failures.push(`${task.id} 的验证未通过`);
-    }
+    else failures.push(...taskEvidenceFailures(task, result));
   }
   const requirements = extractRequirementIds(spec);
   for (const requirement of requirements) {
