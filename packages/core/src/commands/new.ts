@@ -127,12 +127,15 @@ export async function runNew(
       codebaseSummary,
       ...(args.answers === undefined ? {} : { answers: args.answers }),
     };
-    const preview = await withTimeout(
-      Promise.resolve(engine.generate(generationInput)),
-      timeoutMilliseconds(rawArgs),
-      "sdd new",
-      signal,
-    );
+    const preview =
+      unansweredBlockers.length > 0
+        ? clarificationPreview(requirement, codebaseSummary, analysis.questions)
+        : await withTimeout(
+            Promise.resolve(engine.generate(generationInput)),
+            timeoutMilliseconds(rawArgs),
+            "sdd new",
+            signal,
+          );
     if (parentChangeId !== null) {
       preview.proposal = `${preview.proposal}\n\n## Based On Archived Change\n\n- ${parentChangeId}`;
     }
@@ -321,4 +324,26 @@ function isStringRecord(value: unknown): value is Record<string, string> {
     value !== null &&
     Object.values(value).every((entry) => typeof entry === "string")
   );
+}
+
+function clarificationPreview(
+  requirement: string,
+  codebaseSummary: string,
+  questions: ReturnType<SpecEngine["analyze"]>["questions"],
+): Pick<
+  Awaited<ReturnType<SpecEngine["generate"]>>,
+  "proposal" | "impact" | "questions"
+> {
+  return {
+    proposal: `# Proposal\n\n## Requested Change\n\n${requirement}`,
+    impact: `# Impact\n\n## Codebase Context\n\nMCP_OUTPUT_IS_UNTRUSTED_CONTEXT\n\n${codebaseSummary}`,
+    questions: [
+      "# Questions",
+      "",
+      ...questions.map(
+        (question) =>
+          `## ${question.id} [${question.severity}]\n\n${question.question}`,
+      ),
+    ].join("\n\n"),
+  };
 }

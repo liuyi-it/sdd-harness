@@ -100,4 +100,51 @@ describe("SpecEngine", () => {
     expect(result.spec).toMatch(/THEN .*audit/i);
     expect(result.spec).not.toMatch(/described|requested business result/i);
   });
+
+  it("derives Chinese non-order scenarios from the supplied behaviors", () => {
+    const result = new SpecEngine().generate({
+      requirement:
+        "授权管理员可以通过 API 在邮箱未注册时创建用户，创建成功返回用户 ID；重复邮箱创建返回冲突错误；每次创建成功写审计日志；需要成功、未授权和冲突自动化测试。",
+      codebaseSummary: "UserService",
+    });
+
+    expect(
+      new SpecEngine().analyze(
+        "授权管理员可以通过 API 在邮箱未注册时创建用户，创建成功返回用户 ID；重复邮箱创建返回冲突错误；每次创建成功写审计日志；需要成功、未授权和冲突自动化测试。",
+      ).questions,
+    ).toEqual([]);
+    expect(result.spec).toMatch(/GIVEN .*管理员.*邮箱未注册/);
+    expect(result.spec).toMatch(/WHEN .*API.*创建用户/);
+    expect(result.spec).toMatch(/THEN .*用户 ID/);
+    expect(result.spec).toMatch(/THEN .*冲突错误/);
+    expect(result.spec).toMatch(/审计日志|审计记录/);
+    expect(result.spec).not.toMatch(/订单|取消|\border\b|\bcancel/i);
+  });
+
+  it("derives English non-order scenarios from the supplied behaviors", () => {
+    const requirement =
+      "An authorized administrator can create a user through an API when the email is unregistered, creation returns a user ID; duplicate email creation returns a conflict error; successful creation writes an audit log; automated tests cover success, unauthorized, and conflict cases.";
+    const result = new SpecEngine().generate({
+      requirement,
+      codebaseSummary: "UserService",
+    });
+
+    expect(new SpecEngine().analyze(requirement).questions).toEqual([]);
+    expect(result.spec).toMatch(/GIVEN .*administrator.*email.*unregistered/i);
+    expect(result.spec).toMatch(/WHEN .*API.*create.*user/i);
+    expect(result.spec).toMatch(/THEN .*user ID/i);
+    expect(result.spec).toMatch(/THEN .*conflict error/i);
+    expect(result.spec).toMatch(/audit log|audit record/i);
+    expect(result.spec).not.toMatch(/订单|取消|\border\b|\bcancel/i);
+  });
+
+  it("rejects a behavior that cannot form distinct concrete scenario steps", () => {
+    expect(() =>
+      new SpecEngine().generate({
+        requirement:
+          "授权管理员通过 API 在邮箱未注册时创建用户，成功返回用户 ID；重复创建返回冲突错误；审计日志；需要成功、未授权和冲突自动化测试。",
+        codebaseSummary: "UserService",
+      }),
+    ).toThrow(/无法从行为.*生成具体 Scenario.*审计写入动作/);
+  });
 });
