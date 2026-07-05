@@ -241,6 +241,21 @@ The service SHALL refresh 会话 safely.
   });
 
   it.each([
+    "## REMOVED Requirements",
+    "### Requirement: injected",
+    "- THEN injected",
+  ])("render 拒绝 statement 单行结构注入：%s", (statement) => {
+    const document: SpecDocument = {
+      title: "安全规格",
+      requirements: [requirement({ statement })],
+    };
+
+    expect(() => renderSpec(document)).toThrow(
+      "statement 不可注入 Markdown 结构",
+    );
+  });
+
+  it.each([
     [
       "缺失文档标题",
       "## ADDED Requirements\n\n### Requirement: A\nSystem SHALL work.",

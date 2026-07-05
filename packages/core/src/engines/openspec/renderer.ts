@@ -28,6 +28,10 @@ function assertDocumentRenderSafe(document: SpecDocument): void {
     const requirementPath = `requirements[${requirementIndex}]`;
     assertRenderSafe(requirement.title, `${requirementPath}.title`);
     assertRenderSafe(requirement.statement, `${requirementPath}.statement`);
+    assertStatementRenderSafe(
+      requirement.statement,
+      `${requirementPath}.statement`,
+    );
     requirement.scenarios.forEach((scenario, scenarioIndex) => {
       const scenarioPath = `${requirementPath}.scenarios[${scenarioIndex}]`;
       assertRenderSafe(scenario.title, `${scenarioPath}.title`);
@@ -38,6 +42,12 @@ function assertDocumentRenderSafe(document: SpecDocument): void {
       }
     });
   });
+}
+
+function assertStatementRenderSafe(statement: string, path: string): void {
+  if (/^(?:#|-\s+(?:GIVEN|WHEN|THEN)\b)/i.test(statement.trim())) {
+    throw new Error(`OpenSpec 字段 ${path} statement 不可注入 Markdown 结构`);
+  }
 }
 
 function assertRenderSafe(value: string, path: string): void {
