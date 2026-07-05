@@ -126,6 +126,8 @@ function renderTasks(tasks: TaskDefinition[]): string {
       "",
       `Status: ${task.status}`,
       "",
+      `TDD Instruction: ${phaseInstruction(task.phase)}`,
+      "",
       ...list("Requirements", task.requirements),
       "",
       ...list("Scenarios", task.scenarios),
@@ -158,6 +160,10 @@ function renderContextPack(task: TaskDefinition, input: PlanningInput): string {
     ...list("Requirements", task.requirements, 2),
     "",
     ...list("Scenarios", task.scenarios, 2),
+    "",
+    ...list("Depends On", task.dependsOn, 2),
+    "",
+    ...list("Expected New Files", task.expectedNewFiles, 2),
     "",
     "## TDD Instruction",
     "",
@@ -206,10 +212,10 @@ function renderTestPlan(
 
 function phaseInstruction(phase: TddPhase): string {
   return {
-    RED: "先写测试并确认测试因缺少目标行为而失败。",
-    GREEN: "只写让关联场景通过的最小实现。",
-    REFACTOR: "在测试保持绿色的前提下整理实现。",
-    VERIFY: "执行完整验证命令，确认关联场景和回归测试通过。",
+    RED: "先写测试并观察其因目标行为缺失而预期失败。",
+    GREEN: "编写最小实现使关联测试通过。",
+    REFACTOR: "在重构过程中保持测试绿色。",
+    VERIFY: "运行完整验证命令并确认全部通过。",
   }[phase];
 }
 

@@ -107,6 +107,73 @@ describe("Superpowers 原子计划器", () => {
     expect(plan.tasks[4]!.dependsOn).toEqual(["TASK-001-VERIFY"]);
   });
 
+  it("后一条链同时重叠多个先前范围时依赖全部 VERIFY", () => {
+    const spec = `# Spec
+## ADDED Requirements
+### Requirement: alpha
+System SHALL support alpha.
+#### Scenario: alpha works
+- GIVEN alpha
+- WHEN used
+- THEN works
+### Requirement: beta
+System SHALL support beta.
+#### Scenario: beta works
+- GIVEN beta
+- WHEN used
+- THEN works
+### Requirement: alpha beta
+System SHALL combine alpha and beta.
+#### Scenario: combination works
+- GIVEN both
+- WHEN used
+- THEN works`;
+    const plan = new TddEngine().generatePlan({
+      spec,
+      design: "src/alpha.ts src/beta.ts",
+      impact:
+        "package.json\nsrc/alpha.ts\ntest/alpha.test.ts\nsrc/beta.ts\ntest/beta.test.ts",
+      codebaseSummary:
+        "package.json\nsrc/alpha.ts\ntest/alpha.test.ts\nsrc/beta.ts\ntest/beta.test.ts",
+    });
+
+    expect(plan.tasks[4]!.dependsOn).toEqual([]);
+    expect(plan.tasks[8]!.dependsOn).toEqual([
+      "TASK-001-VERIFY",
+      "TASK-002-VERIFY",
+    ]);
+  });
+
+  it("支持安全的聚焦源码与测试目录并规范化为 glob", () => {
+    const plan = new TddEngine().generatePlan({
+      spec: threeRequirements.split("### Requirement: 取消订单")[0]!,
+      design: "orders",
+      impact: "package.json\nsrc/orders/\ntest/orders/",
+      codebaseSummary: "package.json\nsrc/orders/\ntest/orders/",
+    });
+
+    expect(plan.tasks[0]!.allowedFiles).toEqual([
+      "src/orders/**",
+      "test/orders/**",
+    ]);
+  });
+
+  it.each([
+    ["根级宽泛目录", "package.json\nsrc/\ntest/"],
+    ["当前目录", "package.json\n.\n./test/orders/"],
+    ["绝对路径", "package.json\n/tmp/src/orders/\ntest/orders/"],
+    ["上级路径", "package.json\nsrc/../orders/\ntest/orders/"],
+  ])("拒绝%s范围", (_name, paths) => {
+    expect(() =>
+      new TddEngine().generatePlan({
+        spec: threeRequirements.split("### Requirement: 取消订单")[0]!,
+        design: "orders",
+        impact: paths,
+        codebaseSummary: paths,
+      }),
+    ).toThrowError(/精确的源码与测试文件范围/);
+  });
+
   it("兼容旧 REQ 标题并提取场景", () => {
     const plan = new TddEngine().generatePlan({
       spec: "# Spec\n\n### REQ-007: Legacy\n\n#### Scenario: works\n- GIVEN x\n- WHEN y\n- THEN z",
@@ -160,12 +227,29 @@ describe("Superpowers 原子计划器", () => {
       "Forbidden Files:",
       "Verification:",
       "Done Criteria:",
+      "TDD Instruction:",
     ])
       expect(plan.tasksMarkdown).toContain(heading);
     expect(plan.contextPacks["TASK-001-RED"]).toContain("Phase: RED");
+    expect(plan.contextPacks["TASK-001-RED"]).toContain("## Depends On");
+    expect(plan.contextPacks["TASK-001-RED"]).toContain(
+      "## Expected New Files",
+    );
     expect(plan.contextPacks["TASK-001-RED"]).toContain("REQ-001-SC-001");
     expect(plan.contextPacks["TASK-001-RED"]).toContain(
-      "先写测试并确认测试因缺少目标行为而失败",
+      "先写测试并观察其因目标行为缺失而预期失败",
+    );
+    expect(plan.tasksMarkdown).toContain(
+      "TDD Instruction: 先写测试并观察其因目标行为缺失而预期失败。",
+    );
+    expect(plan.tasksMarkdown).toContain(
+      "TDD Instruction: 编写最小实现使关联测试通过。",
+    );
+    expect(plan.tasksMarkdown).toContain(
+      "TDD Instruction: 在重构过程中保持测试绿色。",
+    );
+    expect(plan.tasksMarkdown).toContain(
+      "TDD Instruction: 运行完整验证命令并确认全部通过。",
     );
     expect(plan.testPlan).toContain("REQ-001-SC-001: 创建成功");
     expect(plan.testPlan).toContain("RED");

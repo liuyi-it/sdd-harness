@@ -54,26 +54,18 @@ export function createAtomicTasks(input: PlanningInput): {
   for (const [index, requirement] of planned.entries()) {
     const ordinal = String(index + 1).padStart(3, "0");
     const scenarioIds = requirement.scenarios.map((scenario) => scenario.id);
-    let overlappingChain: RequirementPlan | undefined;
-    for (
-      let previousIndex = previousChains.length - 1;
-      previousIndex >= 0;
-      previousIndex -= 1
-    ) {
-      const previous = previousChains[previousIndex]!;
-      if (overlaps(requirement, previous)) {
-        overlappingChain = previous;
-        break;
-      }
-    }
+    const overlappingVerifyIds = previousChains.flatMap(
+      (previous, previousIndex) =>
+        overlaps(requirement, previous)
+          ? [`TASK-${String(previousIndex + 1).padStart(3, "0")}-VERIFY`]
+          : [],
+    );
     for (const [phaseIndex, phase] of PHASES.entries()) {
       const id = `TASK-${ordinal}-${phase}`;
-      const previousId =
+      const dependsOn =
         phaseIndex > 0
-          ? `TASK-${ordinal}-${PHASES[phaseIndex - 1]}`
-          : overlappingChain === undefined
-            ? undefined
-            : `TASK-${String(previousChains.indexOf(overlappingChain) + 1).padStart(3, "0")}-VERIFY`;
+          ? [`TASK-${ordinal}-${PHASES[phaseIndex - 1]}`]
+          : overlappingVerifyIds;
       const allowedFiles = unique([
         ...requirement.sourceFiles,
         ...requirement.testFiles,
@@ -85,7 +77,7 @@ export function createAtomicTasks(input: PlanningInput): {
         status: "PENDING",
         requirements: [requirement.id],
         scenarios: scenarioIds,
-        dependsOn: previousId === undefined ? [] : [previousId],
+        dependsOn,
         allowedFiles,
         expectedNewFiles: allowedFiles,
         forbiddenFiles: [".git/**", ".env", "**/credentials*"],
@@ -103,6 +95,12 @@ export function extractPaths(text: string): string[] {
   for (const match of text.matchAll(PATH_PATTERN)) {
     const path = match[1]!.replaceAll("\\", "/");
     if (!path.startsWith(".") && !path.includes("/**")) paths.push(path);
+  }
+  for (const match of text.matchAll(
+    /(?:^|[\s`'"(])([\w@.-]+(?:\/[\w@.-]+)+\/)(?:$|[\s`'"),:])/gim,
+  )) {
+    const directory = match[1]!.replaceAll("\\", "/");
+    if (isSafeFocusedDirectory(directory)) paths.push(`${directory}**`);
   }
   return unique(paths);
 }
@@ -171,8 +169,27 @@ function isSourceFile(file: string): boolean {
   if (isTestFile(file)) return false;
   if (/^(?:package\.json|pom\.xml)$|\/(?:package\.json|pom\.xml)$/i.test(file))
     return false;
-  return /\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|go|rs|py|rb|php|cs|swift|scala)$/i.test(
-    file,
+  return (
+    file.endsWith("/**") ||
+    /\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|go|rs|py|rb|php|cs|swift|scala)$/i.test(
+      file,
+    )
+  );
+}
+
+function isSafeFocusedDirectory(directory: string): boolean {
+  if (
+    directory.startsWith("/") ||
+    directory.startsWith("./") ||
+    directory.includes("\\")
+  )
+    return false;
+  const segments = directory.split("/").filter(Boolean);
+  return (
+    segments.length >= 2 &&
+    segments.every(
+      (segment) => segment !== "." && segment !== ".." && segment !== "**",
+    )
   );
 }
 
