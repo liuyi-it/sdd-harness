@@ -4,6 +4,8 @@ import { extractRequirementIds } from "../engines/openspec/requirement-ids.js";
 import { type GitSnapshot } from "../git/git-inspector.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 import { taskEvidenceFailures, tddChainFailures } from "./tdd-evidence.js";
+import type { SpecDocument } from "../engines/openspec/model.js";
+import { traceabilityFailures } from "./traceability.js";
 
 /**
  * verify / review 阶段共享的质量闸门检查逻辑。
@@ -19,7 +21,7 @@ export interface GateResult {
 }
 
 export function verifyGate(
-  spec: string,
+  spec: string | SpecDocument,
   tasks: TaskDefinition[],
   results: StoredTaskResult[],
   statuses: Record<string, string>,
@@ -34,13 +36,19 @@ export function verifyGate(
     if (result === undefined) failures.push(`${task.id} 缺少执行证据`);
     else failures.push(...taskEvidenceFailures(task, result));
   }
-  const requirements = extractRequirementIds(spec);
+  if (typeof spec !== "string")
+    failures.push(...traceabilityFailures(spec, tasks, results));
+  const requirements =
+    typeof spec === "string"
+      ? extractRequirementIds(spec)
+      : spec.requirements.map((item) => item.id);
   for (const requirement of requirements) {
     if (!tasks.some((task) => task.requirements.includes(requirement))) {
       failures.push(`${requirement} 未关联到任何任务`);
     }
   }
   if (
+    typeof spec === "string" &&
     !spec.includes("Acceptance Criteria:") &&
     !spec.includes("#### Scenario:")
   )

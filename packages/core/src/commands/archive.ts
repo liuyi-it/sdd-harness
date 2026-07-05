@@ -18,6 +18,12 @@ import {
   previousStablePhase,
 } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
+import { type StoredTaskResult, verifyGate } from "../quality/quality-gates.js";
+import {
+  readAuthoritativeSpec,
+  renderTraceability,
+  traceabilityFailures,
+} from "../quality/traceability.js";
 
 /**
  * archive 阶段把整个 change 固化为只读归档：
@@ -107,34 +113,28 @@ export async function runArchive(
             "sdd review",
           );
         const tasks = JSON.parse(taskJson) as TaskDefinition[];
-        const parsedResults = JSON.parse(results) as Array<{
-          taskId: string;
-          modifiedFiles: string[];
-          verification: Array<{ command: string }>;
-        }>;
-        const traceability = [
-          "# 需求追溯",
-          "",
-          ...tasks.flatMap((task) => [
-            ...task.requirements.map((requirement) => `## ${requirement}`),
-            "",
-            "任务：",
-            `- ${task.id}`,
-            "",
-            "文件：",
-            ...(
-              parsedResults.find((result) => result.taskId === task.id)
-                ?.modifiedFiles ?? []
-            ).map((file) => `- ${file}`),
-            "",
-            "测试：",
-            ...(
-              parsedResults.find((result) => result.taskId === task.id)
-                ?.verification ?? []
-            ).map((entry) => `- ${entry.command}`),
-            "",
-          ]),
-        ].join("\n");
+        const parsedResults = JSON.parse(results) as StoredTaskResult[];
+        const { document } = await readAuthoritativeSpec(change, spec);
+        const gate = verifyGate(document, tasks, parsedResults, state.tasks);
+        const artifactFailures = traceabilityFailures(
+          document,
+          tasks,
+          parsedResults,
+          true,
+        );
+        if (!gate.passed)
+          throw new SddError(
+            "E_VERIFY_REQUIRED",
+            gate.failures.join("; "),
+            "sdd verify",
+          );
+        if (artifactFailures.length > 0)
+          throw new SddError(
+            "E_MISSING_ARTIFACT",
+            artifactFailures.join("; "),
+            "sdd archive",
+          );
+        const traceability = renderTraceability(document, tasks, parsedResults);
         const archiveReport = [
           "# 归档报告",
           "",
@@ -149,6 +149,10 @@ export async function runArchive(
           "## 验证结果",
           "",
           "PASS",
+          "",
+          "## 追踪覆盖与证据摘要",
+          "",
+          `${document.requirements.length} 个 Requirement、${document.requirements.flatMap((item) => item.scenarios).length} 个 Scenario 均覆盖 RED/GREEN/REFACTOR/VERIFY 证据与最终验证命令。`,
           "",
           "## 审查结果",
           "",

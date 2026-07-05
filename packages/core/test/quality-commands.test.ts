@@ -16,6 +16,13 @@ import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { GitInspector } from "../src/git/git-inspector.js";
+import type { StoredTaskResult } from "../src/quality/quality-gates.js";
+import { traceabilityFailures } from "../src/quality/traceability.js";
+import type { SpecDocument } from "../src/engines/openspec/model.js";
+import type {
+  TaskDefinition,
+  TddPhase,
+} from "../src/engines/tdd/tdd-engine.js";
 
 type RmFunction = typeof rm;
 
@@ -114,6 +121,69 @@ async function removeRetry(root: string, rm: RmFunction): Promise<void> {
 }
 
 describe("quality commands", () => {
+  it("逐 Scenario 检查模型覆盖、幽灵 ID 与四阶段证据", () => {
+    const fixture = traceFixture();
+    fixture.document.requirements[0]!.scenarios.push({
+      id: "REQ-001-SC-002",
+      title: "未覆盖场景",
+      given: ["条件"],
+      when: ["操作"],
+      then: ["结果"],
+    });
+    fixture.tasks[0]!.requirements = ["REQ-GHOST"];
+
+    const failures = traceabilityFailures(
+      fixture.document,
+      fixture.tasks,
+      fixture.results,
+    );
+
+    expect(failures).toContain("TASK-RED 引用了不存在的 Requirement REQ-GHOST");
+    expect(failures).toContain("REQ-001/REQ-001-SC-002 缺少 RED 任务");
+    expect(failures).toContain("REQ-001/REQ-001-SC-002 缺少 VERIFY 任务");
+  });
+
+  it.each<TddPhase>(["RED", "GREEN", "REFACTOR", "VERIFY"])(
+    "缺少 %s 阶段任务时追踪失败",
+    (phase) => {
+      const fixture = traceFixture();
+      fixture.tasks = fixture.tasks.filter((task) => task.phase !== phase);
+      expect(
+        traceabilityFailures(fixture.document, fixture.tasks, fixture.results),
+      ).toContain(`REQ-001/REQ-001-SC-001 缺少 ${phase} 任务`);
+    },
+  );
+
+  it.each<TddPhase>(["RED", "GREEN", "REFACTOR", "VERIFY"])(
+    "缺少 %s 命令时追踪失败",
+    (phase) => {
+      const fixture = traceFixture();
+      const result = fixture.results.find(
+        (entry) => entry.taskId === `TASK-${phase}`,
+      )!;
+      result.tddEvidence = [];
+      expect(
+        traceabilityFailures(fixture.document, fixture.tasks, fixture.results),
+      ).toContain(`TASK-${phase} 缺少 ${phase} 命令`);
+    },
+  );
+
+  it("完整多 Scenario 四阶段追踪通过", () => {
+    const fixture = traceFixture();
+    fixture.document.requirements[0]!.scenarios.push({
+      id: "REQ-001-SC-002",
+      title: "第二场景",
+      given: ["条件"],
+      when: ["操作"],
+      then: ["结果"],
+    });
+    fixture.tasks.forEach((task) => task.scenarios.push("REQ-001-SC-002"));
+
+    expect(
+      traceabilityFailures(fixture.document, fixture.tasks, fixture.results),
+    ).toEqual([]);
+  });
+
   it("verifies requirement, task, acceptance, and test coverage", async () => {
     const { root, core } = await builtProject();
     const result = await core.execute({
@@ -238,6 +308,70 @@ describe("quality commands", () => {
     expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
       ok: false,
       error: { code: "E_VERIFY_FAILED" },
+    });
+  });
+
+  it("spec.model.json 损坏时 verify 不回退到 Markdown", async () => {
+    const { root, core } = await builtProject();
+    await writeFile(
+      join(root, ".sdd/changes/add-cancel/spec.model.json"),
+      '{"title":"损坏","requirements":"不是数组"}\n',
+      "utf8",
+    );
+
+    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+  });
+
+  it("verify 拒绝任务引用不存在的 Scenario", async () => {
+    const { root, core } = await builtProject();
+    const path = join(root, ".sdd/changes/add-cancel/tasks.json");
+    const tasks = JSON.parse(await readFile(path, "utf8"));
+    tasks[0].scenarios = ["SCN-GHOST"];
+    await writeFile(path, `${JSON.stringify(tasks, null, 2)}\n`, "utf8");
+
+    const result = await core.execute({ command: "verify", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_VERIFY_FAILED" },
+    });
+    expect(result.error?.message).toContain("SCN-GHOST");
+  });
+
+  it("legacy：缺少 spec.model.json 时兼容严格 Markdown 规格", async () => {
+    const { root, core } = await builtProject();
+    const change = join(root, ".sdd/changes/add-cancel");
+    await rm(join(change, "spec.model.json"));
+    await writeFile(
+      join(change, "spec.md"),
+      [
+        "# Legacy Spec",
+        "",
+        "### REQ-001: 旧格式需求",
+        "",
+        "#### Scenario: 旧格式场景",
+        "- GIVEN 条件成立",
+        "- WHEN 执行操作",
+        "- THEN 返回结果",
+        "",
+        "### REQ-002: 第二个旧格式需求",
+        "",
+        "#### Scenario: 第二个旧格式场景",
+        "- GIVEN 第二个条件成立",
+        "- WHEN 执行第二个操作",
+        "- THEN 返回第二个结果",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await core.execute({ command: "verify", cwd: root });
+    expect(result.error).toBeUndefined();
+    expect(result).toMatchObject({
+      ok: true,
+      state: "VERIFY_READY",
     });
   });
 
@@ -427,6 +561,13 @@ describe("quality commands", () => {
     await expect(
       access(join(root, ".sdd/changes/add-cancel/.archived")),
     ).resolves.toBeUndefined();
+    const traceability = await readFile(
+      join(root, ".sdd/changes/add-cancel/traceability.md"),
+      "utf8",
+    );
+    expect(traceability).toMatch(/## REQ-001[\s\S]*### REQ-001-SC-001/);
+    expect(traceability).toContain("RED 任务：");
+    expect(traceability).toContain("最终验证命令：");
     expect(
       JSON.parse(
         await readFile(join(root, ".sdd/changes/add-cancel/.archived"), "utf8"),
@@ -440,6 +581,29 @@ describe("quality commands", () => {
       ok: false,
       error: { code: "E_ARCHIVED_READONLY" },
     });
+  });
+
+  it("archive 会重验追踪证据并阻止 verify 后篡改结果", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const change = join(root, ".sdd/changes/add-cancel");
+    const resultPath = join(change, "task-results.json");
+    const results = JSON.parse(await readFile(resultPath, "utf8"));
+    results[0].modifiedFiles = [];
+    await writeFile(
+      resultPath,
+      `${JSON.stringify(results, null, 2)}\n`,
+      "utf8",
+    );
+
+    const archived = await core.execute({ command: "archive", cwd: root });
+
+    expect(archived).toMatchObject({
+      ok: false,
+      error: { code: "E_MISSING_ARTIFACT" },
+    });
+    await expect(access(join(change, ".archived"))).rejects.toThrow();
   });
 
   it("即使 state 被误改，只要存在 .archived 也拒绝再次写入", async () => {
@@ -586,3 +750,67 @@ describe("quality commands", () => {
     );
   }, 15_000);
 });
+
+function traceFixture(): {
+  document: SpecDocument;
+  tasks: TaskDefinition[];
+  results: StoredTaskResult[];
+} {
+  const document: SpecDocument = {
+    title: "追踪测试",
+    requirements: [
+      {
+        id: "REQ-001",
+        title: "需求",
+        statement: "系统 MUST 支持行为",
+        operation: "ADDED",
+        scenarios: [
+          {
+            id: "REQ-001-SC-001",
+            title: "场景",
+            given: ["条件"],
+            when: ["操作"],
+            then: ["结果"],
+          },
+        ],
+      },
+    ],
+  };
+  const phases: TddPhase[] = ["RED", "GREEN", "REFACTOR", "VERIFY"];
+  const tasks = phases.map(
+    (phase, index): TaskDefinition => ({
+      id: `TASK-${phase}`,
+      title: `${phase} 任务`,
+      phase,
+      status: "DONE",
+      requirements: ["REQ-001"],
+      scenarios: ["REQ-001-SC-001"],
+      dependsOn: index === 0 ? [] : [`TASK-${phases[index - 1]}`],
+      allowedFiles: ["src/order.ts"],
+      expectedNewFiles: [],
+      forbiddenFiles: [],
+      verification: ["npm test"],
+      doneCriteria: ["完成"],
+    }),
+  );
+  const results = phases.map(
+    (phase): StoredTaskResult => ({
+      taskId: `TASK-${phase}`,
+      modifiedFiles: ["src/order.ts"],
+      tddEvidence: [
+        {
+          phase,
+          command: "npm test",
+          passed: phase !== "RED",
+          ...(phase === "RED" ? { expectedFailure: true } : {}),
+          output: phase === "RED" ? "failed" : "passed",
+        },
+      ],
+      verification:
+        phase === "VERIFY"
+          ? [{ command: "npm test", passed: true, output: "passed" }]
+          : [],
+    }),
+  );
+  return { document, tasks, results };
+}

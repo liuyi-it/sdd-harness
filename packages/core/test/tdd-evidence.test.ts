@@ -87,4 +87,24 @@ describe("TDD 阶段链", () => {
     value.tasks[index]!.dependsOn = [];
     expect(tddChainFailures(value.tasks, value.results)).not.toEqual([]);
   });
+
+  it("允许同一 Requirement 的不同 Scenario 各自拥有四阶段任务链", () => {
+    const first = chain();
+    const second = chain();
+    second.tasks.forEach((task) => {
+      task.id = `${task.id}-SC2`;
+      task.scenarios = ["SCN-002"];
+      task.dependsOn = task.dependsOn.map((id) => `${id}-SC2`);
+    });
+    second.results.forEach((result) => {
+      result.taskId = `${result.taskId}-SC2`;
+    });
+
+    expect(
+      tddChainFailures(
+        [...first.tasks, ...second.tasks],
+        [...first.results, ...second.results],
+      ),
+    ).toEqual([]);
+  });
 });

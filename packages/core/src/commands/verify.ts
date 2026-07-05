@@ -23,6 +23,7 @@ import {
   previousStablePhase,
 } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
+import { readAuthoritativeSpec } from "../quality/traceability.js";
 
 /**
  * verify 阶段关注“需求是否被任务覆盖，任务是否有通过的执行证据”。
@@ -78,7 +79,13 @@ export async function runVerify(
           rawResults,
           "task-results.json",
         );
-        const gate = verifyGate(spec, tasks, results, currentState.tasks);
+        const authoritative = await readAuthoritativeSpec(change, spec);
+        const gate = verifyGate(
+          authoritative.document,
+          tasks,
+          results,
+          currentState.tasks,
+        );
         const currentSnapshot = await new GitInspector(root).snapshot();
         if (
           state.currentPhase === "VERIFY_READY" &&
@@ -137,6 +144,7 @@ export async function runVerify(
           report,
           {
             spec,
+            specModel: authoritative.document,
             tasks,
             results,
           },

@@ -96,28 +96,23 @@ export function tddChainFailures(
   results: Array<TaskExecutionResult & { taskId: string }>,
 ): string[] {
   const failures: string[] = [];
-  const requirements = new Set(tasks.flatMap((task) => task.requirements));
-  for (const requirement of requirements) {
-    const chain = tasks.filter((task) =>
-      task.requirements.includes(requirement),
+  const pairs = new Map<string, { requirement: string; scenario: string }>();
+  for (const task of tasks)
+    for (const requirement of task.requirements)
+      for (const scenario of task.scenarios)
+        pairs.set(`${requirement}\0${scenario}`, { requirement, scenario });
+  for (const { requirement, scenario } of pairs.values()) {
+    const chain = tasks.filter(
+      (task) =>
+        task.requirements.includes(requirement) &&
+        task.scenarios.includes(scenario),
     );
     const phases = chain.map((task) => task.phase);
-    const first = chain[0];
-    const sameSets =
-      first !== undefined &&
-      chain.every(
-        (task) =>
-          setKey(task.requirements) === setKey(first.requirements) &&
-          setKey(task.scenarios) === setKey(first.scenarios),
-      );
     if (
       chain.length !== PHASES.length ||
-      phases.some((phase, index) => phase !== PHASES[index]) ||
-      !sameSets
+      phases.some((phase, index) => phase !== PHASES[index])
     ) {
-      failures.push(
-        `${requirement} 的 TDD 阶段链缺失、重复、乱序或场景集合不一致`,
-      );
+      failures.push(`${requirement}/${scenario} 的 TDD 阶段链缺失、重复或乱序`);
       continue;
     }
     for (let index = 1; index < chain.length; index += 1) {
@@ -145,8 +140,4 @@ export function tddChainFailures(
       failures.push(`${requirement} 的 TDD 执行证据乱序`);
   }
   return failures;
-}
-
-function setKey(values: string[]): string {
-  return [...values].sort().join("\0");
 }
