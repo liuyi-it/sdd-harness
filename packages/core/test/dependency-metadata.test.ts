@@ -1,8 +1,9 @@
-import { access, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { access, readdir, readFile } from "node:fs/promises";
+import { join, relative, resolve, sep } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { createVendorManifest } from "../../../scripts/vendor-manifest.mjs";
 import { PINNED_DEPENDENCIES } from "../src/dependencies.js";
 
 describe("第三方依赖元数据", () => {
@@ -61,13 +62,61 @@ describe("第三方依赖元数据", () => {
       ).toEqual(metadata);
       expect(
         await readFile(join(vendorRoot, "MANIFEST.sha256"), "utf8"),
-      ).toMatch(/^[a-f0-9]{64} {2}upstream\/.+$/m);
+      ).toMatch(/^[a-f0-9]{64} {2}file upstream\/.+$/m);
       expect(
         await readFile(join(vendorRoot, "upstream/LICENSE"), "utf8"),
       ).toContain("MIT License");
     }
   });
+
+  it("上游快照清单可重现并完整覆盖文件与符号链接", async () => {
+    for (const directory of ["openspec", "superpowers"]) {
+      const vendorRoot = join(process.cwd(), "vendor", directory);
+      const committed = await readFile(
+        join(vendorRoot, "MANIFEST.sha256"),
+        "utf8",
+      );
+      expect(await createVendorManifest(vendorRoot)).toBe(committed);
+
+      const lines = committed.trimEnd().split("\n");
+      const manifestPaths = lines.map((line) => {
+        const match =
+          /^[a-f0-9]{64} {2}(?:file|symlink) upstream\/(.+?)(?: -> .+)?$/.exec(
+            line,
+          );
+        expect(match).not.toBeNull();
+        return match?.[1];
+      });
+      expect(manifestPaths).toEqual([...manifestPaths].sort());
+      expect(manifestPaths).toEqual(await listSnapshotEntries(vendorRoot));
+    }
+
+    expect(
+      await readFile(
+        join(process.cwd(), "vendor/superpowers/MANIFEST.sha256"),
+        "utf8",
+      ),
+    ).toMatch(
+      /^[a-f0-9]{64} {2}symlink upstream\/AGENTS\.md -> "CLAUDE\.md"$/m,
+    );
+  });
 });
+
+async function listSnapshotEntries(vendorRoot: string) {
+  const upstreamRoot = resolve(vendorRoot, "upstream");
+  const entries: string[] = [];
+
+  async function visit(directory: string) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) await visit(path);
+      else entries.push(relative(upstreamRoot, path).split(sep).join("/"));
+    }
+  }
+
+  await visit(upstreamRoot);
+  return entries.sort();
+}
 
 describe("仓库元数据与安装文档", () => {
   it("提供需求文档要求的必备文档", async () => {

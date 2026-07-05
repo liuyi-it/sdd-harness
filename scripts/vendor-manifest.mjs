@@ -1,7 +1,13 @@
 /* global URL, console, process */
 
 import { createHash } from "node:crypto";
-import { readdir, readFile, writeFile } from "node:fs/promises";
+import {
+  lstat,
+  readdir,
+  readFile,
+  readlink,
+  writeFile,
+} from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,15 +20,27 @@ export async function createVendorManifest(vendorRoot) {
   const paths = await listFiles(upstreamRoot);
   const lines = await Promise.all(
     paths.map(async (path) => {
-      const digest = createHash("sha256")
-        .update(await readFile(resolve(upstreamRoot, path)))
-        .digest("hex");
-      return `${digest}  upstream/${path}`;
+      const absolutePath = resolve(upstreamRoot, path);
+      const stats = await lstat(absolutePath);
+      if (stats.isSymbolicLink()) {
+        const target = await readlink(absolutePath);
+        const digest = sha256(target);
+        return `${digest}  symlink upstream/${path} -> ${JSON.stringify(target)}`;
+      }
+      if (!stats.isFile()) {
+        throw new Error(`不支持的上游快照条目类型：upstream/${path}`);
+      }
+      const digest = sha256(await readFile(absolutePath));
+      return `${digest}  file upstream/${path}`;
     }),
   );
   const output = `${lines.join("\n")}\n`;
   await writeFile(resolve(root, "MANIFEST.sha256"), output, "utf8");
   return output;
+}
+
+function sha256(content) {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 async function listFiles(root) {

@@ -1,4 +1,12 @@
-import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -242,6 +250,54 @@ describe("release validation", () => {
     );
 
     await expect(validateReleaseLayout(root)).rejects.toThrow(/清单外文件/);
+  });
+
+  it("fails when an upstream snapshot is missing a listed file", async () => {
+    const root = await makeReleaseCopy();
+    await rm(join(root, "vendor/openspec/upstream/README.md"));
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(/缺少清单文件/);
+  });
+
+  it("fails when pinned VERSION metadata is modified", async () => {
+    const root = await makeReleaseCopy();
+    const path = join(root, "vendor/openspec/VERSION.json");
+    const metadata = JSON.parse(await readFile(path, "utf8"));
+    metadata.commit = "0000000000000000000000000000000000000000";
+    await writeFile(path, JSON.stringify(metadata), "utf8");
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(
+      /VERSION\.json 的 commit/,
+    );
+  });
+
+  it("fails when an upstream LICENSE is missing", async () => {
+    const root = await makeReleaseCopy();
+    await rm(join(root, "vendor/superpowers/upstream/LICENSE"));
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(
+      /缺少发布必需文件.*LICENSE/,
+    );
+  });
+
+  it("fails when a symbolic link is replaced by a regular file", async () => {
+    const root = await makeReleaseCopy();
+    const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
+    await rm(path);
+    await writeFile(path, "CLAUDE.md", "utf8");
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(/类型不一致/);
+  });
+
+  it("fails when a symbolic link target is modified", async () => {
+    const root = await makeReleaseCopy();
+    const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
+    await rm(path);
+    await symlink("README.md", path);
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(
+      /符号链接目标不一致/,
+    );
   });
 });
 

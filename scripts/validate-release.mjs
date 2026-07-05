@@ -1,7 +1,7 @@
 /* global URL, console, process */
 
 import { createHash } from "node:crypto";
-import { access, readdir, readFile } from "node:fs/promises";
+import { access, lstat, readdir, readFile, readlink } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -140,24 +140,39 @@ async function validateVendorSnapshot(root, spec) {
     await readFile(join(vendorRoot, "MANIFEST.sha256"), "utf8"),
     spec.directory,
   );
-  const actualPaths = await listFiles(upstreamRoot);
-  const actualSet = new Set(actualPaths);
+  const actualEntries = await listEntries(upstreamRoot);
+  const actualByPath = new Map(
+    actualEntries.map((entry) => [entry.path, entry]),
+  );
 
   for (const path of manifest.keys()) {
-    if (!actualSet.has(path)) {
+    if (!actualByPath.has(path)) {
       throw new Error(`${spec.directory} 快照缺少清单文件：upstream/${path}`);
     }
   }
-  for (const path of actualPaths) {
-    if (!manifest.has(path)) {
-      throw new Error(`${spec.directory} 快照存在清单外文件：upstream/${path}`);
+  for (const entry of actualEntries) {
+    if (!manifest.has(entry.path)) {
+      throw new Error(
+        `${spec.directory} 快照存在清单外文件：upstream/${entry.path}`,
+      );
     }
   }
-  for (const [path, expectedDigest] of manifest) {
-    const digest = createHash("sha256")
-      .update(await readFile(join(upstreamRoot, path)))
-      .digest("hex");
-    if (digest !== expectedDigest) {
+  for (const [path, expected] of manifest) {
+    const actual = actualByPath.get(path);
+    if (actual.type !== expected.type) {
+      throw new Error(`${spec.directory} 快照条目类型不一致：upstream/${path}`);
+    }
+    if (actual.type === "symlink" && actual.target !== expected.target) {
+      throw new Error(
+        `${spec.directory} 快照符号链接目标不一致：upstream/${path}`,
+      );
+    }
+    const content =
+      actual.type === "symlink"
+        ? actual.target
+        : await readFile(join(upstreamRoot, path));
+    const digest = createHash("sha256").update(content).digest("hex");
+    if (digest !== expected.digest) {
       throw new Error(`${spec.directory} 快照文件摘要不一致：upstream/${path}`);
     }
   }
@@ -166,38 +181,76 @@ async function validateVendorSnapshot(root, spec) {
 function parseManifest(content, directory) {
   const entries = new Map();
   for (const line of content.trimEnd().split("\n")) {
-    const match = /^([a-f0-9]{64}) {2}upstream\/(.+)$/.exec(line);
-    if (
-      !match ||
-      match[2].startsWith("/") ||
-      match[2].split("/").includes("..")
-    ) {
+    const fileMatch = /^([a-f0-9]{64}) {2}file upstream\/(.+)$/.exec(line);
+    const symlinkMatch =
+      /^([a-f0-9]{64}) {2}symlink upstream\/(.+) -> (".*")$/.exec(line);
+    let entry;
+    try {
+      entry = fileMatch
+        ? { digest: fileMatch[1], path: fileMatch[2], type: "file" }
+        : symlinkMatch
+          ? {
+              digest: symlinkMatch[1],
+              path: symlinkMatch[2],
+              type: "symlink",
+              target: JSON.parse(symlinkMatch[3]),
+            }
+          : undefined;
+    } catch {
+      entry = undefined;
+    }
+    if (!entry || !isSafeManifestPath(entry.path)) {
       throw new Error(`${directory} MANIFEST.sha256 包含无效条目：${line}`);
     }
-    if (entries.has(match[2])) {
-      throw new Error(`${directory} MANIFEST.sha256 包含重复条目：${match[2]}`);
+    if (entry.type === "symlink" && typeof entry.target !== "string") {
+      throw new Error(`${directory} MANIFEST.sha256 包含无效条目：${line}`);
     }
-    entries.set(match[2], match[1]);
+    if (entries.has(entry.path)) {
+      throw new Error(
+        `${directory} MANIFEST.sha256 包含重复条目：${entry.path}`,
+      );
+    }
+    entries.set(entry.path, entry);
   }
   return entries;
 }
 
-async function listFiles(root) {
-  const files = [];
+function isSafeManifestPath(path) {
+  return !path.startsWith("/") && !path.split("/").includes("..");
+}
+
+async function listEntries(root) {
+  const entries = [];
 
   async function visit(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const absolutePath = resolve(directory, entry.name);
-      if (entry.isDirectory()) {
+      const stats = await lstat(absolutePath);
+      if (stats.isDirectory()) {
         await visit(absolutePath);
+      } else if (stats.isSymbolicLink()) {
+        entries.push({
+          path: relative(root, absolutePath).split(sep).join("/"),
+          type: "symlink",
+          target: await readlink(absolutePath),
+        });
+      } else if (stats.isFile()) {
+        entries.push({
+          path: relative(root, absolutePath).split(sep).join("/"),
+          type: "file",
+        });
       } else {
-        files.push(relative(root, absolutePath).split(sep).join("/"));
+        throw new Error(
+          `不支持的上游快照条目类型：${relative(root, absolutePath)}`,
+        );
       }
     }
   }
 
   await visit(root);
-  return files.sort();
+  return entries.sort((left, right) =>
+    left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
+  );
 }
 
 function assertString(value, field) {
