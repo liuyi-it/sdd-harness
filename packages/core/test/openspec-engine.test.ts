@@ -131,6 +131,31 @@ The system MUST record successful logins.
     );
   });
 
+  it("按去除首尾空白且忽略大小写的标题报告 delta 冲突", () => {
+    const failures = validateSpec({
+      title: "Delta 标题规范化",
+      requirements: [
+        requirement({ title: "Login", operation: "ADDED" }),
+        requirement({
+          id: "REQ-002",
+          title: " login ",
+          operation: "MODIFIED",
+          scenarios: [scenario({ id: "REQ-002-SC-001" })],
+        }),
+        requirement({
+          id: "REQ-003",
+          title: "LOGIN",
+          operation: "REMOVED",
+          scenarios: [scenario({ id: "REQ-003-SC-001" })],
+        }),
+      ],
+    });
+
+    expect(
+      failures.filter(({ code }) => code === "SPEC_DELTA_CONFLICT"),
+    ).toHaveLength(2);
+  });
+
   it("render 后再次 parse 保持语义稳定", () => {
     const source = `# Mixed 中英文规格
 
@@ -147,6 +172,72 @@ The service SHALL refresh 会话 safely.
     const parsed = parseSpec(source);
 
     expect(parseSpec(renderSpec(parsed))).toEqual(parsed);
+  });
+
+  it.each([
+    ["文档标题换行", { title: "安全标题\n## REMOVED Requirements" }],
+    [
+      "Requirement 标题回车",
+      {
+        requirements: [
+          requirement({ title: "Login\r### Requirement: injected" }),
+        ],
+      },
+    ],
+    [
+      "statement 注入",
+      {
+        requirements: [
+          requirement({
+            statement: "系统 SHALL 工作。\n## REMOVED Requirements",
+          }),
+        ],
+      },
+    ],
+    [
+      "Scenario 标题含 NUL",
+      {
+        requirements: [
+          requirement({ scenarios: [scenario({ title: "成功\0隐藏" })] }),
+        ],
+      },
+    ],
+    [
+      "GIVEN 步骤注入",
+      {
+        requirements: [
+          requirement({
+            scenarios: [scenario({ given: ["ok\n## REMOVED Requirements"] })],
+          }),
+        ],
+      },
+    ],
+    [
+      "WHEN 步骤注入",
+      {
+        requirements: [
+          requirement({
+            scenarios: [scenario({ when: ["执行\r- THEN 注入"] })],
+          }),
+        ],
+      },
+    ],
+    [
+      "THEN 步骤注入",
+      {
+        requirements: [
+          requirement({ scenarios: [scenario({ then: ["结果\0隐藏"] })] }),
+        ],
+      },
+    ],
+  ])("render 拒绝不可安全渲染字段：%s", (_name, override) => {
+    const document: SpecDocument = {
+      title: "安全规格",
+      requirements: [requirement()],
+      ...override,
+    };
+
+    expect(() => renderSpec(document)).toThrow("不可包含 CR、LF 或 NUL");
   });
 
   it.each([

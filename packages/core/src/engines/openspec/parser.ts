@@ -11,6 +11,7 @@ const SCENARIO_HEADING = /^#### Scenario:(.*)$/;
 const STEP = /^-\s+(GIVEN|WHEN|THEN)\s+(.+)$/i;
 
 export function parseSpec(markdown: string): SpecDocument {
+  if (markdown.includes("\0")) throw new Error("OpenSpec 文档不可包含 NUL");
   const lines = markdown.replace(/\r\n?/g, "\n").split("\n");
   const firstContent = lines.findIndex((line) => line.trim() !== "");
   if (firstContent < 0) throw new Error("OpenSpec 文档缺少一级标题");
@@ -27,7 +28,7 @@ export function parseSpec(markdown: string): SpecDocument {
 
   const finishRequirement = () => {
     if (!requirement) return;
-    requirement.statement = statementLines.join("\n").trim();
+    requirement.statement = statementLines.join(" ").trim();
     requirements.push(requirement);
     requirement = undefined;
     scenario = undefined;

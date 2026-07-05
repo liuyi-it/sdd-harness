@@ -1,6 +1,7 @@
 import type { SpecDocument, SpecScenario } from "./model.js";
 
 export function renderSpec(document: SpecDocument): string {
+  assertDocumentRenderSafe(document);
   const lines = [`# ${document.title}`];
   let priorOperation: string | undefined;
 
@@ -19,6 +20,30 @@ export function renderSpec(document: SpecDocument): string {
   }
 
   return `${lines.join("\n")}\n`;
+}
+
+function assertDocumentRenderSafe(document: SpecDocument): void {
+  assertRenderSafe(document.title, "title");
+  document.requirements.forEach((requirement, requirementIndex) => {
+    const requirementPath = `requirements[${requirementIndex}]`;
+    assertRenderSafe(requirement.title, `${requirementPath}.title`);
+    assertRenderSafe(requirement.statement, `${requirementPath}.statement`);
+    requirement.scenarios.forEach((scenario, scenarioIndex) => {
+      const scenarioPath = `${requirementPath}.scenarios[${scenarioIndex}]`;
+      assertRenderSafe(scenario.title, `${scenarioPath}.title`);
+      for (const key of ["given", "when", "then"] as const) {
+        scenario[key].forEach((step, stepIndex) => {
+          assertRenderSafe(step, `${scenarioPath}.${key}[${stepIndex}]`);
+        });
+      }
+    });
+  });
+}
+
+function assertRenderSafe(value: string, path: string): void {
+  if (/[\r\n\0]/.test(value)) {
+    throw new Error(`OpenSpec 字段 ${path} 不可包含 CR、LF 或 NUL`);
+  }
 }
 
 function renderScenario(lines: string[], scenario: SpecScenario): void {

@@ -24,7 +24,8 @@ export function validateSpec(document: SpecDocument): SpecValidationFailure[] {
       });
     }
 
-    const priorOperation = operationsByTitle.get(requirement.title);
+    const normalizedTitle = requirement.title.trim().toLowerCase();
+    const priorOperation = operationsByTitle.get(normalizedTitle);
     if (priorOperation && priorOperation !== requirement.operation) {
       failures.push({
         code: "SPEC_DELTA_CONFLICT",
@@ -32,7 +33,7 @@ export function validateSpec(document: SpecDocument): SpecValidationFailure[] {
         message: `Requirement “${requirement.title}” 同时使用了 ${priorOperation} 和 ${requirement.operation}`,
       });
     } else if (!priorOperation) {
-      operationsByTitle.set(requirement.title, requirement.operation);
+      operationsByTitle.set(normalizedTitle, requirement.operation);
     }
 
     requirement.scenarios.forEach((scenario, scenarioIndex) => {
