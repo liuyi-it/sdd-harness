@@ -14,8 +14,9 @@ interface RequirementPlan {
 
 const PHASES: TddPhase[] = ["RED", "GREEN", "REFACTOR", "VERIFY"];
 const FILE_PATTERN =
-  /(?:[\w@.-]+\/)*[\w@.-]+\.(?:properties|json|java|scala|swift|tsx|jsx|mjs|cjs|xml|ya?ml|kt|go|rs|py|rb|php|cs|ts|js)(?![\w.])/gi;
-const DIRECTORY_PATTERN = /[\w@.-]+(?:\/[\w@.-]+)+\/(?=$|[\s`'"),:])/g;
+  /(?:^|[\s`'"([])((?:(?:[A-Za-z]:)?\/{1,2})?(?:[\w@.-]+\/)*[\w@.-]+\.(?:properties|json|java|scala|swift|tsx|jsx|mjs|cjs|xml|ya?ml|kt|go|rs|py|rb|php|cs|ts|js))(?=$|[\s`'"),:\]])/gi;
+const DIRECTORY_PATTERN =
+  /(?:^|[\s`'"([])((?:(?:[A-Za-z]:)?\/{1,2})?[\w@.-]+(?:\/[\w@.-]+)+\/)(?=$|[\s`'"),:\]])/g;
 
 export function createAtomicTasks(input: PlanningInput): {
   tasks: TaskDefinition[];
@@ -101,13 +102,12 @@ export function extractPaths(text: string): string[] {
   const paths: string[] = [];
   for (const rawLine of text.split(/\r?\n/)) {
     const line = rawLine.replaceAll("\\", "/");
-    if (hasUnsafePathSyntax(line)) continue;
     for (const match of line.matchAll(FILE_PATTERN)) {
-      const path = match[0];
+      const path = match[1]!;
       if (isSafeRelativePath(path)) paths.push(path);
     }
     for (const match of line.matchAll(DIRECTORY_PATTERN)) {
-      const directory = match[0];
+      const directory = match[1]!;
       if (isSafeFocusedDirectory(directory)) paths.push(`${directory}**`);
     }
   }
@@ -264,12 +264,7 @@ function isSourceFile(file: string): boolean {
 }
 
 function isSafeFocusedDirectory(directory: string): boolean {
-  if (
-    directory.startsWith("/") ||
-    directory.startsWith("./") ||
-    directory.includes("\\")
-  )
-    return false;
+  if (!isSafeRelativePath(directory)) return false;
   const segments = directory.split("/").filter(Boolean);
   return (
     segments.length >= 2 &&
@@ -285,15 +280,6 @@ function isSafeRelativePath(path: string): boolean {
     !/^[A-Za-z]:\//.test(path) &&
     !path.startsWith("//") &&
     path.split("/").every((segment) => segment !== "." && segment !== "..")
-  );
-}
-
-function hasUnsafePathSyntax(line: string): boolean {
-  return (
-    /(?:^|\s)[A-Za-z]:\//.test(line) ||
-    /(?:^|\s)\/\//.test(line) ||
-    /(?:^|\s)\/(?!\/)/.test(line) ||
-    /(?:^|\/)\.\.\//.test(line)
   );
 }
 

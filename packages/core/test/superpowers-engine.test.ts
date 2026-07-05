@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { TddEngine } from "../src/engines/tdd/tdd-engine.js";
+import { extractPaths } from "../src/engines/superpowers/planner.js";
 import { detectProjectCommands } from "../src/engines/superpowers/project-commands.js";
 import { SddError } from "../src/errors.js";
 
@@ -49,6 +50,20 @@ const explicitlyMappedImpact = [
 ].join("\n");
 
 describe("Superpowers 原子计划器", () => {
+  it.each([
+    ["Unix 绝对路径", "`/tmp/src/order.ts`"],
+    ["Windows drive 路径", '"C:\\src\\order.ts"'],
+    ["Windows UNC 路径", "(\\\\server\\share\\order.ts)"],
+  ])("Markdown 包裹的%s不会被截断为相对路径", (_name, text) => {
+    expect(extractPaths(text)).toEqual([]);
+  });
+
+  it("提取 Markdown 包裹的安全相对路径", () => {
+    expect(
+      extractPaths("- `src/orders/order.ts` 和 (test/order.test.ts)"),
+    ).toEqual(["src/orders/order.ts", "test/order.test.ts"]);
+  });
+
   it("每个 requirement 生成严格依赖的四阶段任务链并关联场景", () => {
     const plan = generate(explicitlyMappedImpact);
 
