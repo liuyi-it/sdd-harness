@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,6 +17,14 @@ async function fixture(name: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `sdd-e2e-${name}-`));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await mkdir(join(root, "src"));
+  await mkdir(join(root, "test"));
+  await writeFile(
+    join(root, "package.json"),
+    '{"scripts":{"test":"vitest"}}\n',
+  );
+  await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+  await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
   return root;
 }
 

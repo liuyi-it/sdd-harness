@@ -272,7 +272,8 @@ describe("适配器契约一致性", () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       index: vi.fn().mockResolvedValue(undefined),
       summarize: vi.fn().mockResolvedValue({
-        codebaseSummary: "MCP summary",
+        codebaseSummary:
+          "package.json\nsrc/order.ts\ntest/order.test.ts\nMCP summary",
         packageStructure: "src",
         architecture: "arch",
       }),
@@ -321,7 +322,8 @@ describe("适配器契约一致性", () => {
       isAvailable: vi.fn().mockResolvedValue(true),
       index: vi.fn().mockResolvedValue(undefined),
       summarize: vi.fn().mockResolvedValue({
-        codebaseSummary: "MCP summary",
+        codebaseSummary:
+          "package.json\nsrc/order.ts\ntest/order.test.ts\nMCP summary",
         packageStructure: "src",
         architecture: "arch",
       }),

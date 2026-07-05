@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,10 +10,22 @@ import { Core } from "../src/core.js";
 // 这组测试验证 auto 是否能按阶段顺序串联整个工作流，并在阻塞点正确停下。
 const roots: string[] = [];
 
+async function seedProject(root: string): Promise<void> {
+  await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await mkdir(join(root, "src"));
+  await mkdir(join(root, "test"));
+  await writeFile(
+    join(root, "package.json"),
+    '{"scripts":{"test":"vitest"}}\n',
+  );
+  await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+  await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
+}
+
 async function initializedCore(): Promise<{ root: string; core: Core }> {
   const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
   roots.push(root);
-  await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await seedProject(root);
   const core = new Core({
     codebase: new CodebaseAdapter(),
     taskExecutor: {
@@ -95,19 +107,19 @@ describe("sdd auto", () => {
   it("resumes from FAILED by retrying the recorded stage", async () => {
     const execute = vi
       .fn()
+      .mockResolvedValue({
+        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+        verification: [{ command: "npm test", passed: true, output: "passed" }],
+      })
       .mockResolvedValueOnce({
         modifiedFiles: ["src/order.ts"],
         verification: [
           { command: "npm test", passed: false, output: "failed" },
         ],
-      })
-      .mockResolvedValueOnce({
-        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
       });
     const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
     roots.push(root);
-    await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+    await seedProject(root);
     const core = new Core({
       codebase: new CodebaseAdapter(),
       taskExecutor: { execute },
@@ -133,7 +145,7 @@ describe("sdd auto", () => {
     const result = await core.execute({ command: "auto", cwd: root });
 
     expect(result).toMatchObject({ ok: true, state: "ARCHIVED", exitCode: 0 });
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(9);
   });
 
   it("resumes from PAUSED by replaying the interrupted stage", async () => {
@@ -172,7 +184,7 @@ describe("sdd auto", () => {
   it("auto 在某一阶段超时后返回 FAILED", async () => {
     const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
     roots.push(root);
-    await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+    await seedProject(root);
     const core = new Core({
       codebase: new CodebaseAdapter(),
       taskExecutor: {

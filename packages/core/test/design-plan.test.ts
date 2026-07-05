@@ -1,4 +1,11 @@
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +22,14 @@ async function specifiedProject(): Promise<{ root: string; core: Core }> {
   const root = await mkdtemp(join(tmpdir(), "sdd-design-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Order service\n", "utf8");
+  await mkdir(join(root, "src"));
+  await mkdir(join(root, "test"));
+  await writeFile(
+    join(root, "package.json"),
+    '{"scripts":{"test":"vitest"}}\n',
+  );
+  await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+  await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
   const core = new Core({ codebase: new CodebaseAdapter() });
   await core.execute({ command: "init", cwd: root });
   await core.execute({
@@ -131,7 +146,7 @@ describe("design and plan", () => {
       artifactHash: string;
       createdAt: string;
     };
-    expect(tasks).toContain("TASK-001");
+    expect(tasks).toContain("TASK-001-RED");
     expect(tasks).toContain("REQ-001");
     expect(tasks).toContain("Allowed Files");
     expect(tasks).toContain("Verification");
@@ -159,7 +174,7 @@ describe("design and plan", () => {
       });
     }
     const contextPack = await readFile(
-      join(root, ".sdd/context-packs/add-order-cancellation/TASK-001.md"),
+      join(root, ".sdd/context-packs/add-order-cancellation/TASK-001-RED.md"),
       "utf8",
     );
     expect(contextPack).toContain("Allowed Files");
@@ -178,7 +193,10 @@ describe("design and plan", () => {
     const state = JSON.parse(
       await readFile(join(root, ".sdd/state.json"), "utf8"),
     );
-    expect(state.tasks).toEqual({ "TASK-001": "PENDING" });
+    expect(Object.keys(state.tasks)).toHaveLength(16);
+    expect(Object.values(state.tasks)).toEqual(
+      expect.arrayContaining(["PENDING"]),
+    );
   });
 
   it("rejects plan before design", async () => {

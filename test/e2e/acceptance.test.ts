@@ -1,5 +1,6 @@
 import {
   access,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -24,6 +25,14 @@ async function fixture(name: string): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), `sdd-acceptance-${name}-`));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await mkdir(join(root, "src"));
+  await mkdir(join(root, "test"));
+  await writeFile(
+    join(root, "package.json"),
+    '{"scripts":{"test":"vitest"}}\n',
+  );
+  await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+  await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
   return root;
 }
 

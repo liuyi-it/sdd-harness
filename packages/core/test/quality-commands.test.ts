@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,6 +26,14 @@ async function builtProject(): Promise<{ root: string; core: Core }> {
   const root = await mkdtemp(join(tmpdir(), "sdd-quality-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await mkdir(join(root, "src"));
+  await mkdir(join(root, "test"));
+  await writeFile(
+    join(root, "package.json"),
+    '{"scripts":{"test":"vitest"}}\n',
+  );
+  await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+  await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
   execFileSync("git", ["init", "-b", "main"], { cwd: root });
   execFileSync("git", ["config", "user.email", "test@example.com"], {
     cwd: root,
@@ -26,7 +41,7 @@ async function builtProject(): Promise<{ root: string; core: Core }> {
   execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
     cwd: root,
   });
-  execFileSync("git", ["add", "README.md"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
   execFileSync("git", ["commit", "-m", "init"], { cwd: root });
   const core = new Core({
     codebase: new CodebaseAdapter(),

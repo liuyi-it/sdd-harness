@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -20,6 +20,14 @@ async function plannedProject(
   const root = await mkdtemp(join(tmpdir(), "sdd-build-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await mkdir(join(root, "src"));
+  await mkdir(join(root, "test"));
+  await writeFile(
+    join(root, "package.json"),
+    '{"scripts":{"test":"vitest"}}\n',
+  );
+  await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+  await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
   execFileSync("git", ["init", "-b", "main"], { cwd: root });
   execFileSync("git", ["config", "user.email", "test@example.com"], {
     cwd: root,
@@ -27,7 +35,7 @@ async function plannedProject(
   execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
     cwd: root,
   });
-  execFileSync("git", ["add", "README.md"], { cwd: root });
+  execFileSync("git", ["add", "."], { cwd: root });
   execFileSync("git", ["commit", "-m", "init"], { cwd: root });
   const core = new Core({
     codebase: new CodebaseAdapter(),
@@ -70,19 +78,25 @@ describe("sdd build", () => {
       state: "BUILD_READY",
       next: "sdd verify",
     });
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(8);
     const state = JSON.parse(
       await readFile(join(root, ".sdd/state.json"), "utf8"),
     );
-    expect(state.tasks).toEqual({ "TASK-001": "DONE" });
-    expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/changes/add-cancel/task-results.json"),
-          "utf8",
-        ),
+    expect(Object.keys(state.tasks)).toHaveLength(8);
+    expect(Object.values(state.tasks)).toEqual(
+      expect.arrayContaining(["DONE"]),
+    );
+    const taskResults = JSON.parse(
+      await readFile(
+        join(root, ".sdd/changes/add-cancel/task-results.json"),
+        "utf8",
       ),
-    ).toMatchObject([{ taskId: "TASK-001", verification: [{ passed: true }] }]);
+    );
+    expect(taskResults).toHaveLength(8);
+    expect(taskResults[0]).toMatchObject({
+      taskId: "TASK-001-RED",
+      verification: [{ passed: true }],
+    });
     expect(
       JSON.parse(
         await readFile(
@@ -205,15 +219,15 @@ describe("sdd build", () => {
   it("marks a failed task and can retry only failed tasks", async () => {
     const execute = vi
       .fn()
+      .mockResolvedValue({
+        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+        verification: [{ command: "npm test", passed: true, output: "passed" }],
+      })
       .mockResolvedValueOnce({
         modifiedFiles: ["src/order.ts"],
         verification: [
           { command: "npm test", passed: false, output: "failed" },
         ],
-      })
-      .mockResolvedValueOnce({
-        modifiedFiles: ["src/order.ts"],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
       });
     const { root, core } = await plannedProject({ execute });
 
@@ -225,7 +239,7 @@ describe("sdd build", () => {
       ok: true,
       state: "BUILD_READY",
     });
-    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenCalledTimes(9);
   });
 
   it("moves to PAUSED with exit code 130 when cancelled", async () => {

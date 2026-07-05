@@ -1,15 +1,10 @@
-export interface TaskDefinition {
-  id: string;
-  title: string;
-  status: "PENDING" | "BUILDING" | "DONE" | "FAILED" | "SKIPPED";
-  requirements: string[];
-  dependsOn: string[];
-  allowedFiles: string[];
-  expectedNewFiles: string[];
-  forbiddenFiles: string[];
-  verification: string[];
-  doneCriteria: string[];
-}
+import { createAtomicTasks, extractPaths } from "../superpowers/planner.js";
+import type {
+  PlanArtifacts,
+  PlanningInput,
+  TaskDefinition,
+  TddPhase,
+} from "../superpowers/protocol.js";
 
 interface DesignInput {
   spec: string;
@@ -19,25 +14,16 @@ interface DesignInput {
   architecture: string;
 }
 
-interface PlanInput {
-  spec: string;
-  design: string;
-  impact: string;
-  codebaseSummary: string;
-}
-
-export interface PlanArtifacts {
-  tasks: TaskDefinition[];
-  tasksMarkdown: string;
-  testPlan: string;
-  context: string;
-  contextPacks: Record<string, string>;
-}
-
 type MaybePromise<T> = T | Promise<T>;
+
+export type { PlanArtifacts, TaskDefinition, TddPhase };
 
 export class TddEngine {
   generateDesign(input: DesignInput): MaybePromise<string> {
+    const affectedFiles = extractPaths(
+      `${input.impact}\n${input.codebaseSummary}\n${input.architecture}`,
+    );
+    const requirementLines = structuredRequirementLines(input.spec);
     return [
       "# Design",
       "",
@@ -47,41 +33,49 @@ export class TddEngine {
       "",
       input.packageStructure,
       "",
+      "## Structured Requirements and Scenarios",
+      "",
+      ...requirementLines,
+      "",
       "## Target Design",
       "",
-      "Implement the specification through the existing project boundaries. Keep command, domain, persistence, and test responsibilities isolated.",
+      "沿用已索引代码库的现有模块边界，以每个 Requirement 的 Scenario 作为可验证行为单元。",
       "",
       "## Affected Modules and Files",
+      "",
+      ...(affectedFiles.length === 0
+        ? [input.architecture]
+        : affectedFiles.map((file) => `- ${file}`)),
       "",
       input.architecture,
       "",
       "## API Changes",
       "",
-      "Expose only the API behavior explicitly required by the specification; validate inputs and preserve compatibility.",
+      "仅公开规格明确要求的接口行为，并保持未涉及行为兼容。",
       "",
       "## Data Changes",
       "",
-      "Persist only required state. Any schema change requires a forward migration and tested rollback.",
+      "仅持久化规格要求的状态；若涉及结构变更，需提供迁移和回滚验证。",
       "",
       "## Transaction and Idempotency",
       "",
-      "Apply state changes atomically, reject invalid transitions, and make repeated requests safe.",
+      "状态修改保持原子性，并为规格中的重复操作定义稳定结果。",
       "",
       "## Error Handling",
       "",
-      "Return stable domain errors for missing, unauthorized, conflicting, and invalid operations.",
+      "按 Scenario 的失败路径返回稳定错误，不吞掉边界异常。",
       "",
       "## Logging and Monitoring",
       "",
-      "Record security-relevant state transitions without secrets or full source content.",
+      "记录必要状态变化，不记录密钥或完整源码内容。",
       "",
       "## Testing Strategy",
       "",
-      "Use test-first unit coverage, integration coverage at module boundaries, and end-to-end acceptance scenarios.",
+      "每个 Scenario 执行 RED、GREEN、REFACTOR、VERIFY 四阶段链。",
       "",
       "## Risks and Rollback",
       "",
-      "Risks include authorization gaps, stale state, concurrent updates, and incompatible data changes. Roll back code and migrations together.",
+      "风险由受影响文件、兼容边界和状态变更决定；代码与数据变更应可共同回滚。",
       "",
       "## Specification Reference",
       "",
@@ -93,119 +87,145 @@ export class TddEngine {
     ].join("\n");
   }
 
-  generatePlan(input: PlanInput): MaybePromise<PlanArtifacts> {
-    const requirements = extractRequirements(input.spec);
-    const task: TaskDefinition = {
-      id: "TASK-001",
-      title: "Implement and verify the specified behavior",
-      status: "PENDING",
-      requirements: requirements.length === 0 ? ["REQ-001"] : requirements,
-      dependsOn: [],
-      allowedFiles: ["src/**", "packages/**", "test/**", "tests/**", "docs/**"],
-      expectedNewFiles: ["src/**", "packages/**", "test/**", "tests/**"],
-      forbiddenFiles: [".git/**", ".env", "**/credentials*"],
-      verification: ["npm test"],
-      doneCriteria: [
-        "All linked requirements and acceptance criteria are implemented",
-        "Success, failure, security, and concurrency paths are tested",
-        "No files outside the allowed scope are modified",
-      ],
-    };
-    const tasksMarkdown = [
-      "# Tasks",
-      "",
-      `## ${task.id}: ${task.title}`,
-      "",
-      `Status: ${task.status}`,
-      "",
-      "Requirements:",
-      ...task.requirements.map((requirement) => `- ${requirement}`),
-      "",
-      "Depends On:",
-      "- None",
-      "",
-      "Allowed Files:",
-      ...task.allowedFiles.map((file) => `- ${file}`),
-      "",
-      "Expected New Files:",
-      ...task.expectedNewFiles.map((file) => `- ${file}`),
-      "",
-      "Forbidden Files:",
-      ...task.forbiddenFiles.map((file) => `- ${file}`),
-      "",
-      "Verification:",
-      ...task.verification.map((command) => `- ${command}`),
-      "",
-      "Done Criteria:",
-      ...task.doneCriteria.map((criterion) => `- ${criterion}`),
-    ].join("\n");
-    const context = [
-      "# Change Context",
-      "",
-      "## Codebase",
-      "",
-      input.codebaseSummary,
-      "",
-      "## Impact",
-      "",
-      input.impact,
-      "",
-      "## Design",
-      "",
-      input.design,
-    ].join("\n");
-    const contextPack = [
-      `# Context Pack: ${task.id}`,
-      "",
-      "## Task",
-      "",
-      task.title,
-      "",
-      "## Requirements",
-      ...task.requirements.map((requirement) => `- ${requirement}`),
-      "",
-      "## Allowed Files",
-      ...task.allowedFiles.map((file) => `- ${file}`),
-      "",
-      "## Forbidden Files",
-      ...task.forbiddenFiles.map((file) => `- ${file}`),
-      "",
-      "## Relevant Code Context",
-      "",
-      input.codebaseSummary,
-      "",
-      "## Verification",
-      ...task.verification.map((command) => `- ${command}`),
-      "",
-      "## Risk",
-      "",
-      "Do not expand file scope or bypass existing security and architecture boundaries.",
-    ].join("\n");
+  generatePlan(input: PlanningInput): MaybePromise<PlanArtifacts> {
+    const { tasks, requirements } = createAtomicTasks(input);
     return {
-      tasks: [task],
-      tasksMarkdown,
-      testPlan: [
-        "# Test Plan",
+      tasks,
+      tasksMarkdown: renderTasks(tasks),
+      testPlan: renderTestPlan(requirements),
+      context: [
+        "# Change Context",
         "",
-        "## Unit",
-        "- Test each requirement and error branch in isolation.",
+        "## Codebase",
         "",
-        "## Integration",
-        "- Test module boundaries and persistence behavior.",
+        input.codebaseSummary,
         "",
-        "## End-to-End",
-        "- Exercise acceptance criteria from the public interface.",
+        "## Impact",
         "",
-        "## Security and Concurrency",
-        "- Verify authorization, invalid inputs, duplicate operations, and concurrent operations.",
+        input.impact,
+        "",
+        "## Design",
+        "",
+        input.design,
       ].join("\n"),
-      context,
-      contextPacks: { [task.id]: contextPack },
+      contextPacks: Object.fromEntries(
+        tasks.map((task) => [task.id, renderContextPack(task, input)]),
+      ),
     };
   }
 }
 
-function extractRequirements(spec: string): string[] {
-  return extractRequirementIds(spec);
+function renderTasks(tasks: TaskDefinition[]): string {
+  return [
+    "# Tasks",
+    ...tasks.flatMap((task) => [
+      "",
+      `## ${task.id}: ${task.title}`,
+      "",
+      `Phase: ${task.phase}`,
+      "",
+      `Status: ${task.status}`,
+      "",
+      ...list("Requirements", task.requirements),
+      "",
+      ...list("Scenarios", task.scenarios),
+      "",
+      ...list("Depends On", task.dependsOn),
+      "",
+      ...list("Allowed Files", task.allowedFiles),
+      "",
+      ...list("Expected New Files", task.expectedNewFiles),
+      "",
+      ...list("Forbidden Files", task.forbiddenFiles),
+      "",
+      ...list("Verification", task.verification),
+      "",
+      ...list("Done Criteria", task.doneCriteria),
+    ]),
+  ].join("\n");
 }
-import { extractRequirementIds } from "../openspec/requirement-ids.js";
+
+function renderContextPack(task: TaskDefinition, input: PlanningInput): string {
+  return [
+    `# Context Pack: ${task.id}`,
+    "",
+    "## Task",
+    "",
+    task.title,
+    "",
+    `Phase: ${task.phase}`,
+    "",
+    ...list("Requirements", task.requirements, 2),
+    "",
+    ...list("Scenarios", task.scenarios, 2),
+    "",
+    "## TDD Instruction",
+    "",
+    phaseInstruction(task.phase),
+    "",
+    ...list("Allowed Files", task.allowedFiles, 2),
+    "",
+    ...list("Forbidden Files", task.forbiddenFiles, 2),
+    "",
+    "## Relevant Code Context",
+    "",
+    input.codebaseSummary,
+    "",
+    ...list("Verification", task.verification, 2),
+    "",
+    "## Risk",
+    "",
+    "不得扩大文件范围或绕过现有安全与架构边界。",
+  ].join("\n");
+}
+
+function renderTestPlan(
+  requirements: Array<{
+    id: string;
+    title: string;
+    scenarios: Array<{ id: string; title: string }>;
+  }>,
+): string {
+  return [
+    "# Test Plan",
+    ...requirements.flatMap((requirement) =>
+      requirement.scenarios.flatMap((scenario) => [
+        "",
+        `## ${scenario.id}: ${scenario.title}`,
+        "",
+        `Requirement: ${requirement.id} ${requirement.title}`,
+        "",
+        "- RED：先实现能因目标行为缺失而失败的场景测试。",
+        "- 正向路径：验证 Scenario 定义的成功结果。",
+        "- 反向路径：验证前置条件不满足、无效输入或边界失败。",
+        "- VERIFY：执行项目完整验证命令并保留结果。",
+      ]),
+    ),
+  ].join("\n");
+}
+
+function phaseInstruction(phase: TddPhase): string {
+  return {
+    RED: "先写测试并确认测试因缺少目标行为而失败。",
+    GREEN: "只写让关联场景通过的最小实现。",
+    REFACTOR: "在测试保持绿色的前提下整理实现。",
+    VERIFY: "执行完整验证命令，确认关联场景和回归测试通过。",
+  }[phase];
+}
+
+function list(title: string, values: string[], level = 0): string[] {
+  const heading = level === 0 ? `${title}:` : `${"#".repeat(level)} ${title}`;
+  return [
+    heading,
+    ...(values.length === 0 ? ["- None"] : values.map((value) => `- ${value}`)),
+  ];
+}
+
+function structuredRequirementLines(spec: string): string[] {
+  const lines = spec
+    .split(/\r?\n/)
+    .filter((line) => /^### (?:Requirement:|REQ-)|^#### Scenario:/.test(line));
+  return lines.length === 0
+    ? ["- 规格未包含结构化 Requirement。"]
+    : lines.map((line) => `- ${line.replace(/^#+\s*/, "")}`);
+}
