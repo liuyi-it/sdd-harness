@@ -221,6 +221,26 @@ describe("quality commands", () => {
     });
   });
 
+  it("VERIFY_READY 重复 verify 也会重新复核被篡改的 TDD 证据", async () => {
+    const { root, core } = await builtProject();
+    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
+      ok: true,
+    });
+    const resultPath = join(root, ".sdd/changes/add-cancel/task-results.json");
+    const results = JSON.parse(await readFile(resultPath, "utf8"));
+    results[0].tddEvidence = [];
+    await writeFile(
+      resultPath,
+      `${JSON.stringify(results, null, 2)}\n`,
+      "utf8",
+    );
+
+    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_VERIFY_FAILED" },
+    });
+  });
+
   it("verify 在超时后进入 FAILED", async () => {
     const { root, core } = await builtProject();
     const originalSnapshot = GitInspector.prototype.snapshot;

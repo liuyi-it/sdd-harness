@@ -67,9 +67,19 @@ export async function runVerify(
     started = true;
     const resultBundle = await withTimeout(
       (async () => {
+        const [spec, rawTasks, rawResults, currentState] = await Promise.all([
+          readFile(join(change, "spec.md"), "utf8"),
+          readFile(join(change, "tasks.json"), "utf8"),
+          readFile(join(change, "task-results.json"), "utf8"),
+          store.read(),
+        ]);
+        const tasks = JSON.parse(rawTasks) as TaskDefinition[];
+        const results = JSON.parse(rawResults) as StoredTaskResult[];
+        const gate = verifyGate(spec, tasks, results, currentState.tasks);
         const currentSnapshot = await new GitInspector(root).snapshot();
         if (
           state.currentPhase === "VERIFY_READY" &&
+          gate.passed &&
           (await verifySnapshotUnchanged(change, currentSnapshot))
         ) {
           return {
@@ -77,18 +87,12 @@ export async function runVerify(
             currentSnapshot,
           };
         }
-        const spec = await readFile(join(change, "spec.md"), "utf8");
-        const tasks = JSON.parse(
-          await readFile(join(change, "tasks.json"), "utf8"),
-        ) as TaskDefinition[];
-        const results = JSON.parse(
-          await readFile(join(change, "task-results.json"), "utf8"),
-        ) as StoredTaskResult[];
         const baseline = snapshotFromJson(
           JSON.parse(await readFile(join(change, "git-baseline.json"), "utf8")),
         );
-        const gate = verifyGate(spec, tasks, results, state.tasks);
-        const reportedFiles = results.flatMap((result) => result.modifiedFiles);
+        const reportedFiles = results.flatMap((result) =>
+          Array.isArray(result.modifiedFiles) ? result.modifiedFiles : [],
+        );
         const drift = driftFailures(baseline, currentSnapshot, reportedFiles);
         gate.failures.push(...drift);
         gate.passed = gate.failures.length === 0;
@@ -110,10 +114,13 @@ export async function runVerify(
             [
               "测试结果",
               results.flatMap((result) =>
-                result.verification.map(
-                  (entry) =>
-                    `${entry.command}: ${entry.passed ? "PASS" : "FAIL"}`,
-                ),
+                Array.isArray(result.verification)
+                  ? result.verification.map((entry) =>
+                      typeof entry === "object" && entry !== null
+                        ? `${String(entry.command)}: ${entry.passed === true ? "PASS" : "FAIL"}`
+                        : "无效验证证据: FAIL",
+                    )
+                  : [],
               ),
             ],
             ["边界检查", drift],

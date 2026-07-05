@@ -142,6 +142,113 @@ describe("sdd build", () => {
     });
   });
 
+  it.each(["GREEN", "REFACTOR", "VERIFY"] as const)(
+    "%s 证据显式携带 expectedFailure=false 时拒绝",
+    async (phase) => {
+      const execute = vi.fn(async ({ task }) => ({
+        modifiedFiles: [],
+        ...(task.phase === phase
+          ? {
+              tddEvidence: [
+                {
+                  phase: task.phase,
+                  command: "npm test",
+                  passed: true,
+                  expectedFailure: false,
+                  output: "pass",
+                },
+              ],
+              verification:
+                task.phase === "VERIFY"
+                  ? [{ command: "npm test", passed: true, output: "pass" }]
+                  : [],
+            }
+          : evidenceFor(task.phase)),
+      }));
+      const { core, root } = await plannedProject({ execute });
+      expect(await core.execute({ command: "build", cwd: root })).toMatchObject(
+        {
+          ok: false,
+          error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+        },
+      );
+    },
+  );
+
+  it.each(["GREEN", "REFACTOR", "VERIFY"] as const)(
+    "%s passed=false 时拒绝",
+    async (phase) => {
+      const { core, root } = await plannedProject({
+        execute: vi.fn(async ({ task }) => ({
+          modifiedFiles: [],
+          ...(task.phase === phase
+            ? {
+                tddEvidence: [
+                  {
+                    phase,
+                    command: "npm test",
+                    passed: false,
+                    output: "failed",
+                  },
+                ],
+                verification:
+                  phase === "VERIFY"
+                    ? [{ command: "npm test", passed: true, output: "pass" }]
+                    : [],
+              }
+            : evidenceFor(task.phase)),
+        })),
+      });
+      expect(await core.execute({ command: "build", cwd: root })).toMatchObject(
+        { ok: false, error: { code: "E_TDD_EVIDENCE_REQUIRED" } },
+      );
+    },
+  );
+
+  it("VERIFY 缺少 verification 时拒绝", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn(async ({ task }) => ({
+        modifiedFiles: [],
+        ...evidenceFor(task.phase),
+        ...(task.phase === "VERIFY" ? { verification: [] } : {}),
+      })),
+    });
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+    });
+  });
+
+  it("TDD 证据命令越权时安全阻断", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn(async ({ task }) => ({
+        modifiedFiles: [],
+        ...evidenceFor(task.phase),
+        tddEvidence: [
+          { ...evidenceFor(task.phase).tddEvidence[0], command: "rm -rf /" },
+        ],
+      })),
+    });
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_SECURITY_BLOCKED" },
+    });
+  });
+
+  it("畸形 TDD 证据安全失败而不崩溃", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn().mockResolvedValue({
+        modifiedFiles: [],
+        tddEvidence: [{ phase: "RED", command: 1, passed: "no", output: null }],
+        verification: [],
+      }),
+    });
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+    });
+  });
+
   it("持久化各阶段真实证据并允许完整链完成", async () => {
     const execute = vi.fn(async ({ task }) => ({
       modifiedFiles: ["src/order.ts", "test/order.test.ts"],
@@ -347,6 +454,48 @@ describe("sdd build", () => {
     expect(execute).toHaveBeenCalledTimes(9);
   });
 
+  it.each([
+    ["有效", false, 7],
+    ["缺失 TDD 证据", true, 8],
+  ])(
+    "partial retry 对%s DONE result 的执行数正确",
+    async (_name, tamper, retryCalls) => {
+      let failing = true;
+      const execute = vi.fn(async ({ task }) => ({
+        modifiedFiles: [],
+        ...(failing && task.phase === "GREEN"
+          ? {
+              tddEvidence: [
+                {
+                  phase: "GREEN",
+                  command: "npm test",
+                  passed: false,
+                  output: "failed",
+                },
+              ],
+              verification: [],
+            }
+          : evidenceFor(task.phase)),
+      }));
+      const { root, core } = await plannedProject({ execute });
+      expect(await core.execute({ command: "build", cwd: root })).toMatchObject(
+        { ok: false },
+      );
+      if (tamper) {
+        const path = join(root, ".sdd/changes/add-cancel/task-results.json");
+        const results = JSON.parse(await readFile(path, "utf8"));
+        delete results[0].tddEvidence;
+        await writeFile(path, `${JSON.stringify(results, null, 2)}\n`, "utf8");
+      }
+      execute.mockClear();
+      failing = false;
+      expect(await core.execute({ command: "build", cwd: root })).toMatchObject(
+        { ok: true },
+      );
+      expect(execute).toHaveBeenCalledTimes(retryCalls);
+    },
+  );
+
   it("moves to PAUSED with exit code 130 when cancelled", async () => {
     const { root, core } = await plannedProject({ execute: vi.fn() });
     const controller = new AbortController();
@@ -442,7 +591,7 @@ describe("sdd build", () => {
         title: "Orders",
         phase,
         status: "PENDING" as const,
-        requirements: ["REQ-001"],
+        requirements: ["REQ-002"],
         scenarios: ["SCN-001"],
         dependsOn: index === 0 ? [] : [`TASK-001-${phases[index - 1]}`],
         allowedFiles: ["src/orders/**"],

@@ -147,9 +147,16 @@ export async function runBuild(
         validateTaskFiles(modifiedFiles, task);
         const evidenceFailures = taskEvidenceFailures(task, result);
         if (evidenceFailures.length > 0) {
-          const blockedCommand = result.tddEvidence?.find(
-            (entry) => !isCommandAllowed(entry.command),
-          )?.command;
+          const blockedCommand = Array.isArray(result.tddEvidence)
+            ? result.tddEvidence.find(
+                (entry) =>
+                  typeof entry === "object" &&
+                  entry !== null &&
+                  "command" in entry &&
+                  typeof entry.command === "string" &&
+                  !isCommandAllowed(entry.command),
+              )?.command
+            : undefined;
           if (blockedCommand !== undefined)
             throw new SddError(
               "E_SECURITY_BLOCKED",
