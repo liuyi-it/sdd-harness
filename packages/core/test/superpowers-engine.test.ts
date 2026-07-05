@@ -41,19 +41,16 @@ function generate(impact: string, codebaseSummary = `package.json\n${impact}`) {
   });
 }
 
+const explicitlyMappedImpact = [
+  "package.json",
+  "REQ-001 创建订单: src/create-order.ts test/create-order.test.ts",
+  "REQ-002 取消订单: src/cancel-order.ts test/cancel-order.test.ts",
+  "REQ-003 查询订单: src/query-order.ts test/query-order.test.ts",
+].join("\n");
+
 describe("Superpowers 原子计划器", () => {
   it("每个 requirement 生成严格依赖的四阶段任务链并关联场景", () => {
-    const plan = generate(
-      [
-        "package.json",
-        "src/create-order.ts",
-        "test/create-order.test.ts",
-        "src/cancel-order.ts",
-        "test/cancel-order.test.ts",
-        "src/query-order.ts",
-        "test/query-order.test.ts",
-      ].join("\n"),
-    );
+    const plan = generate(explicitlyMappedImpact);
 
     expect(plan.tasks).toHaveLength(12);
     expect(plan.tasks.map((task) => task.phase)).toEqual([
@@ -91,9 +88,7 @@ describe("Superpowers 原子计划器", () => {
   });
 
   it("文件范围不重叠时 requirement 链可以并行", () => {
-    const plan = generate(
-      "src/create-order.ts\ntest/create-order.test.ts\nsrc/cancel-order.ts\ntest/cancel-order.test.ts\nsrc/query-order.ts\ntest/query-order.test.ts",
-    );
+    const plan = generate(explicitlyMappedImpact);
 
     expect(plan.tasks[4]!.dependsOn).toEqual([]);
     expect(plan.tasks[8]!.dependsOn).toEqual([]);
@@ -101,7 +96,12 @@ describe("Superpowers 原子计划器", () => {
 
   it("文件范围重叠时后一条链依赖前一条链 VERIFY", () => {
     const plan = generate(
-      "src/order.ts\ntest/order.test.ts\nsrc/query-order.ts\ntest/query-order.test.ts",
+      [
+        "package.json",
+        "REQ-001 创建订单: src/order.ts test/order.test.ts",
+        "REQ-002 取消订单: src/order.ts test/order.test.ts",
+        "REQ-003 查询订单: src/query-order.ts test/query-order.test.ts",
+      ].join("\n"),
     );
 
     expect(plan.tasks[4]!.dependsOn).toEqual(["TASK-001-VERIFY"]);
@@ -132,7 +132,7 @@ System SHALL combine alpha and beta.
       spec,
       design: "src/alpha.ts src/beta.ts",
       impact:
-        "package.json\nsrc/alpha.ts\ntest/alpha.test.ts\nsrc/beta.ts\ntest/beta.test.ts",
+        "package.json\nsrc/alpha.ts\ntest/alpha.test.ts\nsrc/beta.ts\ntest/beta.test.ts\nREQ-003: src/alpha.ts test/alpha.test.ts src/beta.ts test/beta.test.ts",
       codebaseSummary:
         "package.json\nsrc/alpha.ts\ntest/alpha.test.ts\nsrc/beta.ts\ntest/beta.test.ts",
     });
@@ -186,6 +186,87 @@ System SHALL combine alpha and beta.
       requirements: ["REQ-007"],
       scenarios: ["REQ-007-SC-001"],
     });
+  });
+
+  it.each([
+    ["没有 requirement", "# Empty"],
+    [
+      "requirement 没有 scenario",
+      "# Spec\n## ADDED Requirements\n### Requirement: Empty\nSystem SHALL work.",
+    ],
+  ])("%s 时阻止计划", (_name, spec) => {
+    expect(() =>
+      new TddEngine().generatePlan({
+        spec,
+        design: "empty",
+        impact: "package.json\nsrc/order.ts\ntest/order.test.ts",
+        codebaseSummary: "package.json\nsrc/order.ts\ntest/order.test.ts",
+      }),
+    ).toThrowError(/Requirement|Scenario/);
+  });
+
+  it("候选摘要排序变化不影响显式映射", () => {
+    const reversed = explicitlyMappedImpact.split("\n").reverse().join("\n");
+    const first = generate(explicitlyMappedImpact);
+    const second = generate(reversed, `package.json\n${reversed}`);
+
+    expect(second.tasks.map((task) => task.allowedFiles)).toEqual(
+      first.tasks.map((task) => task.allowedFiles),
+    );
+  });
+
+  it("多候选无法唯一映射 requirement 时阻止计划", () => {
+    expect(() =>
+      generate(
+        "package.json\nsrc/a.ts\ntest/a.test.ts\nsrc/b.ts\ntest/b.test.ts",
+      ),
+    ).toThrowError(/无法可靠关联/);
+  });
+
+  it("支持 Windows 相对路径并拒绝不安全 Windows 路径", () => {
+    const plan = new TddEngine().generatePlan({
+      spec: threeRequirements.split("### Requirement: 取消订单")[0]!,
+      design: "order",
+      impact:
+        "package.json\nsrc\\orders\\order.ts\ntest\\orders\\order.test.ts",
+      codebaseSummary:
+        "package.json\nsrc\\orders\\order.ts\ntest\\orders\\order.test.ts",
+    });
+    expect(plan.tasks[0]!.allowedFiles).toEqual([
+      "src/orders/order.ts",
+      "test/orders/order.test.ts",
+    ]);
+
+    for (const unsafe of [
+      "C:\\src\\order.ts",
+      "\\\\server\\share\\order.ts",
+      "src\\..\\order.ts",
+      "\\src\\order.ts",
+    ]) {
+      expect(() =>
+        new TddEngine().generatePlan({
+          spec: threeRequirements.split("### Requirement: 取消订单")[0]!,
+          design: "order",
+          impact: `package.json\n${unsafe}\ntest/order.test.ts`,
+          codebaseSummary: `package.json\n${unsafe}\ntest/order.test.ts`,
+        }),
+      ).toThrowError(/精确的源码与测试文件范围/);
+    }
+  });
+
+  it("expectedNewFiles 仅包含明确标记为新增的路径", () => {
+    const plan = new TddEngine().generatePlan({
+      spec: threeRequirements.split("### Requirement: 取消订单")[0]!,
+      design: "order",
+      impact:
+        "package.json\nREQ-001 src/order.ts 新增 src/order-helper.ts\ntest/order.test.ts (new)",
+      codebaseSummary: "package.json\nsrc/order.ts\ntest/order.test.ts",
+    });
+
+    expect(plan.tasks[0]!.expectedNewFiles).toEqual([
+      "src/order-helper.ts",
+      "test/order.test.ts",
+    ]);
   });
 
   it("无法推导精确源码和测试范围时阻止计划推进", () => {

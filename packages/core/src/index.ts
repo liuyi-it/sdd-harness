@@ -15,6 +15,7 @@ export * from "./artifacts/artifact-writer.js";
 export * from "./build/task-executor.js";
 export * from "./security/shell-policy.js";
 export * from "./security/task-scope.js";
+export * from "./security/scope-overlap.js";
 export * from "./quality/quality-gates.js";
 export * from "./adapters/host-adapter.js";
 export * from "./install/project-installer.js";

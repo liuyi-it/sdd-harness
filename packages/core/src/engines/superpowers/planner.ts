@@ -1,5 +1,6 @@
 import { parseSpec } from "../openspec/parser.js";
 import { SddError } from "../../errors.js";
+import { scopePatternsOverlap } from "../../security/scope-overlap.js";
 import { detectProjectCommands } from "./project-commands.js";
 import type { PlanningInput, TaskDefinition, TddPhase } from "./protocol.js";
 
@@ -12,15 +13,18 @@ interface RequirementPlan {
 }
 
 const PHASES: TddPhase[] = ["RED", "GREEN", "REFACTOR", "VERIFY"];
-const PATH_PATTERN =
-  /(?:^|[\s`'"(])((?:[\w@.-]+\/)*[\w@.-]+\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|go|rs|py|rb|php|cs|swift|scala|json|xml|ya?ml|properties))(?:$|[\s`'"),:])/gim;
+const FILE_PATTERN =
+  /(?:[\w@.-]+\/)*[\w@.-]+\.(?:properties|json|java|scala|swift|tsx|jsx|mjs|cjs|xml|ya?ml|kt|go|rs|py|rb|php|cs|ts|js)(?![\w.])/gi;
+const DIRECTORY_PATTERN = /[\w@.-]+(?:\/[\w@.-]+)+\/(?=$|[\s`'"),:])/g;
 
 export function createAtomicTasks(input: PlanningInput): {
   tasks: TaskDefinition[];
   requirements: RequirementPlan[];
 } {
   const requirements = parseRequirements(input.spec);
-  const files = extractPaths(`${input.impact}\n${input.codebaseSummary}`);
+  assertRequirements(requirements);
+  const context = `${input.impact}\n${input.codebaseSummary}`;
+  const files = extractPaths(context);
   const sourceFiles = files.filter(isSourceFile);
   const testFiles = files.filter(isTestFile);
   if (sourceFiles.length === 0 || testFiles.length === 0) {
@@ -39,16 +43,19 @@ export function createAtomicTasks(input: PlanningInput): {
       "sdd plan",
     );
   }
-  const planned = requirements.map((requirement, index) => ({
+  const sourceMapping = mapFiles(
+    requirements,
+    sourceFiles,
+    context,
+    isSourceFile,
+  );
+  const testMapping = mapFiles(requirements, testFiles, context, isTestFile);
+  const planned = requirements.map((requirement) => ({
     ...requirement,
-    sourceFiles: selectFiles(
-      requirement,
-      sourceFiles,
-      index,
-      requirements.length,
-    ),
-    testFiles: selectFiles(requirement, testFiles, index, requirements.length),
+    sourceFiles: sourceMapping.get(requirement.id)!,
+    testFiles: testMapping.get(requirement.id)!,
   }));
+  const newFiles = new Set(extractNewPaths(context));
   const tasks: TaskDefinition[] = [];
   const previousChains: RequirementPlan[] = [];
   for (const [index, requirement] of planned.entries()) {
@@ -79,7 +86,7 @@ export function createAtomicTasks(input: PlanningInput): {
         scenarios: scenarioIds,
         dependsOn,
         allowedFiles,
-        expectedNewFiles: allowedFiles,
+        expectedNewFiles: allowedFiles.filter((file) => newFiles.has(file)),
         forbiddenFiles: [".git/**", ".env", "**/credentials*"],
         verification: commands,
         doneCriteria: doneCriteria(phase, scenarioIds),
@@ -92,17 +99,40 @@ export function createAtomicTasks(input: PlanningInput): {
 
 export function extractPaths(text: string): string[] {
   const paths: string[] = [];
-  for (const match of text.matchAll(PATH_PATTERN)) {
-    const path = match[1]!.replaceAll("\\", "/");
-    if (!path.startsWith(".") && !path.includes("/**")) paths.push(path);
-  }
-  for (const match of text.matchAll(
-    /(?:^|[\s`'"(])([\w@.-]+(?:\/[\w@.-]+)+\/)(?:$|[\s`'"),:])/gim,
-  )) {
-    const directory = match[1]!.replaceAll("\\", "/");
-    if (isSafeFocusedDirectory(directory)) paths.push(`${directory}**`);
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replaceAll("\\", "/");
+    if (hasUnsafePathSyntax(line)) continue;
+    for (const match of line.matchAll(FILE_PATTERN)) {
+      const path = match[0];
+      if (isSafeRelativePath(path)) paths.push(path);
+    }
+    for (const match of line.matchAll(DIRECTORY_PATTERN)) {
+      const directory = match[0];
+      if (isSafeFocusedDirectory(directory)) paths.push(`${directory}**`);
+    }
   }
   return unique(paths);
+}
+
+function extractNewPaths(text: string): string[] {
+  const newPaths: string[] = [];
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.replaceAll("\\", "/");
+    for (const path of extractPaths(line)) {
+      const rawPath = path.endsWith("/**") ? path.slice(0, -2) : path;
+      const escaped = escapeRegExp(rawPath);
+      if (
+        new RegExp(`新增\\s+${escaped}(?=$|\\s)`, "i").test(line) ||
+        new RegExp(`${escaped}\\s*(?:\\(new\\)|\\[new\\])`, "i").test(line)
+      )
+        newPaths.push(path);
+    }
+  }
+  return unique(newPaths);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function parseRequirements(
@@ -141,22 +171,78 @@ function parseRequirements(
   });
 }
 
-function selectFiles(
-  requirement: Pick<RequirementPlan, "title">,
+function mapFiles(
+  requirements: Pick<RequirementPlan, "id" | "title">[],
   files: string[],
-  index: number,
-  count: number,
+  context: string,
+  category: (file: string) => boolean,
+): Map<string, string[]> {
+  const mapping = new Map<string, string[]>();
+  for (const requirement of requirements) {
+    const explicit = context
+      .split(/\r?\n/)
+      .filter((line) => lineExplicitlyReferences(line, requirement))
+      .flatMap((line) => extractPaths(line))
+      .filter((file) => files.includes(file) && category(file));
+    if (explicit.length > 0) mapping.set(requirement.id, unique(explicit));
+  }
+  const unresolved = requirements.filter(
+    (requirement) => !mapping.has(requirement.id),
+  );
+  if (files.length === 1) {
+    for (const requirement of unresolved) mapping.set(requirement.id, files);
+    return mapping;
+  }
+  for (const file of files) {
+    const owners = unresolved.filter((requirement) =>
+      requirementTokens(requirement).some((token) =>
+        file.toLowerCase().includes(token),
+      ),
+    );
+    if (owners.length === 1) {
+      const owner = owners[0]!;
+      mapping.set(owner.id, [...(mapping.get(owner.id) ?? []), file]);
+    }
+  }
+  const missing = requirements.find(
+    (requirement) => !mapping.has(requirement.id),
+  );
+  if (missing !== undefined) {
+    throw new SddError(
+      "E_UNRESOLVED_BLOCKER",
+      `${missing.id} 无法可靠关联到唯一文件范围，请在 impact 中用 Requirement ID 或标题明确标注路径`,
+      "sdd plan",
+    );
+  }
+  return mapping;
+}
+
+function lineExplicitlyReferences(
+  line: string,
+  requirement: Pick<RequirementPlan, "id" | "title">,
+): boolean {
+  const ids = [...line.matchAll(/REQ-\d+/gi)].map((match) =>
+    match[0].toUpperCase(),
+  );
+  if (ids.length > 0) return ids.includes(requirement.id.toUpperCase());
+  const normalized = line
+    .trim()
+    .replace(/^[-*]\s*/, "")
+    .toLowerCase();
+  const title = requirement.title.toLowerCase();
+  return (
+    normalized.startsWith(`${title}:`) ||
+    normalized.startsWith(`requirement: ${title}`)
+  );
+}
+
+function requirementTokens(
+  requirement: Pick<RequirementPlan, "title">,
 ): string[] {
-  const tokens = requirement.title
+  return requirement.title
     .toLowerCase()
     .split(/[^\p{L}\p{N}]+/u)
     .filter((token) => token.length >= 3);
-  const matched = files.filter((file) =>
-    tokens.some((token) => file.toLowerCase().includes(token)),
-  );
-  if (matched.length > 0) return matched;
-  if (files.length >= count) return [files[index]!];
-  return files;
 }
 
 function isTestFile(file: string): boolean {
@@ -193,11 +279,51 @@ function isSafeFocusedDirectory(directory: string): boolean {
   );
 }
 
-function overlaps(left: RequirementPlan, right: RequirementPlan): boolean {
-  const rightFiles = new Set([...right.sourceFiles, ...right.testFiles]);
-  return [...left.sourceFiles, ...left.testFiles].some((file) =>
-    rightFiles.has(file),
+function isSafeRelativePath(path: string): boolean {
+  return (
+    !path.startsWith("/") &&
+    !/^[A-Za-z]:\//.test(path) &&
+    !path.startsWith("//") &&
+    path.split("/").every((segment) => segment !== "." && segment !== "..")
   );
+}
+
+function hasUnsafePathSyntax(line: string): boolean {
+  return (
+    /(?:^|\s)[A-Za-z]:\//.test(line) ||
+    /(?:^|\s)\/\//.test(line) ||
+    /(?:^|\s)\/(?!\/)/.test(line) ||
+    /(?:^|\/)\.\.\//.test(line)
+  );
+}
+
+function overlaps(left: RequirementPlan, right: RequirementPlan): boolean {
+  return scopePatternsOverlap(
+    [...left.sourceFiles, ...left.testFiles],
+    [...right.sourceFiles, ...right.testFiles],
+  );
+}
+
+function assertRequirements(
+  requirements: Omit<RequirementPlan, "sourceFiles" | "testFiles">[],
+): void {
+  if (requirements.length === 0) {
+    throw new SddError(
+      "E_UNRESOLVED_BLOCKER",
+      "规格至少需要一个 Requirement",
+      "sdd plan",
+    );
+  }
+  const withoutScenario = requirements.find(
+    (requirement) => requirement.scenarios.length === 0,
+  );
+  if (withoutScenario !== undefined) {
+    throw new SddError(
+      "E_UNRESOLVED_BLOCKER",
+      `${withoutScenario.id} 至少需要一个 Scenario`,
+      "sdd plan",
+    );
+  }
 }
 
 function phaseTitle(phase: TddPhase): string {

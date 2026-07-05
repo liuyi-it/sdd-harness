@@ -15,6 +15,7 @@ import { GitInspector } from "../git/git-inspector.js";
 import { isCommandAllowed } from "../security/shell-policy.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 import { FileLock } from "../state/file-lock.js";
+import { scopePatternsOverlap } from "../security/scope-overlap.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 
@@ -333,23 +334,7 @@ function taskScopesOverlap(
 ): boolean {
   const leftPatterns = [...left.allowedFiles, ...left.expectedNewFiles];
   const rightPatterns = [...right.allowedFiles, ...right.expectedNewFiles];
-  return leftPatterns.some((leftPattern) =>
-    rightPatterns.some((rightPattern) => {
-      const leftPrefix = staticPrefix(leftPattern);
-      const rightPrefix = staticPrefix(rightPattern);
-      return (
-        leftPrefix === rightPrefix ||
-        leftPrefix.startsWith(`${rightPrefix}/`) ||
-        rightPrefix.startsWith(`${leftPrefix}/`)
-      );
-    }),
-  );
-}
-
-function staticPrefix(pattern: string): string {
-  return (
-    pattern.replaceAll("\\", "/").split(/[*?]/, 1)[0]?.replace(/\/$/, "") ?? ""
-  );
+  return scopePatternsOverlap(leftPatterns, rightPatterns);
 }
 
 function assignUnreportedFiles(
