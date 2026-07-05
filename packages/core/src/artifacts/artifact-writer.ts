@@ -97,16 +97,27 @@ export class ArtifactWriter {
     const states = await Promise.all(
       artifacts.map(async (artifact) => {
         try {
-          await readFile(artifact.path, "utf8");
-          return (await this.isUnmodified(artifact.path))
-            ? "unmodified"
-            : "modified";
+          const [content, metadataText] = await Promise.all([
+            readFile(artifact.path, "utf8"),
+            readFile(`${artifact.path}.meta.json`, "utf8"),
+          ]);
+          const metadata = JSON.parse(metadataText) as ArtifactMetadata;
+          return {
+            kind:
+              metadata.artifactHash === sha256(content)
+                ? ("unmodified" as const)
+                : ("modified" as const),
+            sameInput: metadata.inputHash === artifactInputHash(inputs),
+          };
         } catch {
-          return "missing";
+          return { kind: "missing" as const, sameInput: true };
         }
       }),
     );
-    if (states.includes("modified")) {
+    const requiresCandidates = states.some(
+      (state) => state.kind === "modified" || !state.sameInput,
+    );
+    if (requiresCandidates) {
       await Promise.all(
         artifacts.map((artifact) =>
           this.write(`${artifact.path}.candidate.md`, artifact.content, inputs),
@@ -114,15 +125,16 @@ export class ArtifactWriter {
       );
       return "candidate";
     }
-    const outcomes = await Promise.all(
-      artifacts.map((artifact) =>
-        this.writeOrCandidate(artifact.path, artifact.content, inputs),
+    const missing = artifacts.filter(
+      (_, index) => states[index]!.kind === "missing",
+    );
+    if (missing.length === 0) return "unchanged";
+    await Promise.all(
+      missing.map((artifact) =>
+        this.write(artifact.path, artifact.content, inputs),
       ),
     );
-    if (outcomes.includes("candidate")) return "candidate";
-    return outcomes.every((outcome) => outcome === "unchanged")
-      ? "unchanged"
-      : "written";
+    return "written";
   }
 }
 

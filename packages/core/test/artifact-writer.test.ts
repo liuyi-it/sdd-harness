@@ -49,4 +49,47 @@ describe("ArtifactWriter.writeOrCandidate", () => {
     for (const path of paths)
       expect(await readFile(`${path}.candidate.md`, "utf8")).toBe("new\n");
   });
+
+  it("repairs only missing primary files when existing group inputs match", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-writer-same-"));
+    const writer = new ArtifactWriter();
+    const paths = ["spec.md", "spec.delta.md", "spec.model.json"].map((name) =>
+      join(root, name),
+    );
+    await writer.write(paths[0]!, "old", { version: 1 });
+    await writer.write(paths[1]!, "old", { version: 1 });
+
+    await expect(
+      writer.writeGroupOrCandidates(
+        paths.map((path) => ({ path, content: "old" })),
+        { version: 1 },
+      ),
+    ).resolves.toBe("written");
+    expect(await readFile(paths[2]!, "utf8")).toBe("old\n");
+  });
+
+  it.each(["missing+changed", "all-changed"])(
+    "writes a complete candidate group for %s inputs",
+    async (mode) => {
+      const root = await mkdtemp(join(tmpdir(), "sdd-writer-changed-"));
+      const writer = new ArtifactWriter();
+      const paths = ["spec.md", "spec.delta.md", "spec.model.json"].map(
+        (name) => join(root, name),
+      );
+      const existing = mode === "missing+changed" ? paths.slice(0, 2) : paths;
+      for (const path of existing)
+        await writer.write(path, "old", { version: 1 });
+
+      await expect(
+        writer.writeGroupOrCandidates(
+          paths.map((path) => ({ path, content: "new" })),
+          { version: 2 },
+        ),
+      ).resolves.toBe("candidate");
+      if (mode === "missing+changed")
+        await expect(readFile(paths[2]!, "utf8")).rejects.toThrow();
+      for (const path of paths)
+        expect(await readFile(`${path}.candidate.md`, "utf8")).toBe("new\n");
+    },
+  );
 });

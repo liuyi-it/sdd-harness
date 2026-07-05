@@ -114,6 +114,20 @@ export class SpecEngine {
         question: "请用分号、句号或换行明确分隔成功、失败、审计和测试行为。",
       });
     }
+    if (questions.length === 0) {
+      try {
+        buildModel(composeEffectiveRequirement(requirement, answers));
+      } catch (error) {
+        questions.push({
+          id: "Q-STRUCTURE",
+          severity: "BLOCKER",
+          question:
+            error instanceof Error
+              ? error.message
+              : "需求行为无法生成具体 Scenario，请补充结构化信息。",
+        });
+      }
+    }
     return {
       questions,
     };
@@ -209,6 +223,7 @@ function composeEffectiveRequirement(
   ];
   const primary = [requirement, ...primaryIds.map((id) => answers[id])]
     .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.replace(/[。.;]+$/g, "").replace(/[，,]/g, " "))
     .join("，");
   const hasStructuredAnswers = primaryIds.some((id) => answers[id]);
   if (!hasStructuredAnswers)
@@ -444,7 +459,7 @@ function extractActor(context: string, chinese: boolean): string {
 
 function extractPrecondition(context: string, chinese: boolean): string {
   const match = chinese
-    ? /((?:邮箱)?未注册|待处理订单|未完成订单|[^，；,;]{1,20}满足条件)/i.exec(
+    ? /((?:邮箱)?未注册|待处理订单|未完成订单|订单必须处于待处理状态|[^，；,;]{1,20}满足条件)/i.exec(
         context,
       )
     : /((?:the\s+)?email\s+is\s+unregistered|(?:an?\s+)?pending\s+(?:order|records?|resources?)|[^,;]{1,40}\s+is\s+eligible)/i.exec(

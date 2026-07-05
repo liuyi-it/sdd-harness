@@ -200,4 +200,27 @@ describe("SpecEngine", () => {
       ).not.toThrow();
     }
   });
+
+  it.each([
+    "授权管理员通过 API 创建待处理任务，成功返回结果；失败返回错误；需要自动化测试",
+    "授权管理员通过 API 获取待处理任务，获取成功返回结果；失败返回错误；需要自动化测试",
+  ])(
+    "never reports ready when extractor cannot build scenarios: %s",
+    (requirement) => {
+      const engine = new SpecEngine();
+      const analysis = engine.analyze(requirement);
+
+      if (analysis.questions.length === 0) {
+        expect(() =>
+          engine.generate({ requirement, codebaseSummary: "TaskService" }),
+        ).not.toThrow();
+      } else {
+        expect(analysis.questions).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ id: "Q-STRUCTURE" }),
+          ]),
+        );
+      }
+    },
+  );
 });
