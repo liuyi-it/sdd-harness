@@ -164,6 +164,31 @@ The service SHALL refresh 会话 safely.
   ])("拒绝畸形输入：%s", (_name, source) => {
     expect(() => parseSpec(source)).toThrow(Error);
   });
+
+  it("拒绝仅含空白的 Requirement 标题", () => {
+    expect(() =>
+      parseSpec(`# 文档
+
+## ADDED Requirements
+
+### Requirement:${"   "}
+`),
+    ).toThrow("Requirement 标题不能为空");
+  });
+
+  it("拒绝仅含空白的 Scenario 标题", () => {
+    expect(() =>
+      parseSpec(`# 文档
+
+## ADDED Requirements
+
+### Requirement: 有效标题
+系统 SHALL 工作。
+
+#### Scenario:${"   "}
+`),
+    ).toThrow("Scenario 标题不能为空");
+  });
 });
 
 function scenario(

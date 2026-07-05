@@ -6,8 +6,8 @@ import type {
 } from "./model.js";
 
 const DELTA_HEADING = /^## (ADDED|MODIFIED|REMOVED) Requirements$/;
-const REQUIREMENT_HEADING = /^### Requirement:\s*(.+)$/;
-const SCENARIO_HEADING = /^#### Scenario:\s*(.+)$/;
+const REQUIREMENT_HEADING = /^### Requirement:(.*)$/;
+const SCENARIO_HEADING = /^#### Scenario:(.*)$/;
 const STEP = /^-\s+(GIVEN|WHEN|THEN)\s+(.+)$/i;
 
 export function parseSpec(markdown: string): SpecDocument {
@@ -49,11 +49,14 @@ export function parseSpec(markdown: string): SpecDocument {
     if (requirementMatch) {
       if (!operation)
         throw new Error(`第 ${index + 1} 行的 Requirement 缺少 delta 标题`);
+      const requirementTitle = requirementMatch[1]!.trim();
+      if (!requirementTitle)
+        throw new Error(`第 ${index + 1} 行的 Requirement 标题不能为空`);
       finishRequirement();
       const requirementIndex = requirements.length + 1;
       requirement = {
         id: `REQ-${pad(requirementIndex)}`,
-        title: requirementMatch[1]!.trim(),
+        title: requirementTitle,
         statement: "",
         operation,
         scenarios: [],
@@ -64,9 +67,12 @@ export function parseSpec(markdown: string): SpecDocument {
     const scenarioMatch = SCENARIO_HEADING.exec(line);
     if (scenarioMatch) {
       if (!requirement) throw new Error(`第 ${index + 1} 行存在孤立 Scenario`);
+      const scenarioTitle = scenarioMatch[1]!.trim();
+      if (!scenarioTitle)
+        throw new Error(`第 ${index + 1} 行的 Scenario 标题不能为空`);
       scenario = {
         id: `${requirement.id}-SC-${pad(requirement.scenarios.length + 1)}`,
-        title: scenarioMatch[1]!.trim(),
+        title: scenarioTitle,
         given: [],
         when: [],
         then: [],
