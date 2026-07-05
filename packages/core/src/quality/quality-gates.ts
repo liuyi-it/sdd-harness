@@ -1,5 +1,6 @@
 import { type TaskExecutionResult } from "../build/task-executor.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
+import { extractRequirementIds } from "../engines/openspec/requirement-ids.js";
 import { type GitSnapshot } from "../git/git-inspector.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 
@@ -36,15 +37,7 @@ export function verifyGate(
       failures.push(`${task.id} 的验证未通过`);
     }
   }
-  const explicitRequirements = [...spec.matchAll(/###\s+(REQ-\d+)/g)]
-    .map((match) => match[1])
-    .filter((value): value is string => value !== undefined);
-  const requirements =
-    explicitRequirements.length > 0
-      ? explicitRequirements
-      : [...spec.matchAll(/^### Requirement:/gm)].map(
-          (_, index) => `REQ-${String(index + 1).padStart(3, "0")}`,
-        );
+  const requirements = extractRequirementIds(spec);
   for (const requirement of requirements) {
     if (!tasks.some((task) => task.requirements.includes(requirement))) {
       failures.push(`${requirement} 未关联到任何任务`);

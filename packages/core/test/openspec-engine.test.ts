@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  extractRequirementIds,
   parseSpec,
   renderSpec,
   validateSpec,
@@ -8,6 +9,14 @@ import {
 } from "../src/index.js";
 
 describe("OpenSpec 结构化规格引擎", () => {
+  it("从 mixed-format 规格提取全部 requirement ID", () => {
+    expect(
+      extractRequirementIds(
+        "### REQ-007: Legacy\n\n### Requirement: New behavior\n\n### REQ-009: Legacy two\n\n### Requirement: Another behavior",
+      ),
+    ).toEqual(["REQ-007", "REQ-001", "REQ-009", "REQ-002"]);
+  });
+
   it("解析规范示例并按出现顺序生成稳定 ID", () => {
     const document = parseSpec(`# 账户规格
 

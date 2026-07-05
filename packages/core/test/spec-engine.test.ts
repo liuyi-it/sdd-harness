@@ -147,4 +147,57 @@ describe("SpecEngine", () => {
       }),
     ).toThrow(/无法从行为.*生成具体 Scenario.*审计写入动作/);
   });
+
+  it("shares query action semantics between analyze and generate", () => {
+    const requirement =
+      "管理员通过 API 查询待处理订单，查询成功返回结果，权限错误时返回失败，需要自动化测试";
+    const engine = new SpecEngine();
+    const analysis = engine.analyze(requirement);
+
+    expect(analysis.questions).toEqual([]);
+    expect(() =>
+      engine.generate({ requirement, codebaseSummary: "QueryService" }),
+    ).not.toThrow();
+    expect(
+      engine.generate({ requirement, codebaseSummary: "QueryService" }).spec,
+    ).toMatch(/WHEN .*API.*查询|THEN .*结果/);
+  });
+
+  it("splits comma-separated Chinese behaviors without polluting results", () => {
+    const requirement =
+      "授权管理员可以通过 API 在邮箱未注册时创建用户，创建成功返回用户 ID，重复邮箱创建返回冲突错误，每次创建成功写审计日志，需要成功、未授权和冲突自动化测试";
+    const result = new SpecEngine().generate({
+      requirement,
+      codebaseSummary: "UserService",
+    });
+
+    expect(result.model.requirements).toHaveLength(4);
+    expect(result.spec).toMatch(/THEN 返回用户 ID\s*$/m);
+    expect(result.spec).toMatch(/THEN 返回冲突错误\s*$/m);
+    expect(result.spec).not.toMatch(/THEN 返回用户 ID，重复/);
+  });
+
+  it("blocks ambiguous connector-only compound requirements", () => {
+    const result = new SpecEngine().analyze(
+      "授权管理员通过 API 在邮箱未注册时创建用户同时重复邮箱创建返回冲突错误并且每次成功创建写审计日志以及需要自动化测试",
+    );
+
+    expect(result.questions).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "Q-STRUCTURE" })]),
+    );
+  });
+
+  it("analyze ready requirements never fail semantic extraction", () => {
+    const fixtures = [
+      "授权用户通过 API 取消待处理订单，成功后状态变为已取消；重复取消返回冲突错误；成功取消写审计日志；需要自动化测试。",
+      "Authorized administrators can search pending records through an API, successful search returns results; repeated requests return a conflict error; successful search writes an audit log; automated tests cover success and failure.",
+    ];
+    const engine = new SpecEngine();
+    for (const requirement of fixtures) {
+      expect(engine.analyze(requirement).questions).toEqual([]);
+      expect(() =>
+        engine.generate({ requirement, codebaseSummary: "Service" }),
+      ).not.toThrow();
+    }
+  });
 });

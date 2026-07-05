@@ -206,11 +206,6 @@ export class TddEngine {
 }
 
 function extractRequirements(spec: string): string[] {
-  const explicit = [...spec.matchAll(/###\s+(REQ-\d+)/g)]
-    .map((match) => match[1])
-    .filter(Boolean) as string[];
-  if (explicit.length > 0) return explicit;
-  return [...spec.matchAll(/^### Requirement:/gm)].map(
-    (_, index) => `REQ-${String(index + 1).padStart(3, "0")}`,
-  );
+  return extractRequirementIds(spec);
 }
+import { extractRequirementIds } from "../openspec/requirement-ids.js";

@@ -80,6 +80,50 @@ export class ArtifactWriter {
       return "written";
     }
   }
+
+  async writeGroupOrCandidates(
+    artifacts: Array<{ path: string; content: string }>,
+    inputs: unknown,
+    options: { force?: boolean } = {},
+  ): Promise<"written" | "unchanged" | "candidate"> {
+    if (options.force === true) {
+      await Promise.all(
+        artifacts.map((artifact) =>
+          this.write(artifact.path, artifact.content, inputs),
+        ),
+      );
+      return "written";
+    }
+    const states = await Promise.all(
+      artifacts.map(async (artifact) => {
+        try {
+          await readFile(artifact.path, "utf8");
+          return (await this.isUnmodified(artifact.path))
+            ? "unmodified"
+            : "modified";
+        } catch {
+          return "missing";
+        }
+      }),
+    );
+    if (states.includes("modified")) {
+      await Promise.all(
+        artifacts.map((artifact) =>
+          this.write(`${artifact.path}.candidate.md`, artifact.content, inputs),
+        ),
+      );
+      return "candidate";
+    }
+    const outcomes = await Promise.all(
+      artifacts.map((artifact) =>
+        this.writeOrCandidate(artifact.path, artifact.content, inputs),
+      ),
+    );
+    if (outcomes.includes("candidate")) return "candidate";
+    return outcomes.every((outcome) => outcome === "unchanged")
+      ? "unchanged"
+      : "written";
+  }
 }
 
 function sha256(value: string): string {

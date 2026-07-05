@@ -192,6 +192,7 @@ describe("sdd new", () => {
     const first = await initializedProject();
     const firstChange = join(first.root, ".sdd/changes/protected-spec");
     const writer = new ArtifactWriter();
+    await writer.write(join(firstChange, "spec.md"), "# old spec", {});
     await writer.write(join(firstChange, "spec.delta.md"), "# old delta", {});
     await writer.write(
       join(firstChange, "spec.model.json"),
@@ -227,6 +228,7 @@ describe("sdd new", () => {
 
     const second = await initializedProject();
     const secondChange = join(second.root, ".sdd/changes/forced-spec");
+    await writer.write(join(secondChange, "spec.md"), "# old spec", {});
     await writer.write(join(secondChange, "spec.delta.md"), "# old delta", {});
     await writer.write(
       join(secondChange, "spec.model.json"),
@@ -277,6 +279,32 @@ describe("sdd new", () => {
 
     expect(repeated).toMatchObject({ ok: true, state: "SPEC_READY" });
     expect(await readFile(metadataPath, "utf8")).toBe(before);
+  });
+
+  it("rejects a different requirement when rerunning SPEC_READY", async () => {
+    const { root, core } = await initializedProject();
+    const requirement =
+      "Implement authenticated order cancellation through an API endpoint with authorization, conflict errors, audit logging, and automated tests.";
+    await core.execute({
+      command: "new",
+      cwd: root,
+      args: { requirement, changeId: "stable-input" },
+    });
+
+    const result = await core.execute({
+      command: "new",
+      cwd: root,
+      args: {
+        requirement: `${requirement} Changed.`,
+        changeId: "stable-input",
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      state: "SPEC_READY",
+      error: { code: "E_ACTIVE_CHANGE_EXISTS" },
+    });
   });
 
   it("isolates codebase summary from non-impact artifact metadata", async () => {

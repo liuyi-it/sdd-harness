@@ -1,6 +1,11 @@
 import type { SpecDocument, SpecRequirement } from "../openspec/model.js";
 import { renderSpec } from "../openspec/renderer.js";
 import { validateSpec } from "../openspec/validator.js";
+import {
+  ACTION_DETECTOR,
+  ACTION_EXTRACTOR_EN,
+  ACTION_EXTRACTOR_ZH,
+} from "./semantic-lexicon.js";
 
 export interface ClarifyingQuestion {
   id: string;
@@ -39,7 +44,7 @@ const SEMANTIC_SLOTS: ReadonlyArray<{
   {
     id: "Q-ACTOR",
     pattern:
-      /\b(authenticated|authorized (?:user|administrator|actor)|user|administrator|creator|owner|actor)\b|用户|管理员|创建者|所有者|操作者/i,
+      /\b(authenticated|authorized (?:users?|administrators?|actors?)|users?|administrators?|creators?|owners?|actors?)\b|用户|管理员|创建者|所有者|操作者/i,
     question: "请明确谁是执行该行为的业务角色。",
   },
   {
@@ -50,8 +55,7 @@ const SEMANTIC_SLOTS: ReadonlyArray<{
   },
   {
     id: "Q-ACTION",
-    pattern:
-      /\b(cancel|cancellation|create|update|delete|return|respond)\b|取消|创建|更新|删除|返回/i,
+    pattern: ACTION_DETECTOR,
     question: "请明确要执行的业务动作。",
   },
   {
@@ -91,14 +95,27 @@ export class SpecEngine {
     answers: Record<string, string> = {},
   ): SpecAnalysis {
     const context = [requirement, ...Object.values(answers)].join("\n");
+    const questions = SEMANTIC_SLOTS.filter(
+      (slot) => !slot.pattern.test(context),
+    ).map((slot) => ({
+      id: slot.id,
+      severity: "BLOCKER" as const,
+      question: slot.question,
+    }));
+    if (
+      !/[；;。\n，,]/.test(context) &&
+      /(?:同时|并且|以及).*(?:重复|未授权|失败|冲突|每次|审计|需要|测试)/.test(
+        context,
+      )
+    ) {
+      questions.push({
+        id: "Q-STRUCTURE",
+        severity: "BLOCKER",
+        question: "请用分号、句号或换行明确分隔成功、失败、审计和测试行为。",
+      });
+    }
     return {
-      questions: SEMANTIC_SLOTS.filter(
-        (slot) => !slot.pattern.test(context),
-      ).map((slot) => ({
-        id: slot.id,
-        severity: "BLOCKER" as const,
-        question: slot.question,
-      })),
+      questions,
     };
   }
 
@@ -214,7 +231,13 @@ function buildModel(requirement: string): SpecDocument {
 }
 
 function splitBehaviors(requirement: string): string[] {
-  return requirement
+  const separated = isChinese(requirement)
+    ? requirement.replace(
+        /，\s*(?=(?:重复|未授权|失败|冲突|每次|审计|需要|测试))/g,
+        "；",
+      )
+    : requirement;
+  return separated
     .replace(
       /\s+(?:and|以及|并且|同时)\s+(?=(?:automated )?tests?\b|audit\b|审计|测试)/gi,
       "；",
@@ -260,9 +283,7 @@ type BehaviorKind = "success" | "rejection" | "audit" | "test";
 function classifyBehavior(behavior: string): BehaviorKind {
   if (
     /\b(?:api|endpoint|POST|PUT|PATCH|DELETE)\b|接口/i.test(behavior) &&
-    /\b(?:cancel|cancellation|create|update|delete)\b|取消|创建|更新|删除/i.test(
-      behavior,
-    )
+    ACTION_DETECTOR.test(behavior)
   )
     return "success";
   if (/audit|审计|日志/i.test(behavior)) return "audit";
@@ -301,15 +322,15 @@ function scenarioFor(
       return chinese
         ? {
             title: "自动化验证需求行为",
-            given: extractTestCases(behavior),
+            given: extractTestCases(behavior, context),
             when: `运行${extractAction(context, true)}自动化测试`,
-            then: `${extractTestCases(behavior)}均得到断言和验证`,
+            then: `${extractTestCases(behavior, context)}均得到断言和验证`,
           }
         : {
             title: "Required behavior is automated",
-            given: extractTestCases(behavior),
+            given: extractTestCases(behavior, context),
             when: `the automated ${extractAction(context, false)} tests run`,
-            then: `${extractTestCases(behavior)} are asserted`,
+            then: `${extractTestCases(behavior, context)} are asserted`,
           };
     case "success":
       return chinese
@@ -412,7 +433,7 @@ function extractActor(context: string, chinese: boolean): string {
     ? /(授权(?:用户|管理员|创建者|所有者)|(?:用户|管理员|创建者|所有者))/i.exec(
         context,
       )
-    : /\b((?:an?\s+)?(?:authenticated|authorized)(?:\s+and\s+(?:authenticated|authorized))?\s+(?:user|administrator|actor|creator|owner)|(?:an?\s+)?(?:user|administrator|actor|creator|owner))\b/i.exec(
+    : /\b((?:an?\s+)?(?:authenticated|authorized)(?:\s+and\s+(?:authenticated|authorized))?\s+(?:users?|administrators?|actors?|creators?|owners?)|(?:an?\s+)?(?:users?|administrators?|actors?|creators?|owners?))\b/i.exec(
         context,
       );
   if (!match?.[1] && !chinese && /\bauthenticated\b/i.test(context))
@@ -426,7 +447,7 @@ function extractPrecondition(context: string, chinese: boolean): string {
     ? /((?:邮箱)?未注册|待处理订单|未完成订单|[^，；,;]{1,20}满足条件)/i.exec(
         context,
       )
-    : /((?:the\s+)?email\s+is\s+unregistered|(?:an?\s+)?pending\s+order|[^,;]{1,40}\s+is\s+eligible)/i.exec(
+    : /((?:the\s+)?email\s+is\s+unregistered|(?:an?\s+)?pending\s+(?:order|records?|resources?)|[^,;]{1,40}\s+is\s+eligible)/i.exec(
         context,
       );
   if (!match?.[1] && !chinese && /\bauthenticated\b/i.test(context))
@@ -437,12 +458,8 @@ function extractPrecondition(context: string, chinese: boolean): string {
 
 function extractAction(context: string, chinese: boolean): string {
   const match = chinese
-    ? /(创建用户|取消(?:待处理|未完成)?订单|更新[^，；,;]+|删除[^，；,;]+)/i.exec(
-        context,
-      )
-    : /\b(create\s+(?:a\s+)?user|cancel(?:lation|\s+(?:a\s+)?(?:pending\s+)?order)?|update\s+[^,;]+|delete\s+[^,;]+)/i.exec(
-        context,
-      );
+    ? ACTION_EXTRACTOR_ZH.exec(context)
+    : ACTION_EXTRACTOR_EN.exec(context);
   if (!match?.[1]) throw specificationError(context, "缺少具体动作");
   return match[1]
     .replace(/(取消)(?:待处理|未完成)(订单)/, "$1$2")
@@ -473,12 +490,20 @@ function afterResultMarker(behavior: string): string {
   return marker ? behavior.slice(marker.index).trim() : behavior;
 }
 
-function extractTestCases(behavior: string): string {
-  const cases = behavior
+function extractTestCases(behavior: string, context: string): string {
+  let cases = behavior
     .replace(/^(?:需要|automated tests cover)\s*/i, "")
     .replace(/(?:自动化)?测试.*$/i, "")
     .replace(/cases?\.?$/i, "")
     .trim();
+  if (!cases) {
+    const markers = [
+      ...context.matchAll(
+        /成功|未授权|失败|冲突|\bsuccess\b|\bunauthorized\b|\bfailure\b|\bconflict\b/gi,
+      ),
+    ].map((match) => match[0]!);
+    cases = [...new Set(markers)].join(isChinese(context) ? "、" : ", ");
+  }
   if (!cases) throw specificationError(behavior, "缺少具体测试场景");
   return cases;
 }

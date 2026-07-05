@@ -44,9 +44,21 @@ export async function runNew(
   try {
     let state = await store.read();
     const retrying = canResumeCommand(state, "sdd new");
+    const storedRequirement =
+      state.currentPhase === "SPEC_READY" && state.currentRunId !== null
+        ? (
+            await readFile(
+              join(root, ".sdd", "runs", state.currentRunId, "input.md"),
+              "utf8",
+            )
+          ).replace(/\n$/, "")
+        : undefined;
     const repeating =
       state.currentPhase === "SPEC_READY" &&
-      (args.changeId === undefined || args.changeId === state.currentChangeId);
+      (args.changeId === undefined ||
+        args.changeId === state.currentChangeId) &&
+      (args.requirement === undefined ||
+        args.requirement === storedRequirement);
     assertRecoverableCommandState(state, "sdd new");
     previousPhase = previousStablePhase(state, "INDEX_READY");
     if (
@@ -218,7 +230,6 @@ export async function runNew(
     for (const [name, content] of Object.entries({
       "answers.md": artifacts.answers,
       "assumptions.md": artifacts.assumptions,
-      "spec.md": artifacts.spec,
     })) {
       await writer.write(join(changeDirectory, name), content, {
         requirement,
@@ -226,20 +237,21 @@ export async function runNew(
       });
     }
     const structuredInputs = requirementInputs;
-    const structuredOutcomes = await Promise.all([
-      writer.writeOrCandidate(
-        join(changeDirectory, "spec.delta.md"),
-        artifacts.delta,
-        structuredInputs,
-        { force: args.force === true },
-      ),
-      writer.writeOrCandidate(
-        join(changeDirectory, "spec.model.json"),
-        JSON.stringify(artifacts.model, null, 2),
-        structuredInputs,
-        { force: args.force === true },
-      ),
-    ]);
+    const structuredOutcome = await writer.writeGroupOrCandidates(
+      [
+        { path: join(changeDirectory, "spec.md"), content: artifacts.spec },
+        {
+          path: join(changeDirectory, "spec.delta.md"),
+          content: artifacts.delta,
+        },
+        {
+          path: join(changeDirectory, "spec.model.json"),
+          content: JSON.stringify(artifacts.model, null, 2),
+        },
+      ],
+      structuredInputs,
+      { force: args.force === true },
+    );
     const ready = await store.update((current) => ({
       ...current,
       currentPhase: "SPEC_READY",
@@ -269,7 +281,7 @@ export async function runNew(
       exitCode: 0,
       changeId,
       next: "sdd design",
-      ...(structuredOutcomes.includes("candidate")
+      ...(structuredOutcome === "candidate"
         ? {
             warnings: [
               "检测到结构化规格制品的人工修改，已生成 candidate 文件供人工合并",

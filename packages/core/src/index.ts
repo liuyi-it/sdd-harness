@@ -7,6 +7,7 @@ export * from "./engines/openspec/model.js";
 export * from "./engines/openspec/parser.js";
 export * from "./engines/openspec/validator.js";
 export * from "./engines/openspec/renderer.js";
+export * from "./engines/openspec/requirement-ids.js";
 export * from "./artifacts/artifact-writer.js";
 export * from "./build/task-executor.js";
 export * from "./security/shell-policy.js";
