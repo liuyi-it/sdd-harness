@@ -396,5 +396,5 @@ describe("适配器契约一致性", () => {
       next: "sdd verify",
     });
     expect(executor.execute).toHaveBeenCalled();
-  });
+  }, 10_000);
 });

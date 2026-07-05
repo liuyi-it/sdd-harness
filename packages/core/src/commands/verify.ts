@@ -73,8 +73,11 @@ export async function runVerify(
           readFile(join(change, "task-results.json"), "utf8"),
           store.read(),
         ]);
-        const tasks = JSON.parse(rawTasks) as TaskDefinition[];
-        const results = JSON.parse(rawResults) as StoredTaskResult[];
+        const tasks = parseRecordArray<TaskDefinition>(rawTasks, "tasks.json");
+        const results = parseRecordArray<StoredTaskResult>(
+          rawResults,
+          "task-results.json",
+        );
         const gate = verifyGate(spec, tasks, results, currentState.tasks);
         const currentSnapshot = await new GitInspector(root).snapshot();
         if (
@@ -214,6 +217,22 @@ export async function runVerify(
   } finally {
     await lock.release();
   }
+}
+
+function parseRecordArray<T>(raw: string, name: string): T[] {
+  const value: unknown = JSON.parse(raw);
+  if (
+    !Array.isArray(value) ||
+    value.some(
+      (entry) =>
+        typeof entry !== "object" ||
+        entry === null ||
+        (Object.getPrototypeOf(entry) !== Object.prototype &&
+          Object.getPrototypeOf(entry) !== null),
+    )
+  )
+    throw new SddError("E_STATE_CORRUPTED", `${name} 结构无效`);
+  return value as T[];
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

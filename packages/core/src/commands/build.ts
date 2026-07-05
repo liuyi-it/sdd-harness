@@ -138,55 +138,32 @@ export async function runBuild(
           return { task, result };
         }),
       );
+      const invalid: SddError[] = [];
+      const shaped = executions.filter(({ task, result }) => {
+        try {
+          assertExecutionResultShape(task.id, result);
+          return true;
+        } catch (error) {
+          invalid.push(error as SddError);
+          return false;
+        }
+      }) as Array<{ task: TaskDefinition; result: TaskExecutionResult }>;
       const gitAfter = await git.snapshot();
       // 执行器返回的 modifiedFiles 不是唯一信源，仍要结合 Git 差异做补全。
       const actualDelta = git.delta(gitBefore, gitAfter);
-      assignUnreportedFiles(executions, actualDelta);
-      for (const { task, result } of executions) {
-        const modifiedFiles = [...new Set(result.modifiedFiles)];
-        validateTaskFiles(modifiedFiles, task);
-        const evidenceFailures = taskEvidenceFailures(task, result);
-        if (evidenceFailures.length > 0) {
-          const blockedCommand = Array.isArray(result.tddEvidence)
-            ? result.tddEvidence.find(
-                (entry) =>
-                  typeof entry === "object" &&
-                  entry !== null &&
-                  "command" in entry &&
-                  typeof entry.command === "string" &&
-                  !isCommandAllowed(entry.command),
-              )?.command
-            : undefined;
-          if (blockedCommand !== undefined)
-            throw new SddError(
-              "E_SECURITY_BLOCKED",
-              `TDD 证据命令未在允许清单内：${blockedCommand}`,
-            );
-          throw new SddError(
-            "E_TDD_EVIDENCE_REQUIRED",
-            evidenceFailures.join("；"),
-            "sdd build",
-          );
+      assignUnreportedFiles(shaped, actualDelta);
+      const accepted: TaskResult[] = [];
+      for (const { task, result } of shaped) {
+        try {
+          accepted.push(validateExecution(task, result));
+        } catch (error) {
+          invalid.push(error as SddError);
         }
-        for (const evidence of result.verification) {
-          if (!isCommandAllowed(evidence.command)) {
-            throw new SddError(
-              "E_SECURITY_BLOCKED",
-              `验证命令未在允许清单内：${evidence.command}`,
-            );
-          }
-        }
-        if (result.verification.some((evidence) => !evidence.passed)) {
-          throw new SddError(
-            "E_VERIFY_FAILED",
-            `任务 ${task.id} 验证失败`,
-            "sdd build",
-          );
-        }
-        const taskResult = { taskId: task.id, ...result, modifiedFiles };
+      }
+      for (const taskResult of accepted) {
         results.push(taskResult);
-        completed.add(task.id);
-        activeTasks.delete(task.id);
+        completed.add(taskResult.taskId);
+        activeTasks.delete(taskResult.taskId);
         const resultDirectory = join(
           root,
           ".sdd",
@@ -196,7 +173,7 @@ export async function runBuild(
         );
         await mkdir(resultDirectory, { recursive: true });
         await writeFile(
-          join(resultDirectory, `${task.id}.result.json`),
+          join(resultDirectory, `${taskResult.taskId}.result.json`),
           `${JSON.stringify(taskResult, null, 2)}\n`,
           "utf8",
         );
@@ -205,7 +182,9 @@ export async function runBuild(
         ...current,
         tasks: {
           ...current.tasks,
-          ...Object.fromEntries(batch.map((task) => [task.id, "DONE"])),
+          ...Object.fromEntries(
+            accepted.map((result) => [result.taskId, "DONE"]),
+          ),
         },
       }));
       await writeFile(
@@ -214,6 +193,7 @@ export async function runBuild(
         "utf8",
       );
       gitBefore = gitAfter;
+      if (invalid[0] !== undefined) throw invalid[0];
     }
 
     const chainFailures = tddChainFailures(tasks, results);
@@ -280,6 +260,69 @@ export async function runBuild(
   } finally {
     await lock.release();
   }
+}
+
+function assertExecutionResultShape(
+  taskId: string,
+  value: unknown,
+): asserts value is TaskExecutionResult {
+  const record = value as Record<string, unknown> | null;
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    (Object.getPrototypeOf(value) !== Object.prototype &&
+      Object.getPrototypeOf(value) !== null) ||
+    !Array.isArray(record?.modifiedFiles) ||
+    !record.modifiedFiles.every((file) => typeof file === "string") ||
+    !Array.isArray(record.tddEvidence) ||
+    !Array.isArray(record.verification)
+  )
+    throw new SddError(
+      "E_TDD_EVIDENCE_REQUIRED",
+      `任务 ${taskId} 的执行结果结构无效`,
+      "sdd build",
+    );
+}
+
+function validateExecution(
+  task: TaskDefinition,
+  result: TaskExecutionResult,
+): TaskResult {
+  const modifiedFiles = [...new Set(result.modifiedFiles)];
+  validateTaskFiles(modifiedFiles, task);
+  const evidenceFailures = taskEvidenceFailures(task, result);
+  if (evidenceFailures.length > 0) {
+    const blockedCommand = result.tddEvidence.find(
+      (entry) =>
+        typeof entry === "object" &&
+        entry !== null &&
+        typeof entry.command === "string" &&
+        !isCommandAllowed(entry.command),
+    )?.command;
+    if (blockedCommand !== undefined)
+      throw new SddError(
+        "E_SECURITY_BLOCKED",
+        `TDD 证据命令未在允许清单内：${blockedCommand}`,
+      );
+    throw new SddError(
+      "E_TDD_EVIDENCE_REQUIRED",
+      evidenceFailures.join("；"),
+      "sdd build",
+    );
+  }
+  for (const evidence of result.verification)
+    if (!isCommandAllowed(evidence.command))
+      throw new SddError(
+        "E_SECURITY_BLOCKED",
+        `验证命令未在允许清单内：${evidence.command}`,
+      );
+  if (result.verification.some((evidence) => !evidence.passed))
+    throw new SddError(
+      "E_VERIFY_FAILED",
+      `任务 ${task.id} 验证失败`,
+      "sdd build",
+    );
+  return { taskId: task.id, ...result, modifiedFiles };
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

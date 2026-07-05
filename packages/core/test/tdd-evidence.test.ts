@@ -81,4 +81,10 @@ describe("TDD 阶段链", () => {
     mutate(value);
     expect(tddChainFailures(value.tasks, value.results)).not.toEqual([]);
   });
+
+  it.each([1, 2, 3])("拒绝阶段 %i 缺少直接前驱依赖", (index) => {
+    const value = chain();
+    value.tasks[index]!.dependsOn = [];
+    expect(tddChainFailures(value.tasks, value.results)).not.toEqual([]);
+  });
 });

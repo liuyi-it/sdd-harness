@@ -120,6 +120,16 @@ export function tddChainFailures(
       );
       continue;
     }
+    for (let index = 1; index < chain.length; index += 1) {
+      const task = chain[index];
+      const predecessor = chain[index - 1];
+      if (
+        task !== undefined &&
+        predecessor !== undefined &&
+        !task.dependsOn.includes(predecessor.id)
+      )
+        failures.push(`${task.id} 缺少直接前驱依赖 ${predecessor.id}`);
+    }
     for (const task of chain) {
       const result = results.find((entry) => entry.taskId === task.id);
       if (result !== undefined)

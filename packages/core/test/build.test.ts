@@ -62,6 +62,7 @@ async function plannedProject(
     taskExecutor: {
       execute: async (request) => {
         const result = await executor.execute(request);
+        if (typeof result !== "object" || result === null) return result;
         return {
           ...result,
           ...(result.tddEvidence === undefined
@@ -285,6 +286,25 @@ describe("sdd build", () => {
       ok: false,
       error: { code: "E_TDD_EVIDENCE_REQUIRED" },
     });
+  });
+
+  it.each([
+    null,
+    {},
+    { modifiedFiles: "src/order.ts", tddEvidence: [], verification: [] },
+  ])("executor 畸形返回值 %# 稳定进入 FAILED", async (executorResult) => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn().mockResolvedValue(executorResult),
+    });
+    const result = await core.execute({ command: "build", cwd: root });
+    expect(result).toMatchObject({
+      ok: false,
+      state: "FAILED",
+      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+    });
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({ currentPhase: "FAILED", failedCommand: "sdd build" });
   });
 
   it("持久化各阶段真实证据并允许完整链完成", async () => {
@@ -609,17 +629,25 @@ describe("sdd build", () => {
   it("runs independent non-overlapping tasks in parallel and stores isolated results", async () => {
     let active = 0;
     let peak = 0;
-    const execute = vi.fn(async ({ task }: { task: { id: string } }) => {
-      active += 1;
-      peak = Math.max(peak, active);
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      active -= 1;
-      const area = task.id.startsWith("TASK-001") ? "orders" : "audit";
-      return {
-        modifiedFiles: [`src/${area}/index.ts`],
-        verification: [{ command: "npm test", passed: true, output: "passed" }],
-      };
-    });
+    let failAudit = true;
+    const execute = vi.fn(
+      async ({ task }: { task: { id: string; phase: string } }) => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        active -= 1;
+        const area = task.id.startsWith("TASK-001") ? "orders" : "audit";
+        return {
+          modifiedFiles: [`src/${area}/index.ts`],
+          ...(failAudit && task.id === "TASK-002-RED"
+            ? { tddEvidence: [] }
+            : {}),
+          verification: [
+            { command: "npm test", passed: true, output: "passed" },
+          ],
+        };
+      },
+    );
     const { root, core } = await plannedProject({ execute });
     const change = join(root, ".sdd/changes/add-cancel");
     const phases = ["RED", "GREEN", "REFACTOR", "VERIFY"] as const;
@@ -706,10 +734,30 @@ describe("sdd build", () => {
     state.tasks = Object.fromEntries(tasks.map((task) => [task.id, "PENDING"]));
     await writeFile(statePath, `${JSON.stringify(state)}\n`, "utf8");
 
-    const result = await core.execute({ command: "build", cwd: root });
-
-    expect(result.state).toBe("BUILD_READY");
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      state: "FAILED",
+    });
     expect(peak).toBe(2);
+    let persisted = JSON.parse(
+      await readFile(join(change, "task-results.json"), "utf8"),
+    );
+    expect(
+      persisted.map((entry: { taskId: string }) => entry.taskId),
+    ).toContain("TASK-001-RED");
+    expect(JSON.parse(await readFile(statePath, "utf8")).tasks).toMatchObject({
+      "TASK-001-RED": "DONE",
+      "TASK-002-RED": "FAILED",
+    });
+    execute.mockClear();
+    failAudit = false;
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+    expect(
+      execute.mock.calls.map(([request]) => request.task.id),
+    ).not.toContain("TASK-001-RED");
     const runId = JSON.parse(await readFile(statePath, "utf8")).currentRunId;
     for (const task of tasks) {
       await expect(
@@ -719,5 +767,9 @@ describe("sdd build", () => {
         ),
       ).resolves.toContain(task.id);
     }
+    persisted = JSON.parse(
+      await readFile(join(change, "task-results.json"), "utf8"),
+    );
+    expect(persisted).toHaveLength(8);
   });
 });
