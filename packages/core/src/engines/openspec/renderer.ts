@@ -45,7 +45,7 @@ function assertDocumentRenderSafe(document: SpecDocument): void {
 }
 
 function assertStatementRenderSafe(statement: string, path: string): void {
-  if (/^(?:#|-\s+(?:GIVEN|WHEN|THEN)\b)/i.test(statement.trim())) {
+  if (/^(?:#|-)/.test(statement.trim())) {
     throw new Error(`OpenSpec 字段 ${path} statement 不可注入 Markdown 结构`);
   }
 }

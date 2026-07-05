@@ -244,6 +244,7 @@ The service SHALL refresh 会话 safely.
     "## REMOVED Requirements",
     "### Requirement: injected",
     "- THEN injected",
+    "- arbitrary bullet",
   ])("render 拒绝 statement 单行结构注入：%s", (statement) => {
     const document: SpecDocument = {
       title: "安全规格",
