@@ -36,15 +36,24 @@ export function verifyGate(
       failures.push(`${task.id} 的验证未通过`);
     }
   }
-  const requirements = [...spec.matchAll(/###\s+(REQ-\d+)/g)]
+  const explicitRequirements = [...spec.matchAll(/###\s+(REQ-\d+)/g)]
     .map((match) => match[1])
     .filter((value): value is string => value !== undefined);
+  const requirements =
+    explicitRequirements.length > 0
+      ? explicitRequirements
+      : [...spec.matchAll(/^### Requirement:/gm)].map(
+          (_, index) => `REQ-${String(index + 1).padStart(3, "0")}`,
+        );
   for (const requirement of requirements) {
     if (!tasks.some((task) => task.requirements.includes(requirement))) {
       failures.push(`${requirement} 未关联到任何任务`);
     }
   }
-  if (!spec.includes("Acceptance Criteria:"))
+  if (
+    !spec.includes("Acceptance Criteria:") &&
+    !spec.includes("#### Scenario:")
+  )
     failures.push("缺少验收标准（Acceptance Criteria）");
   return { passed: failures.length === 0, failures };
 }

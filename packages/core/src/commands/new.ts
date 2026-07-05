@@ -26,6 +26,7 @@ interface NewArgs {
   changeId?: string;
   answers?: Record<string, string>;
   nonInteractive?: boolean;
+  force?: boolean;
 }
 
 export async function runNew(
@@ -43,12 +44,16 @@ export async function runNew(
   try {
     let state = await store.read();
     const retrying = canResumeCommand(state, "sdd new");
+    const repeating =
+      state.currentPhase === "SPEC_READY" &&
+      (args.changeId === undefined || args.changeId === state.currentChangeId);
     assertRecoverableCommandState(state, "sdd new");
     previousPhase = previousStablePhase(state, "INDEX_READY");
     if (
       state.currentPhase !== "INDEX_READY" &&
       state.currentPhase !== "CLARIFYING" &&
       state.currentPhase !== "ARCHIVED" &&
+      !repeating &&
       !retrying
     ) {
       throw new SddError(
@@ -59,7 +64,8 @@ export async function runNew(
         state.suggestedCommand ?? undefined,
       );
     }
-    const continuing = state.currentPhase === "CLARIFYING" || retrying;
+    const continuing =
+      state.currentPhase === "CLARIFYING" || repeating || retrying;
     const parentChangeId =
       state.currentPhase === "ARCHIVED" ? state.currentChangeId : null;
     const changeId = continuing ? state.currentChangeId : args.changeId;
@@ -108,7 +114,7 @@ export async function runNew(
       join(root, ".sdd/index/codebase-summary.md"),
       "utf8",
     );
-    const analysis = engine.analyze(requirement);
+    const analysis = engine.analyze(requirement, args.answers);
     const unansweredBlockers = analysis.questions.filter(
       (question) =>
         question.severity === "BLOCKER" && !args.answers?.[question.id],
@@ -204,6 +210,25 @@ export async function runNew(
         answers: args.answers ?? {},
       });
     }
+    const structuredInputs = {
+      requirement,
+      codebaseSummary,
+      answers: args.answers ?? {},
+    };
+    const structuredOutcomes = await Promise.all([
+      writer.writeOrCandidate(
+        join(changeDirectory, "spec.delta.md"),
+        artifacts.delta,
+        structuredInputs,
+        { force: args.force === true },
+      ),
+      writer.writeOrCandidate(
+        join(changeDirectory, "spec.model.json"),
+        JSON.stringify(artifacts.model, null, 2),
+        structuredInputs,
+        { force: args.force === true },
+      ),
+    ]);
     const ready = await store.update((current) => ({
       ...current,
       currentPhase: "SPEC_READY",
@@ -233,6 +258,13 @@ export async function runNew(
       exitCode: 0,
       changeId,
       next: "sdd design",
+      ...(structuredOutcomes.includes("candidate")
+        ? {
+            warnings: [
+              "检测到结构化规格制品的人工修改，已生成 candidate 文件供人工合并",
+            ],
+          }
+        : {}),
     };
   } catch (error) {
     const normalized = normalizeCommandError(
@@ -271,6 +303,7 @@ function parseArgs(args: Record<string, unknown> | undefined): NewArgs {
     ...(typeof args.nonInteractive === "boolean"
       ? { nonInteractive: args.nonInteractive }
       : {}),
+    ...(typeof args.force === "boolean" ? { force: args.force } : {}),
   };
 }
 

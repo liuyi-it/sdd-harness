@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
+import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { SpecEngine } from "../src/engines/spec/spec-engine.js";
 
 // new 阶段重点验证需求不足时的澄清停顿，以及补充答案后的继续执行行为。
@@ -79,7 +80,13 @@ describe("sdd new", () => {
       command: "new",
       cwd: root,
       args: {
-        answers: { "Q-001": "仅允许创建者取消未完成订单，并提供 API 和测试" },
+        answers: {
+          "Q-ACTOR": "仅允许创建者，其他用户必须被拒绝",
+          "Q-ACTION": "通过 API 取消订单",
+          "Q-RESULT": "仅允许取消未完成订单，成功后状态为已取消",
+          "Q-FAILURE": "重复取消返回冲突错误",
+          "Q-TEST": "覆盖成功、未授权和冲突自动化测试",
+        },
       },
     });
 
@@ -92,9 +99,9 @@ describe("sdd new", () => {
       join(root, ".sdd/changes/add-cancel/spec.md"),
       "utf8",
     );
-    expect(spec).toContain("## Requirements");
-    expect(spec).toContain("REQ-001");
-    expect(spec).toContain("Acceptance Criteria");
+    expect(spec).toContain("## ADDED Requirements");
+    expect(spec).toContain("### Requirement:");
+    expect(spec).toContain("#### Scenario:");
     await expect(
       access(join(root, ".sdd/changes/add-cancel/spec.md.meta.json")),
     ).resolves.toBeUndefined();
@@ -141,6 +148,8 @@ describe("sdd new", () => {
       "assumptions.md",
       "impact.md",
       "spec.md",
+      "spec.delta.md",
+      "spec.model.json",
     ]) {
       await expect(
         access(join(root, ".sdd/changes/add-order-cancellation", artifact)),
@@ -164,6 +173,110 @@ describe("sdd new", () => {
         createdAt: expect.any(String),
       });
     }
+
+    const change = join(root, ".sdd/changes/add-order-cancellation");
+    const spec = await readFile(join(change, "spec.md"), "utf8");
+    expect(await readFile(join(change, "spec.delta.md"), "utf8")).toBe(spec);
+    const model = JSON.parse(
+      await readFile(join(change, "spec.model.json"), "utf8"),
+    ) as { requirements: unknown[] };
+    expect(model.requirements.length).toBeGreaterThanOrEqual(3);
+    expect(await readFile(join(change, "spec.model.json"), "utf8")).toBe(
+      `${JSON.stringify(model, null, 2)}\n`,
+    );
+  });
+
+  it("protects manually edited structured artifacts and honors force", async () => {
+    const requirement =
+      "Implement authenticated order cancellation through an API endpoint with authorization, conflict errors, audit logging, and automated tests.";
+    const first = await initializedProject();
+    const firstChange = join(first.root, ".sdd/changes/protected-spec");
+    const writer = new ArtifactWriter();
+    await writer.write(join(firstChange, "spec.delta.md"), "# old delta", {});
+    await writer.write(
+      join(firstChange, "spec.model.json"),
+      '{"old":true}',
+      {},
+    );
+    await writeFile(join(firstChange, "spec.delta.md"), "# 人工修改\n", "utf8");
+    await writeFile(
+      join(firstChange, "spec.model.json"),
+      '{"manual":true}\n',
+      "utf8",
+    );
+
+    const protectedResult = await first.core.execute({
+      command: "new",
+      cwd: first.root,
+      args: { requirement, changeId: "protected-spec" },
+    });
+
+    expect(protectedResult).toMatchObject({
+      state: "SPEC_READY",
+      warnings: [expect.stringContaining("candidate")],
+    });
+    expect(await readFile(join(firstChange, "spec.delta.md"), "utf8")).toBe(
+      "# 人工修改\n",
+    );
+    await expect(
+      access(join(firstChange, "spec.delta.md.candidate.md")),
+    ).resolves.toBeUndefined();
+    await expect(
+      access(join(firstChange, "spec.model.json.candidate.md")),
+    ).resolves.toBeUndefined();
+
+    const second = await initializedProject();
+    const secondChange = join(second.root, ".sdd/changes/forced-spec");
+    await writer.write(join(secondChange, "spec.delta.md"), "# old delta", {});
+    await writer.write(
+      join(secondChange, "spec.model.json"),
+      '{"old":true}',
+      {},
+    );
+    await writeFile(
+      join(secondChange, "spec.delta.md"),
+      "# 人工修改\n",
+      "utf8",
+    );
+    await writeFile(
+      join(secondChange, "spec.model.json"),
+      '{"manual":true}\n',
+      "utf8",
+    );
+
+    const forcedResult = await second.core.execute({
+      command: "new",
+      cwd: second.root,
+      args: { requirement, changeId: "forced-spec", force: true },
+    });
+
+    expect(forcedResult.state).toBe("SPEC_READY");
+    expect(
+      await readFile(join(secondChange, "spec.delta.md"), "utf8"),
+    ).toContain("## ADDED Requirements");
+    expect(
+      JSON.parse(await readFile(join(secondChange, "spec.model.json"), "utf8")),
+    ).toMatchObject({ title: "Requested Change" });
+  });
+
+  it("repeats structured artifact generation idempotently", async () => {
+    const { root, core } = await initializedProject();
+    const args = {
+      requirement:
+        "Implement authenticated order cancellation through an API endpoint with authorization, conflict errors, audit logging, and automated tests.",
+      changeId: "idempotent-spec",
+    };
+    await core.execute({ command: "new", cwd: root, args });
+    const metadataPath = join(
+      root,
+      ".sdd/changes/idempotent-spec/spec.model.json.meta.json",
+    );
+    const before = await readFile(metadataPath, "utf8");
+
+    const repeated = await core.execute({ command: "new", cwd: root, args });
+
+    expect(repeated).toMatchObject({ ok: true, state: "SPEC_READY" });
+    expect(await readFile(metadataPath, "utf8")).toBe(before);
   });
 
   it("new 在规格生成超时后进入 FAILED 并记录恢复上下文", async () => {
