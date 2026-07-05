@@ -291,16 +291,19 @@ describe("release validation", () => {
     ).rejects.toThrow(/类型不一致/);
   });
 
-  it("fails when a symbolic link target is modified", async () => {
-    const root = await makeReleaseCopy();
-    const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
-    await rm(path);
-    await symlink("README.md", path);
+  it.skipIf(process.platform === "win32")(
+    "fails when a symbolic link target is modified",
+    async () => {
+      const root = await makeReleaseCopy();
+      const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
+      await rm(path);
+      await symlink("README.md", path);
 
-    await expect(validateReleaseLayout(root)).rejects.toThrow(
-      /符号链接目标不一致/,
-    );
-  });
+      await expect(validateReleaseLayout(root)).rejects.toThrow(
+        /符号链接目标不一致/,
+      );
+    },
+  );
 
   it("accepts a Windows checkout that materializes a symlink as its target text", async () => {
     const root = await makeReleaseCopy();

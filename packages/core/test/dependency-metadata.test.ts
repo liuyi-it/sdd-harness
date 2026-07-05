@@ -1,9 +1,13 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
+import { promisify } from "node:util";
+import { execFile } from "node:child_process";
 
 import { describe, expect, it } from "vitest";
 
 import { PINNED_DEPENDENCIES } from "../src/dependencies.js";
+
+const execFileAsync = promisify(execFile);
 
 describe("第三方依赖元数据", () => {
   it("固定依赖版本与第三方声明、vendor 许可证保持一致", async () => {
@@ -105,6 +109,28 @@ describe("第三方依赖元数据", () => {
       "vendor/openspec/upstream/** -whitespace\n" +
         "vendor/superpowers/upstream/** -whitespace\n",
     );
+  });
+
+  it("公共声明保留固定依赖的 readonly 与版本字面量类型", async () => {
+    await execFileAsync(
+      process.execPath,
+      [
+        "node_modules/typescript/bin/tsc",
+        "-b",
+        "packages/core",
+        "--pretty",
+        "false",
+      ],
+      { cwd: process.cwd() },
+    );
+    const declaration = await readFile(
+      join(process.cwd(), "packages/core/dist/pinned-dependencies.d.mts"),
+      "utf8",
+    );
+
+    expect(declaration).toContain('readonly version: "v1.4.1"');
+    expect(declaration).toContain("readonly openSpec:");
+    expect(declaration).not.toMatch(/version: string/);
   });
 });
 
