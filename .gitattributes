@@ -1,0 +1,2 @@
+vendor/openspec/upstream/** -whitespace
+vendor/superpowers/upstream/** -whitespace

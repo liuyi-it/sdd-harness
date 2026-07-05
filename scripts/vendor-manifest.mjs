@@ -15,6 +15,12 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const defaultVendorRoots = ["vendor/openspec", "vendor/superpowers"];
 
 export async function createVendorManifest(vendorRoot) {
+  const output = await computeVendorManifest(vendorRoot);
+  await writeFile(resolve(vendorRoot, "MANIFEST.sha256"), output, "utf8");
+  return output;
+}
+
+export async function computeVendorManifest(vendorRoot) {
   const root = resolve(vendorRoot);
   const upstreamRoot = resolve(root, "upstream");
   const paths = await listFiles(upstreamRoot);
@@ -34,9 +40,7 @@ export async function createVendorManifest(vendorRoot) {
       return `${digest}  file upstream/${path}`;
     }),
   );
-  const output = `${lines.join("\n")}\n`;
-  await writeFile(resolve(root, "MANIFEST.sha256"), output, "utf8");
-  return output;
+  return `${lines.join("\n")}\n`;
 }
 
 function sha256(content) {

@@ -3,7 +3,6 @@ import { join, relative, resolve, sep } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { createVendorManifest } from "../../../scripts/vendor-manifest.mjs";
 import { PINNED_DEPENDENCIES } from "../src/dependencies.js";
 
 describe("第三方依赖元数据", () => {
@@ -38,19 +37,11 @@ describe("第三方依赖元数据", () => {
   it("固定完整上游快照的来源、版本与本地修改声明", async () => {
     const expected = {
       openspec: {
-        name: "OpenSpec",
-        version: "v1.4.1",
-        commit: "1b06fddd59d8e592d5b5794a1970b22867e85b1f",
-        repository: "https://github.com/Fission-AI/OpenSpec",
-        license: "MIT",
+        ...pickVersionMetadata(PINNED_DEPENDENCIES.openSpec),
         localModifications: "None; adapters live outside upstream/.",
       },
       superpowers: {
-        name: "Superpowers",
-        version: "v6.1.1",
-        commit: "d884ae04edebef577e82ff7c4e143debd0bbec99",
-        repository: "https://github.com/obra/superpowers",
-        license: "MIT",
+        ...pickVersionMetadata(PINNED_DEPENDENCIES.superpowers),
         localModifications: "None; adapters live outside upstream/.",
       },
     };
@@ -70,13 +61,21 @@ describe("第三方依赖元数据", () => {
   });
 
   it("上游快照清单可重现并完整覆盖文件与符号链接", async () => {
+    const manifestModule = (await import(
+      "../../../scripts/vendor-manifest.mjs"
+    )) as Record<string, unknown>;
+    expect(manifestModule.computeVendorManifest).toBeTypeOf("function");
+    const computeVendorManifest = manifestModule.computeVendorManifest as (
+      vendorRoot: string,
+    ) => Promise<string>;
+
     for (const directory of ["openspec", "superpowers"]) {
       const vendorRoot = join(process.cwd(), "vendor", directory);
       const committed = await readFile(
         join(vendorRoot, "MANIFEST.sha256"),
         "utf8",
       );
-      expect(await createVendorManifest(vendorRoot)).toBe(committed);
+      expect(await computeVendorManifest(vendorRoot)).toBe(committed);
 
       const lines = committed.trimEnd().split("\n");
       const manifestPaths = lines.map((line) => {
@@ -100,7 +99,25 @@ describe("第三方依赖元数据", () => {
       /^[a-f0-9]{64} {2}symlink upstream\/AGENTS\.md -> "CLAUDE\.md"$/m,
     );
   });
+
+  it("仅对原样上游快照关闭 Git 空白错误检查", async () => {
+    expect(await readFile(join(process.cwd(), ".gitattributes"), "utf8")).toBe(
+      "vendor/openspec/upstream/** -whitespace\n" +
+        "vendor/superpowers/upstream/** -whitespace\n",
+    );
+  });
 });
+
+function pickVersionMetadata(dependency: {
+  name: string;
+  version: string;
+  commit: string;
+  repository: string;
+  license: string;
+}) {
+  const { name, version, commit, repository, license } = dependency;
+  return { name, version, commit, repository, license };
+}
 
 async function listSnapshotEntries(vendorRoot: string) {
   const upstreamRoot = resolve(vendorRoot, "upstream");

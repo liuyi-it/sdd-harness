@@ -2,8 +2,10 @@
 
 import { createHash } from "node:crypto";
 import { access, lstat, readdir, readFile, readlink } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { PINNED_DEPENDENCIES } from "../packages/core/src/pinned-dependencies.mjs";
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -28,28 +30,21 @@ const vendorSpecs = [
   {
     directory: "openspec",
     metadata: {
-      name: "OpenSpec",
-      version: "v1.4.1",
-      commit: "1b06fddd59d8e592d5b5794a1970b22867e85b1f",
-      repository: "https://github.com/Fission-AI/OpenSpec",
-      license: "MIT",
+      ...pickVersionMetadata(PINNED_DEPENDENCIES.openSpec),
       localModifications: "None; adapters live outside upstream/.",
     },
   },
   {
     directory: "superpowers",
     metadata: {
-      name: "Superpowers",
-      version: "v6.1.1",
-      commit: "d884ae04edebef577e82ff7c4e143debd0bbec99",
-      repository: "https://github.com/obra/superpowers",
-      license: "MIT",
+      ...pickVersionMetadata(PINNED_DEPENDENCIES.superpowers),
       localModifications: "None; adapters live outside upstream/.",
     },
   },
 ];
 
-export async function validateReleaseLayout(root = repoRoot) {
+export async function validateReleaseLayout(root = repoRoot, options = {}) {
+  const platform = options.platform ?? process.platform;
   for (const spec of pluginSpecs) {
     const manifest = JSON.parse(
       await readFile(join(root, spec.manifestPath), "utf8"),
@@ -116,11 +111,16 @@ export async function validateReleaseLayout(root = repoRoot) {
   }
 
   for (const spec of vendorSpecs) {
-    await validateVendorSnapshot(root, spec);
+    await validateVendorSnapshot(root, spec, platform);
   }
 }
 
-async function validateVendorSnapshot(root, spec) {
+function pickVersionMetadata(dependency) {
+  const { name, version, commit, repository, license } = dependency;
+  return { name, version, commit, repository, license };
+}
+
+async function validateVendorSnapshot(root, spec, platform) {
   const vendorRoot = join(root, "vendor", spec.directory);
   const upstreamRoot = join(vendorRoot, "upstream");
   const metadata = JSON.parse(
@@ -139,6 +139,7 @@ async function validateVendorSnapshot(root, spec) {
   const manifest = parseManifest(
     await readFile(join(vendorRoot, "MANIFEST.sha256"), "utf8"),
     spec.directory,
+    upstreamRoot,
   );
   const actualEntries = await listEntries(upstreamRoot);
   const actualByPath = new Map(
@@ -160,7 +161,22 @@ async function validateVendorSnapshot(root, spec) {
   for (const [path, expected] of manifest) {
     const actual = actualByPath.get(path);
     if (actual.type !== expected.type) {
-      throw new Error(`${spec.directory} 快照条目类型不一致：upstream/${path}`);
+      if (
+        platform === "win32" &&
+        expected.type === "symlink" &&
+        actual.type === "file"
+      ) {
+        const placeholder = await readFile(join(upstreamRoot, path), "utf8");
+        if (placeholder !== expected.target) {
+          throw new Error(
+            `${spec.directory} Windows 符号链接占位文件内容不一致：upstream/${path}`,
+          );
+        }
+      } else {
+        throw new Error(
+          `${spec.directory} 快照条目类型不一致：upstream/${path}`,
+        );
+      }
     }
     if (actual.type === "symlink" && actual.target !== expected.target) {
       throw new Error(
@@ -168,8 +184,8 @@ async function validateVendorSnapshot(root, spec) {
       );
     }
     const content =
-      actual.type === "symlink"
-        ? actual.target
+      expected.type === "symlink"
+        ? expected.target
         : await readFile(join(upstreamRoot, path));
     const digest = createHash("sha256").update(content).digest("hex");
     if (digest !== expected.digest) {
@@ -178,7 +194,7 @@ async function validateVendorSnapshot(root, spec) {
   }
 }
 
-function parseManifest(content, directory) {
+function parseManifest(content, directory, upstreamRoot) {
   const entries = new Map();
   for (const line of content.trimEnd().split("\n")) {
     const fileMatch = /^([a-f0-9]{64}) {2}file upstream\/(.+)$/.exec(line);
@@ -199,7 +215,7 @@ function parseManifest(content, directory) {
     } catch {
       entry = undefined;
     }
-    if (!entry || !isSafeManifestPath(entry.path)) {
+    if (!entry || !isSafeManifestPath(entry.path, upstreamRoot)) {
       throw new Error(`${directory} MANIFEST.sha256 包含无效条目：${line}`);
     }
     if (entry.type === "symlink" && typeof entry.target !== "string") {
@@ -215,8 +231,32 @@ function parseManifest(content, directory) {
   return entries;
 }
 
-function isSafeManifestPath(path) {
-  return !path.startsWith("/") && !path.split("/").includes("..");
+function isSafeManifestPath(path, root) {
+  if (
+    path.includes("\\") ||
+    path.includes("\0") ||
+    /^[A-Za-z]:/.test(path) ||
+    path.startsWith("/")
+  ) {
+    return false;
+  }
+  const components = path.split("/");
+  if (
+    components.some(
+      (component) =>
+        component === "" || component === "." || component === "..",
+    )
+  ) {
+    return false;
+  }
+  const resolved = resolve(root, ...components);
+  const relativePath = relative(root, resolved);
+  return (
+    !isAbsolute(relativePath) &&
+    relativePath !== ".." &&
+    !relativePath.startsWith(`..${sep}`) &&
+    relativePath.split(sep).join("/") === path
+  );
 }
 
 async function listEntries(root) {
