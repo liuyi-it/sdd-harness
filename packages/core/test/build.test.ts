@@ -96,15 +96,53 @@ afterEach(async () => {
 describe("sdd build", () => {
   it("缺少 TDD 证据时拒绝完成任务", async () => {
     const { core, root } = await plannedProject({
-      execute: vi
-        .fn()
-        .mockResolvedValue({ modifiedFiles: [], verification: [] }),
+      execute: vi.fn().mockResolvedValue({
+        modifiedFiles: [],
+        tddEvidence: [],
+        verification: [{ command: "npm test", passed: true, output: "pass" }],
+      }),
     });
 
     expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
       ok: false,
       exitCode: 7,
-      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+      error: {
+        code: "E_TDD_EVIDENCE_REQUIRED",
+        message: expect.stringContaining("缺少 RED 阶段证据"),
+      },
+    });
+  });
+
+  it("RED 同时记录预期失败和辅助通过证据时允许完整链完成", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn(async ({ task }) => ({
+        modifiedFiles: [],
+        ...(task.phase === "RED"
+          ? {
+              tddEvidence: [
+                {
+                  phase: "RED",
+                  command: "npm test",
+                  passed: false,
+                  expectedFailure: true,
+                  output: "target failed",
+                },
+                {
+                  phase: "RED",
+                  command: "npm test",
+                  passed: true,
+                  output: "helper passed",
+                },
+              ],
+              verification: [],
+            }
+          : evidenceFor(task.phase)),
+      })),
+    });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
     });
   });
 

@@ -24,6 +24,7 @@ export function taskEvidenceFailures(
   if (!Array.isArray(evidence) || evidence.length === 0)
     return [`${task.id} 缺少 ${task.phase} 阶段证据`];
   const failures: string[] = [];
+  let observedExpectedFailure = false;
   for (const rawEntry of evidence) {
     if (!isRecord(rawEntry)) {
       failures.push(`${task.id} 的 TDD 证据格式无效`);
@@ -44,16 +45,18 @@ export function taskEvidenceFailures(
     if (typeof rawEntry.passed !== "boolean")
       failures.push(`${task.id} 的 TDD 证据 passed 无效`);
     if (task.phase === "RED") {
-      if (
-        !expectedFailurePresent ||
-        rawEntry.expectedFailure !== true ||
-        rawEntry.passed !== false
-      )
+      if (expectedFailurePresent && rawEntry.expectedFailure !== true)
+        failures.push(`${task.id} 的 RED expectedFailure 标记无效`);
+      if (rawEntry.passed === false && rawEntry.expectedFailure === true)
+        observedExpectedFailure = true;
+      if (rawEntry.expectedFailure === true && rawEntry.passed !== false)
         failures.push(`${task.id} 未证明观察到预期失败`);
     } else if (expectedFailurePresent || rawEntry.passed !== true) {
       failures.push(`${task.id} 的 ${task.phase} 阶段证据未通过`);
     }
   }
+  if (task.phase === "RED" && !observedExpectedFailure)
+    failures.push(`${task.id} 未证明观察到预期失败`);
   if (task.phase === "VERIFY") {
     const verification = result.verification;
     if (!Array.isArray(verification) || verification.length === 0)
