@@ -16,6 +16,7 @@ async function project(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "sdd-init-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Fixture\n", "utf8");
+  await writeFile(join(root, "package.json"), '{"name":"fixture"}\n', "utf8");
   return root;
 }
 
@@ -137,6 +138,42 @@ describe("init and status", () => {
         expect.stringContaining("codebase-memory-mcp unavailable"),
       ]),
     );
+  });
+
+  it("pauses init for an empty project until structurePolicy is provided", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-init-empty-"));
+    roots.push(root);
+    await writeFile(join(root, "README.md"), "# Empty\n", "utf8");
+    const core = new Core({ codebase: new CodebaseAdapter() });
+
+    const first = await core.execute({ command: "init", cwd: root });
+
+    expect(first).toMatchObject({
+      ok: true,
+      state: "CLARIFYING",
+      next: "sdd init",
+    });
+
+    const second = await core.execute({
+      command: "init",
+      cwd: root,
+      args: { structurePolicy: "free-design" },
+    });
+
+    expect(second).toMatchObject({
+      ok: true,
+      state: "INDEX_READY",
+      next: "sdd new",
+    });
+    expect(
+      JSON.parse(
+        await readFile(join(root, ".sdd/project/conventions.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.2.0",
+      projectType: "empty",
+      strategy: "free-design",
+    });
   });
 
   it("initializes every required directory, index artifact, config, state, and audit log", async () => {

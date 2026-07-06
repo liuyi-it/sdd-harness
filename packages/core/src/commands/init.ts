@@ -31,6 +31,12 @@ import {
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
 import {
+  createEmptyProjectProfile,
+  discoverProjectConventions,
+  isEmptyProject,
+} from "../project-conventions/scanner.js";
+import { ProjectConventionsStore } from "../project-conventions/store.js";
+import {
   assertRecoverableCommandState,
   normalizeCommandError,
   persistCommandFailure,
@@ -50,6 +56,7 @@ const REQUIRED_DIRECTORIES = [
   "plugins",
   "adapters",
   "schemas",
+  "project",
 ] as const;
 
 const configSchema = z
@@ -156,6 +163,43 @@ export async function runInit(
     );
     await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
+    const conventionsStore = new ProjectConventionsStore(root);
+    const emptyProject = await isEmptyProject(root);
+    const structurePolicy = readStructurePolicy(args);
+    if (emptyProject && structurePolicy === undefined) {
+      const clarifying = await store.update((state) => ({
+        ...state,
+        initialized: true,
+        currentPhase: "CLARIFYING",
+        previousPhase: "NOT_INITIALIZED",
+        inProgressPhase: null,
+        indexStatus: "INDEX_READY",
+        codebaseProvider: index.provider,
+        degraded: index.degraded,
+        degradedReason: index.reason ?? null,
+        suggestedCommand: "sdd init",
+      }));
+      await new AuditLogger(root).write({
+        command: "sdd init",
+        phase: clarifying.currentPhase,
+        result: "PAUSED",
+        message: "空项目需要先确认目录结构策略",
+      });
+      return {
+        ok: true,
+        state: clarifying.currentPhase,
+        exitCode: 0,
+        next: "sdd init",
+        warnings: [
+          "空项目需要先通过 structurePolicy 指定目录结构策略，可选 free-design 或 user-defined",
+        ],
+      };
+    }
+    await conventionsStore.write(
+      emptyProject
+        ? createEmptyProjectProfile(root, structurePolicy ?? "free-design")
+        : await discoverProjectConventions(root),
+    );
 
     const ready = await store.update((state) => ({
       ...state,
@@ -397,6 +441,15 @@ function buildWarnings(
   }
   warnings.push(...configWarnings);
   return warnings.length === 0 ? {} : { warnings };
+}
+
+function readStructurePolicy(
+  args: Record<string, unknown> | undefined,
+): "free-design" | "user-defined" | undefined {
+  return args?.structurePolicy === "free-design" ||
+    args?.structurePolicy === "user-defined"
+    ? args.structurePolicy
+    : undefined;
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {
