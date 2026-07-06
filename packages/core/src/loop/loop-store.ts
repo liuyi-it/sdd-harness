@@ -41,6 +41,12 @@ export class LoopStore {
     );
   }
 
+  async readRun(runId: string): Promise<LoopRun> {
+    return JSON.parse(
+      await readFile(join(this.runsDirectory, `${runId}.json`), "utf8"),
+    ) as LoopRun;
+  }
+
   async hasRun(runId: string): Promise<boolean> {
     try {
       await stat(join(this.runsDirectory, `${runId}.json`));

@@ -7,6 +7,11 @@ import { runBuild } from "./commands/build.js";
 import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
+import {
+  finalizeAutoLoop,
+  prepareAutoLoop,
+  recordAutoStep,
+} from "./commands/auto.js";
 import { runStatus } from "./commands/status.js";
 import {
   COMMANDS,
@@ -168,6 +173,7 @@ export class Core implements SddCore {
         "sdd init",
       );
     }
+    const loop = await prepareAutoLoop(request.cwd, request.args);
     const commandByPhase: Partial<Record<CommandResult["state"], CommandName>> =
       {
         INDEX_READY: "new",
@@ -179,22 +185,55 @@ export class Core implements SddCore {
         REVIEW_READY: "archive",
       };
     // auto 只是阶段编排器，不会绕过任何单阶段命令自身的安全检查。
-    for (let step = 0; step < 8; step += 1) {
-      if (status.state === "ARCHIVED") return status;
+    for (let step = 0; step < loop.maxSteps; step += 1) {
+      if (status.state === "ARCHIVED") {
+        await finalizeAutoLoop(request.cwd, loop.runId, "ARCHIVED");
+        return status;
+      }
       const command = autoCommand(status, request.args, commandByPhase);
-      if (command === undefined) return status;
+      if (command === undefined) {
+        await finalizeAutoLoop(
+          request.cwd,
+          loop.runId,
+          status.state === "CLARIFYING" ? "PAUSED" : "RUNNING",
+        );
+        return status;
+      }
+      const startedAt = new Date().toISOString();
       const result = await this.execute({
         command,
         cwd: request.cwd,
         ...(request.args === undefined ? {} : { args: request.args }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
+      await recordAutoStep(request.cwd, loop.runId, {
+        command,
+        status: !result.ok
+          ? "FAILED"
+          : result.state === "ARCHIVED"
+            ? "ARCHIVED"
+            : result.state === "CLARIFYING"
+              ? "PAUSED"
+              : "SUCCEEDED",
+        startedAt,
+        endedAt: new Date().toISOString(),
+      });
       if (
         !result.ok ||
         result.state === "CLARIFYING" ||
         result.state === "ARCHIVED"
-      )
+      ) {
+        await finalizeAutoLoop(
+          request.cwd,
+          loop.runId,
+          !result.ok
+            ? "FAILED"
+            : result.state === "ARCHIVED"
+              ? "ARCHIVED"
+              : "PAUSED",
+        );
         return result;
+      }
       status = result;
     }
     throw new SddError(

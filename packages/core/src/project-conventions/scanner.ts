@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, dirname, join, relative } from "node:path";
 
 import type { ProjectConventionProfile } from "./model.js";

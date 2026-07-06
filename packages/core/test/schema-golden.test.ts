@@ -152,70 +152,87 @@ function validLoopRun() {
   };
 }
 
-function validateNode(schema: any, value: any, label: string): void {
-  if (schema.const !== undefined && value !== schema.const) {
-    throw new Error(`${label} 必须等于 ${schema.const}`);
+type JsonNode = Record<string, unknown>;
+
+function validateNode(schema: unknown, value: unknown, label: string): void {
+  const node = schema as JsonNode;
+  if (node.const !== undefined && value !== node.const) {
+    throw new Error(`${label} 必须等于 ${String(node.const)}`);
   }
-  if (schema.enum !== undefined && !schema.enum.includes(value)) {
+  if (Array.isArray(node.enum) && !node.enum.includes(value)) {
     throw new Error(`${label} 必须属于枚举值`);
   }
-  if (schema.type === "object") {
+  if (node.type === "object") {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw new Error(`${label} 必须是对象`);
     }
-    for (const key of schema.required ?? []) {
+    for (const key of (node.required as string[] | undefined) ?? []) {
       if (!(key in value)) throw new Error(`${label}.${key} 缺失`);
     }
     for (const [key, propertySchema] of Object.entries(
-      schema.properties ?? {},
+      (node.properties as Record<string, unknown> | undefined) ?? {},
     )) {
-      if (key in value) {
-        validateNode(propertySchema, value[key], `${label}.${key}`);
+      if (key in (value as JsonNode)) {
+        validateNode(
+          propertySchema,
+          (value as JsonNode)[key],
+          `${label}.${key}`,
+        );
       }
     }
-    if (schema.additionalProperties === false) {
+    if (node.additionalProperties === false) {
       for (const key of Object.keys(value)) {
-        if (!(key in (schema.properties ?? {}))) {
+        if (
+          !(
+            key in
+            ((node.properties as Record<string, unknown> | undefined) ?? {})
+          )
+        ) {
           throw new Error(`${label}.${key} 不允许出现`);
         }
       }
     }
     if (
-      schema.additionalProperties &&
-      typeof schema.additionalProperties === "object"
+      node.additionalProperties &&
+      typeof node.additionalProperties === "object"
     ) {
       for (const [key, entry] of Object.entries(value)) {
-        if (!(key in (schema.properties ?? {}))) {
-          validateNode(schema.additionalProperties, entry, `${label}.${key}`);
+        if (
+          !(
+            key in
+            ((node.properties as Record<string, unknown> | undefined) ?? {})
+          )
+        ) {
+          validateNode(node.additionalProperties, entry, `${label}.${key}`);
         }
       }
     }
     return;
   }
-  if (schema.type === "array") {
+  if (node.type === "array") {
     if (!Array.isArray(value)) throw new Error(`${label} 必须是数组`);
-    if (schema.minItems !== undefined && value.length < schema.minItems) {
+    if (typeof node.minItems === "number" && value.length < node.minItems) {
       throw new Error(`${label} 数组长度不足`);
     }
-    if (schema.items !== undefined) {
+    if (node.items !== undefined) {
       value.forEach((entry, index) =>
-        validateNode(schema.items, entry, `${label}[${index}]`),
+        validateNode(node.items, entry, `${label}[${index}]`),
       );
     }
     return;
   }
-  if (schema.type === "string") {
+  if (node.type === "string") {
     if (typeof value !== "string") throw new Error(`${label} 必须是字符串`);
-    if (schema.minLength !== undefined && value.length < schema.minLength) {
+    if (typeof node.minLength === "number" && value.length < node.minLength) {
       throw new Error(`${label} 长度不足`);
     }
     if (
-      schema.pattern !== undefined &&
-      !new RegExp(schema.pattern).test(value)
+      typeof node.pattern === "string" &&
+      !new RegExp(node.pattern).test(value)
     ) {
-      throw new Error(`${label} 不匹配 ${schema.pattern}`);
+      throw new Error(`${label} 不匹配 ${node.pattern}`);
     }
-    if (schema.format === "date-time" && Number.isNaN(Date.parse(value))) {
+    if (node.format === "date-time" && Number.isNaN(Date.parse(value))) {
       throw new Error(`${label} 不是合法日期时间`);
     }
     return;
