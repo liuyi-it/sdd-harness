@@ -127,6 +127,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 - 空项目 `init` 可能先进入 `CLARIFYING`，等待确认目录结构约定。
 - `auto` 运行期间会同步维护 `activeLoop`、运行历史和每步审计记录。
 - `build` 会优先使用 Git delta 裁决最终文件变更，再写入运行级任务结果制品。
+- 启用 `workflow.gitIsolation.createWorktree` 后，业务代码在 `.sdd/worktrees/<change-id>` 中执行；`.sdd/` 仍固定写回主项目根目录。
 
 ---
 

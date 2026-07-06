@@ -37,6 +37,7 @@ describe("适配器契约一致性", () => {
     expect(workflow).toContain("agent: [claude-code, codex]");
     expect(workflow).toContain("node: [20, 22]");
     expect(workflow).toContain("SDD_AGENT_PLATFORM: ${{ matrix.agent }}");
+    expect(workflow).toContain("- run: npm test");
   });
 
   it.each([

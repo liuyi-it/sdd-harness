@@ -16,6 +16,10 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 - `activeLoop`：记录当前 `auto` Loop 的 `loopId`、`runId`、运行状态和是否为恢复态。
 - `.sdd/loop/runs/*.json`：记录每一步命令、开始/结束时间与最终状态，用于 resume / restart / 审计。
 
+二期 C 再增加一个可选状态事实：
+
+- `workspace`：记录当前 Change 绑定的 `branchName`、`worktreePath` 和 `baselineCommit`。存在该字段时，`build` / `verify` / `review` / `archive` 必须以 `worktreePath` 作为业务目录，但 `.sdd/state.json` 仍位于控制根目录。
+
 注意：
 
 - 空项目执行 `init` 时，主路径可能先落到 `CLARIFYING`，等待确认目录结构规范。

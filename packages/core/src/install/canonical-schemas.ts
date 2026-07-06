@@ -23,7 +23,22 @@ export const CANONICAL_SCHEMAS = {
     },
     "plugins": { "type": "object" },
     "codebase": { "type": "object" },
-    "workflow": { "type": "object" },
+    "workflow": {
+      "type": "object",
+      "properties": {
+        "gitIsolation": {
+          "type": "object",
+          "properties": {
+            "createBranch": { "type": "boolean" },
+            "createWorktree": { "type": "boolean" },
+            "branchPattern": { "type": "string", "minLength": 1 },
+            "worktreeDir": { "type": "string", "minLength": 1 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    },
     "quality": { "type": "object" },
     "security": { "type": "object" }
   },

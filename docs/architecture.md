@@ -54,3 +54,10 @@ Spec model
 - MCP 查询统一走 `McpTransportV2`，输出 `McpQueryResult`；缺工具或失败时降级为 `fallback-file-scan`，并保留 `reason` / `confidence`。
 - `verify` / `review` 同时写 Markdown 和 `.v1.2.json`，后者作为机器可读质量门禁事实源。
 - 不可信仓库内容、README 和 MCP 输出必须包裹到 `UNTRUSTED_REPOSITORY_CONTENT` / `UNTRUSTED_MCP_OUTPUT` 边界中；`review` 还会对 current-run diff 做 secrets 扫描，命中时生成 `SECRET_LEAK` 阻断归档。
+
+二期 C 增加 Git 隔离工作区边界：
+
+- `workflow.gitIsolation` 可声明 `createBranch`、`createWorktree`、`branchPattern` 和 `worktreeDir`。
+- `GitIsolationManager` 负责创建或安全复用 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`；遇到脏 worktree、基线漂移或注册不一致时直接阻断。
+- `build` / `verify` / `review` 读取 `state.workspace`，把业务目录切到 worktree；`.sdd/` 制品和状态仍只写 controlRoot。
+- `archive-report.md` 会额外记录 `branchName`、`worktreePath` 和业务目录最终 `HEAD`，但不会自动 merge、push 或删除 worktree。

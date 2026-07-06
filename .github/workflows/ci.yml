@@ -6,7 +6,7 @@ on:
 
 jobs:
   verify:
-    name: ${{ matrix.os }} / ${{ matrix.agent }} / Node ${{ matrix.node }}
+    name: ${{ matrix.os }} / ${{ matrix.agent }} / Node ${{ matrix.node }} / worktree-e2e
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

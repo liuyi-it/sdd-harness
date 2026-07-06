@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
@@ -62,6 +62,7 @@ export async function runVerify(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
     await assertChangeWritable(root, changeId);
+    const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
       ...current,
@@ -90,7 +91,7 @@ export async function runVerify(
           results,
           currentState.tasks,
         );
-        const currentSnapshot = await new GitInspector(root).snapshot();
+        const currentSnapshot = await new GitInspector(businessRoot).snapshot();
         if (
           state.currentPhase === "VERIFY_READY" &&
           gate.passed &&
@@ -264,6 +265,19 @@ export async function runVerify(
   } finally {
     await lock.release();
   }
+}
+
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

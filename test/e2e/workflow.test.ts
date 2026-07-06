@@ -15,6 +15,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ClaudeCodeAdapter } from "../../packages/claude-code-plugin/src/adapter.js";
 import { CodebaseAdapter } from "../../packages/core/src/codebase/codebase-adapter.js";
 import { Core } from "../../packages/core/src/core.js";
+import { GitIsolationManager } from "../../packages/core/src/git-isolation/manager.js";
+import { StateStore } from "../../packages/core/src/state/state-store.js";
 import { CodexAdapter } from "../../packages/codex-plugin/src/adapter.js";
 
 const roots: string[] = [];
@@ -76,6 +78,26 @@ function core(): Core {
   });
 }
 
+async function attachWorkspace(root: string, changeId: string) {
+  const manager = new GitIsolationManager(root, {
+    createBranch: true,
+    createWorktree: true,
+    branchPattern: "sdd/<change-id>",
+    worktreeDir: ".sdd/worktrees",
+  });
+  const workspace = await manager.ensure(changeId);
+  const store = new StateStore(root);
+  await store.write({
+    ...(await store.read()),
+    workspace: {
+      branchName: workspace.branchName,
+      worktreePath: workspace.worktreePath,
+      baselineCommit: workspace.baselineCommit,
+    },
+  });
+  return workspace;
+}
+
 afterEach(async () => {
   const { rm } = await import("node:fs/promises");
   await Promise.all(
@@ -134,6 +156,13 @@ describe("complete adapter workflows", () => {
           return parsed;
         };
         expect(normalize(codexArtifact)).toEqual(normalize(claudeArtifact));
+      } else if (artifact === "archive-report.md") {
+        const normalize = (value: string) =>
+          value.replace(
+            /- finalHead: [a-f0-9]{40}/g,
+            "- finalHead: <normalized-head>",
+          );
+        expect(normalize(codexArtifact)).toBe(normalize(claudeArtifact));
       } else {
         expect(codexArtifact).toBe(claudeArtifact);
       }
@@ -265,5 +294,148 @@ describe("complete adapter workflows", () => {
     });
     expect(report).toContain("SECRET_LEAK");
     expect(report).not.toContain("ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789");
+  });
+
+  it("produces equivalent workspace metadata through Claude Code and Codex worktree workflows", async () => {
+    const claudeRoot = await fixture("worktree-claude");
+    const codexRoot = await fixture("worktree-codex");
+    const claude = new ClaudeCodeAdapter(core());
+    const codex = new CodexAdapter(core());
+
+    await claude.execute("/sdd.init", claudeRoot);
+    await codex.execute("sdd init", codexRoot);
+    await claude.execute(
+      `/sdd.new "${requirement}" --change add-cancel`,
+      claudeRoot,
+    );
+    await codex.execute(
+      `sdd new "${requirement}" --change add-cancel`,
+      codexRoot,
+    );
+    await claude.execute("/sdd.design", claudeRoot);
+    await codex.execute("sdd design", codexRoot);
+    await claude.execute("/sdd.plan", claudeRoot);
+    await codex.execute("sdd plan", codexRoot);
+
+    const claudeWorkspace = await attachWorkspace(claudeRoot, "add-cancel");
+    const codexWorkspace = await attachWorkspace(codexRoot, "add-cancel");
+
+    for (const [command, expected] of [
+      ["/sdd.build", "BUILD_READY"],
+      ["/sdd.verify", "VERIFY_READY"],
+      ["/sdd.review", "REVIEW_READY"],
+      ["/sdd.archive", "ARCHIVED"],
+    ] as const) {
+      expect(await claude.execute(command, claudeRoot)).toMatchObject({
+        ok: true,
+        state: expected,
+      });
+    }
+    for (const [command, expected] of [
+      ["sdd build", "BUILD_READY"],
+      ["sdd verify", "VERIFY_READY"],
+      ["sdd review", "REVIEW_READY"],
+      ["sdd archive", "ARCHIVED"],
+    ] as const) {
+      expect(await codex.execute(command, codexRoot)).toMatchObject({
+        ok: true,
+        state: expected,
+      });
+    }
+
+    const claudeState = JSON.parse(
+      await readFile(join(claudeRoot, ".sdd/state.json"), "utf8"),
+    ) as { workspace?: Record<string, unknown> };
+    const codexState = JSON.parse(
+      await readFile(join(codexRoot, ".sdd/state.json"), "utf8"),
+    ) as { workspace?: Record<string, unknown> };
+    expect(claudeState.workspace).toMatchObject({
+      branchName: claudeWorkspace.branchName,
+      baselineCommit: claudeWorkspace.baselineCommit,
+    });
+    expect(codexState.workspace).toMatchObject({
+      branchName: codexWorkspace.branchName,
+      baselineCommit: codexWorkspace.baselineCommit,
+    });
+
+    const claudeArchive = await readFile(
+      join(claudeRoot, ".sdd/changes/add-cancel/archive-report.md"),
+      "utf8",
+    );
+    const codexArchive = await readFile(
+      join(codexRoot, ".sdd/changes/add-cancel/archive-report.md"),
+      "utf8",
+    );
+    expect(claudeArchive).toContain(
+      `branchName: ${claudeWorkspace.branchName}`,
+    );
+    expect(codexArchive).toContain(`branchName: ${codexWorkspace.branchName}`);
+    expect(claudeArchive).toContain("## 隔离工作区");
+    expect(codexArchive).toContain("## 隔离工作区");
+  }, 30_000);
+
+  it("can resume a persisted worktree workflow with a fresh adapter instance", async () => {
+    const root = await fixture("worktree-resume");
+    const first = new CodexAdapter(core());
+    await first.execute("sdd init", root);
+    await first.execute(`sdd new "${requirement}" --change add-cancel`, root);
+    await first.execute("sdd design", root);
+    await first.execute("sdd plan", root);
+    const workspace = await attachWorkspace(root, "add-cancel");
+
+    expect(await first.execute("sdd build", root)).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+
+    const second = new CodexAdapter(core());
+    expect(await second.execute("sdd verify", root)).toMatchObject({
+      ok: true,
+      state: "VERIFY_READY",
+    });
+    expect(await second.execute("sdd review", root)).toMatchObject({
+      ok: true,
+      state: "REVIEW_READY",
+    });
+    expect(await second.execute("sdd archive", root)).toMatchObject({
+      ok: true,
+      state: "ARCHIVED",
+    });
+
+    const state = JSON.parse(
+      await readFile(join(root, ".sdd/state.json"), "utf8"),
+    ) as { workspace?: Record<string, unknown> };
+    const report = await readFile(
+      join(root, ".sdd/changes/add-cancel/archive-report.md"),
+      "utf8",
+    );
+    expect(state.workspace).toMatchObject({
+      branchName: workspace.branchName,
+      baselineCommit: workspace.baselineCommit,
+    });
+    expect(report).toContain(`branchName: ${workspace.branchName}`);
+  }, 30_000);
+
+  it("blocks re-attaching the same change when the worktree is already dirty", async () => {
+    const root = await fixture("worktree-conflict");
+    const adapter = new ClaudeCodeAdapter(core());
+    await adapter.execute("/sdd.init", root);
+    await adapter.execute(
+      `/sdd.new "${requirement}" --change add-cancel`,
+      root,
+    );
+    await adapter.execute("/sdd.design", root);
+    await adapter.execute("/sdd.plan", root);
+
+    const workspace = await attachWorkspace(root, "add-cancel");
+    await writeFile(
+      join(workspace.businessRoot, "README.md"),
+      "# dirty\n",
+      "utf8",
+    );
+
+    await expect(attachWorkspace(root, "add-cancel")).rejects.toThrowError(
+      expect.objectContaining({ code: "E_CONCURRENT_RUN" }),
+    );
   });
 });

@@ -10,6 +10,7 @@ import { renderContextPack } from "../src/build/context-pack.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
+import { GitIsolationManager } from "../src/git-isolation/manager.js";
 import { resolveProjectRules } from "../src/project-conventions/rule-resolver.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
@@ -404,6 +405,77 @@ describe("sdd build", () => {
       modified: ["src/order.ts"],
       deleted: [],
     });
+  });
+
+  it("在隔离工作区执行任务，但 .sdd 与主工作区状态仍写回 controlRoot", async () => {
+    const seenRoots: string[] = [];
+    const execute = vi.fn(async ({ root, task }) => {
+      seenRoots.push(root);
+      const target =
+        task.phase === "RED"
+          ? join(root, "src/order.ts")
+          : join(root, "test/order.test.ts");
+      await writeFile(target, `// isolated ${task.id}\n`, "utf8");
+      return {
+        modifiedFiles: [
+          target.endsWith("order.ts") ? "src/order.ts" : "test/order.test.ts",
+        ],
+        ...evidenceFor(task.phase),
+      };
+    });
+    const { core, root } = await plannedProject({ execute });
+    const manager = new GitIsolationManager(root, {
+      createBranch: true,
+      createWorktree: true,
+      branchPattern: "sdd/<change-id>",
+      worktreeDir: ".sdd/worktrees",
+    });
+    const workspace = await manager.ensure("add-cancel");
+    const store = new StateStore(root);
+    await store.write({
+      ...(await store.read()),
+      workspace: {
+        branchName: workspace.branchName,
+        worktreePath: workspace.worktreePath,
+        baselineCommit: workspace.baselineCommit,
+      },
+    });
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({ ok: true, state: "BUILD_READY" });
+    expect(seenRoots.length).toBeGreaterThan(0);
+    expect(seenRoots.every((entry) => entry === workspace.businessRoot)).toBe(
+      true,
+    );
+    expect(await readFile(join(root, "src/order.ts"), "utf8")).toBe(
+      "export const order = {};\n",
+    );
+    expect(
+      await readFile(join(workspace.businessRoot, "src/order.ts"), "utf8"),
+    ).toContain("isolated");
+    const state = JSON.parse(
+      await readFile(join(root, ".sdd/state.json"), "utf8"),
+    ) as {
+      currentPhase: string;
+      workspace?: {
+        branchName: string | null;
+        worktreePath: string | null;
+        baselineCommit: string;
+      };
+    };
+    expect(state.currentPhase).toBe("BUILD_READY");
+    expect(state.workspace).toMatchObject({
+      branchName: "sdd/add-cancel",
+      baselineCommit: workspace.baselineCommit,
+    });
+    const runId = state.currentRunId as string;
+    await expect(
+      readFile(
+        join(root, ".sdd/runs", runId, "tasks", "TASK-001-RED.result.json"),
+        "utf8",
+      ),
+    ).resolves.toContain('"taskId": "TASK-001-RED"');
   });
 
   it("executes pending tasks and records verification evidence", async () => {

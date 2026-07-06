@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
@@ -74,6 +74,7 @@ export async function runBuild(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
     await assertChangeWritable(root, changeId);
+    const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = JSON.parse(
       await readFile(join(change, "tasks.json"), "utf8"),
@@ -102,7 +103,7 @@ export async function runBuild(
 
     const completed = new Set(results.map((result) => result.taskId));
     const remaining = tasks.filter((task) => !completed.has(task.id));
-    const git = new GitInspector(root);
+    const git = new GitInspector(businessRoot);
     let gitBefore = await git.snapshot();
     const warnings =
       gitBefore.available && gitBefore.files.length > 0
@@ -154,7 +155,7 @@ export async function runBuild(
             executor,
             {
               schemaVersion: "1.2.0",
-              root,
+              root: businessRoot,
               changeId,
               runId: state.currentRunId ?? "unknown-run",
               task,
@@ -329,6 +330,19 @@ export async function runBuild(
   } finally {
     await lock.release();
   }
+}
+
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
 }
 
 function assertExecutionResultShape(

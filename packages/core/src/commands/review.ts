@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
@@ -68,6 +68,7 @@ export async function runReview(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
     await assertChangeWritable(root, changeId);
+    const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
       ...current,
@@ -80,7 +81,7 @@ export async function runReview(
     started = true;
     const resultBundle = await withTimeout(
       (async () => {
-        const currentSnapshot = await new GitInspector(root).snapshot();
+        const currentSnapshot = await new GitInspector(businessRoot).snapshot();
         const [rawTasks, rawResults] = await Promise.all([
           readFile(join(change, "tasks.json"), "utf8"),
           readFile(join(change, "task-results.json"), "utf8"),
@@ -106,7 +107,7 @@ export async function runReview(
           spec: authoritative.document,
         });
         const secretIssues = await detectSecretLeakIssues(
-          root,
+          businessRoot,
           baseline,
           currentSnapshot,
         );
@@ -293,7 +294,7 @@ export async function runReview(
 }
 
 async function detectSecretLeakIssues(
-  root: string,
+  businessRoot: string,
   baseline: GitSnapshot | null,
   current: GitSnapshot | null,
 ) {
@@ -304,7 +305,7 @@ async function detectSecretLeakIssues(
     const baselineHash = baseline.hashes[file];
     const currentHash = current.hashes[file];
     if (baselineHash !== undefined && baselineHash === currentHash) continue;
-    const path = join(root, file);
+    const path = join(businessRoot, file);
     let contents: string;
     try {
       contents = await readFile(path, "utf8");
@@ -324,6 +325,19 @@ async function detectSecretLeakIssues(
     }
   }
   return issues;
+}
+
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

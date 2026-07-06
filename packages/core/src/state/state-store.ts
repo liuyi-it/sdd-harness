@@ -64,6 +64,14 @@ export const workflowStateSchema = z.object({
   interruptedCommand: z.string().nullable(),
   recoverable: z.boolean().optional(),
   suggestedCommand: z.string().nullable(),
+  workspace: z
+    .object({
+      branchName: z.string().nullable(),
+      worktreePath: z.string().nullable(),
+      baselineCommit: z.string(),
+    })
+    .nullable()
+    .optional(),
   tasks: z.record(z.string(), taskStatusSchema),
   artifacts: z.record(
     z.string(),
@@ -97,6 +105,7 @@ export function createInitialState(): WorkflowState {
     interruptedCommand: null,
     recoverable: true,
     suggestedCommand: "sdd init",
+    workspace: null,
     tasks: {},
     artifacts: {},
   };
