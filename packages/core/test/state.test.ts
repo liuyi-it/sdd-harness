@@ -36,7 +36,7 @@ describe("StateStore", () => {
     expect(
       JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
     ).toMatchObject({
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.2.0",
       version: 2,
       updatedAt: expect.any(String),
     });
@@ -71,7 +71,7 @@ describe("StateStore", () => {
     expect(recovered.recoveredFromBackup).toBe(true);
   });
 
-  it("migrates a version 0 state and preserves a migration backup", async () => {
+  it("migrates a version 1.0.0 state to 1.2.0 and preserves backups", async () => {
     const root = await temporaryRoot();
     const store = new StateStore(root);
     await store.write(createInitialState());
@@ -85,7 +85,7 @@ describe("StateStore", () => {
     );
     const legacy = {
       ...createInitialState(),
-      schemaVersion: "0.9.0",
+      schemaVersion: "1.0.0",
       version: 7,
     };
     await writeFile(
@@ -96,19 +96,20 @@ describe("StateStore", () => {
 
     const migrated = await store.read();
 
-    expect(migrated.schemaVersion).toBe("1.0.0");
+    expect(migrated.schemaVersion).toBe("1.2.0");
     expect(migrated.version).toBe(8);
+    expect(migrated.activeLoop).toBeNull();
     expect(
       JSON.parse(
         await readFile(join(root, ".sdd/state.json.migration.bak"), "utf8"),
       ),
-    ).toMatchObject({ schemaVersion: "0.9.0", version: 7 });
+    ).toMatchObject({ schemaVersion: "1.0.0", version: 7 });
     expect(
       await readFile(join(root, ".sdd/logs/migration.log"), "utf8"),
-    ).toContain("0.9.0 -> 1.0.0");
+    ).toContain("1.0.0 -> 1.2.0");
     expect(
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
-    ).toContain("目标 schemaVersion：1.0.0");
+    ).toContain("目标 schemaVersion：1.2.0");
     expect(
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
     ).toContain(".sdd/state.json.migration.bak");
@@ -135,6 +136,23 @@ describe("StateStore", () => {
         "utf8",
       ),
     ).resolves.toContain("# Legacy spec");
+  });
+
+  it("rejects unsupported state schema versions", async () => {
+    const root = await temporaryRoot();
+    await mkdir(join(root, ".sdd"), { recursive: true });
+    await writeFile(
+      join(root, ".sdd/state.json"),
+      `${JSON.stringify({
+        ...createInitialState(),
+        schemaVersion: "0.9.0",
+      })}\n`,
+      "utf8",
+    );
+
+    await expect(new StateStore(root).read()).rejects.toMatchObject({
+      code: "E_STATE_CORRUPTED",
+    });
   });
 
   it("infers and writes a recovered state when state and backup are invalid", async () => {

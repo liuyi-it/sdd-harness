@@ -11,7 +11,7 @@ const schemaSpecs = [
     name: "config",
     path: "schemas/config.schema.json",
     valid: {
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.2.0",
       project: { name: "demo" },
       plugins: { claudeCode: { enabled: true } },
       codebase: { provider: "codebase-memory-mcp" },
@@ -28,10 +28,11 @@ const schemaSpecs = [
     name: "state",
     path: "schemas/state.schema.json",
     valid: {
-      schemaVersion: "1.0.0",
+      schemaVersion: "1.2.0",
       version: 1,
       updatedAt: new Date().toISOString(),
       initialized: true,
+      activeLoop: null,
       currentPhase: "INDEX_READY",
       indexStatus: "INDEX_READY",
       tasks: {},

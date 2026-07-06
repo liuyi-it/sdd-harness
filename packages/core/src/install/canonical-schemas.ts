@@ -14,7 +14,7 @@ export const CANONICAL_SCHEMAS = {
     "security"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "const": "1.2.0" },
     "project": {
       "type": "object",
       "required": ["name"],
@@ -46,10 +46,11 @@ export const CANONICAL_SCHEMAS = {
     "artifacts"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "const": "1.2.0" },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "format": "date-time" },
     "initialized": { "type": "boolean" },
+    "activeLoop": {},
     "currentPhase": {
       "enum": [
         "NOT_INITIALIZED",

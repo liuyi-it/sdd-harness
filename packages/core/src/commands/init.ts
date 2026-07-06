@@ -1,4 +1,11 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  copyFile,
+  mkdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 import { parse, stringify } from "yaml";
@@ -17,6 +24,10 @@ import {
 } from "../dependency-integrity.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrateConfigDocument,
+} from "../state/schema-migration.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
 import {
@@ -43,7 +54,7 @@ const REQUIRED_DIRECTORIES = [
 
 const configSchema = z
   .object({
-    schemaVersion: z.literal("1.0.0"),
+    schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
     project: z.object({ name: z.string().min(1) }).passthrough(),
     plugins: z.object({}).passthrough(),
     codebase: z.object({}).passthrough(),
@@ -97,6 +108,7 @@ export async function runInit(
       join(sddRoot, "config.yml"),
       stringify(defaultConfig(root)),
     );
+    await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
     const integration = await installProjectIntegration(root, {
       force: args?.force === true,
@@ -191,7 +203,7 @@ export async function runInit(
 
 function defaultConfig(root: string): Record<string, unknown> {
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     project: {
       name: root.split(/[\\/]/).filter(Boolean).at(-1) ?? "auto-detect",
     },
@@ -423,6 +435,31 @@ async function validateConfig(path: string): Promise<string[]> {
   return unknownKeys.length === 0
     ? []
     : [`config.yml 包含未知字段，已保留原值：${unknownKeys.join(", ")}`];
+}
+
+async function migrateConfigIfNeeded(
+  root: string,
+  path: string,
+): Promise<void> {
+  const raw = parse(await readFile(path, "utf8"));
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new SddError(
+      "E_STATE_CORRUPTED",
+      "config.yml 必须是对象",
+      "sdd init",
+    );
+  }
+  const document = raw as Record<string, unknown>;
+  if (document.schemaVersion === CURRENT_SCHEMA_VERSION) return;
+  const migrated = migrateConfigDocument(document);
+  await copyFile(path, `${path}.migration.bak`);
+  await writeFile(path, stringify(migrated), "utf8");
+  await mkdir(join(root, ".sdd", "logs"), { recursive: true });
+  await appendFile(
+    join(root, ".sdd", "logs", "migration.log"),
+    `${new Date().toISOString()} 1.0.0 -> 1.2.0 (config.yml)\n`,
+    "utf8",
+  );
 }
 
 async function exists(path: string): Promise<boolean> {

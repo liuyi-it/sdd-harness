@@ -18,6 +18,10 @@ import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { PHASES, type Phase } from "../contracts.js";
 import { SddError } from "../errors.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrateWorkflowState,
+} from "./schema-migration.js";
 
 /**
  * StateStore 负责工作流状态的读取、校验、迁移、原子写入与恢复推断。
@@ -32,12 +36,13 @@ const taskStatusSchema = z.enum([
 ]);
 
 export const workflowStateSchema = z.object({
-  schemaVersion: z.literal("1.0.0"),
+  schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
   version: z.number().int().positive(),
   updatedAt: z.string(),
   initialized: z.boolean(),
   currentChangeId: z.string().nullable(),
   currentRunId: z.string().nullable(),
+  activeLoop: z.unknown().nullable(),
   currentPhase: z.enum(PHASES),
   indexStatus: z.enum([
     "MISSING",
@@ -70,12 +75,13 @@ export type WorkflowState = z.infer<typeof workflowStateSchema>;
 
 export function createInitialState(): WorkflowState {
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     version: 1,
     updatedAt: new Date().toISOString(),
     initialized: false,
     currentChangeId: null,
     currentRunId: null,
+    activeLoop: null,
     currentPhase: "NOT_INITIALIZED",
     indexStatus: "MISSING",
     codebaseProvider: "codebase-memory-mcp",
@@ -110,15 +116,10 @@ export class StateStore {
         string,
         unknown
       >;
-      if (raw.schemaVersion === "0.9.0") {
-        // 只允许显式支持的迁移路径，避免在未知版本上做不安全的猜测。
+      if (raw.schemaVersion === "1.0.0") {
         const backupDirectory = await backupSddDirectory(this.root);
-        const migrated = workflowStateSchema.parse({
-          ...raw,
-          schemaVersion: "1.0.0",
-          version: typeof raw.version === "number" ? raw.version + 1 : 1,
-          updatedAt: new Date().toISOString(),
-        });
+        const migration = migrateWorkflowState(raw);
+        const migrated = workflowStateSchema.parse(migration.state);
         await writeFile(
           `${this.path}.migration.bak`,
           `${JSON.stringify(raw, null, 2)}\n`,
@@ -127,26 +128,26 @@ export class StateStore {
         await mkdir(join(this.root, ".sdd", "logs"), { recursive: true });
         await appendFile(
           join(this.root, ".sdd", "logs", "migration.log"),
-          `${new Date().toISOString()} 0.9.0 -> 1.0.0\n`,
+          `${new Date().toISOString()} ${migration.from} -> ${migration.to}\n`,
           "utf8",
         );
         await new ArtifactWriter().write(
           join(this.root, ".sdd", "migration-report.md"),
           migrationReport({
-            fromSchemaVersion: "0.9.0",
-            toSchemaVersion: "1.0.0",
+            fromSchemaVersion: migration.from,
+            toSchemaVersion: migration.to,
             nextVersion: migrated.version,
-            backupPath: ".sdd/state.json.migration.bak",
+            backupPaths: migration.backupPaths,
             backupDirectory,
             ...(typeof raw.version === "number"
               ? { previousVersion: raw.version }
               : {}),
           }),
           {
-            fromSchemaVersion: "0.9.0",
-            toSchemaVersion: "1.0.0",
+            fromSchemaVersion: migration.from,
+            toSchemaVersion: migration.to,
             nextVersion: migrated.version,
-            backupPath: ".sdd/state.json.migration.bak",
+            backupPaths: migration.backupPaths,
             backupDirectory,
             ...(typeof raw.version === "number"
               ? { previousVersion: raw.version }
@@ -156,10 +157,24 @@ export class StateStore {
         await this.write(migrated);
         return migrated;
       }
+      if (raw.schemaVersion !== CURRENT_SCHEMA_VERSION) {
+        throw new SddError(
+          "E_STATE_CORRUPTED",
+          `不支持的 state schemaVersion：${String(raw.schemaVersion ?? "unknown")}`,
+          "sdd status",
+        );
+      }
       const parsed = workflowStateSchema.parse(raw);
       await this.validateChangeReference(parsed);
       return await this.normalizeTransientState(parsed);
     } catch (error) {
+      if (
+        error instanceof SddError &&
+        error.code === "E_STATE_CORRUPTED" &&
+        error.message.includes("schemaVersion")
+      ) {
+        throw error;
+      }
       try {
         // 优先回退到上一次完整写入时留下的备份。
         const backup = workflowStateSchema.parse(
@@ -382,7 +397,7 @@ function migrationReport(input: {
   toSchemaVersion: string;
   previousVersion?: number;
   nextVersion: number;
-  backupPath: string;
+  backupPaths: string[];
   backupDirectory: string;
 }): string {
   return [
@@ -396,7 +411,7 @@ function migrationReport(input: {
       ? []
       : [`- 迁移前 version：${input.previousVersion}`]),
     `- 迁移后 version：${input.nextVersion}`,
-    `- 状态备份文件：${input.backupPath}`,
+    ...input.backupPaths.map((path) => `- 迁移备份文件：${path}`),
     `- .sdd 目录备份：${input.backupDirectory}`,
     `- 迁移时间：${new Date().toISOString()}`,
     "",
