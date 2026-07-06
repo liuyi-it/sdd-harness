@@ -27,6 +27,18 @@ class RecordingCore implements SddCore {
 }
 
 describe("适配器契约一致性", () => {
+  it("CI 显式覆盖操作系统与 Agent 平台组合", async () => {
+    const workflow = await readFile(
+      join(process.cwd(), ".github/workflows/ci.yml"),
+      "utf8",
+    );
+
+    expect(workflow).toContain("os: [macos-latest, windows-latest]");
+    expect(workflow).toContain("agent: [claude-code, codex]");
+    expect(workflow).toContain("node: [20, 22]");
+    expect(workflow).toContain("SDD_AGENT_PLATFORM: ${{ matrix.agent }}");
+  });
+
   it.each([
     "init",
     "auto",

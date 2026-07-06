@@ -89,6 +89,43 @@ describe("complete adapter workflows", () => {
     expect(await readdir(join(claudeRoot, ".sdd/changes/add-cancel"))).toEqual(
       await readdir(join(codexRoot, ".sdd/changes/add-cancel")),
     );
+    const artifacts = [
+      "spec.md",
+      "spec.delta.md",
+      "spec.model.json",
+      "tasks.md",
+      "traceability.md",
+      "archive-report.md",
+    ];
+    for (const artifact of artifacts) {
+      const claudeArtifact = await readFile(
+        join(claudeRoot, ".sdd/changes/add-cancel", artifact),
+        "utf8",
+      );
+      const codexArtifact = await readFile(
+        join(codexRoot, ".sdd/changes/add-cancel", artifact),
+        "utf8",
+      );
+      expect(codexArtifact).toBe(claudeArtifact);
+    }
+    const specDelta = await readFile(
+      join(claudeRoot, ".sdd/changes/add-cancel/spec.delta.md"),
+      "utf8",
+    );
+    const tasks = await readFile(
+      join(claudeRoot, ".sdd/changes/add-cancel/tasks.md"),
+      "utf8",
+    );
+    const traceability = await readFile(
+      join(claudeRoot, ".sdd/changes/add-cancel/traceability.md"),
+      "utf8",
+    );
+    expect(specDelta).toContain("## ADDED Requirements");
+    expect(tasks).toContain("Phase: RED");
+    expect(tasks).toContain("Phase: VERIFY");
+    expect(traceability).toContain("REQ-001-SC-001");
+    expect(traceability).toContain("RED 命令：npm test");
+    expect(traceability).toContain("最终验证命令：npm test");
   });
 
   it("does not treat malicious repository text as executable instruction", async () => {
