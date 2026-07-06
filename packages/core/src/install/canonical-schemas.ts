@@ -102,20 +102,31 @@ export const CANONICAL_SCHEMAS = {
   "required": [
     "id",
     "title",
+    "phase",
     "status",
     "requirements",
+    "scenarios",
     "dependsOn",
     "allowedFiles",
     "verification",
     "doneCriteria"
   ],
   "properties": {
-    "id": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" },
+    "id": {
+      "type": "string",
+      "pattern": "^TASK-[0-9]{3}(?:-(?:RED|GREEN|REFACTOR|VERIFY))?$"
+    },
     "title": { "type": "string", "minLength": 1 },
+    "phase": { "enum": ["RED", "GREEN", "REFACTOR", "VERIFY"] },
     "status": { "enum": ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"] },
     "requirements": {
       "type": "array",
       "items": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" },
+      "minItems": 1
+    },
+    "scenarios": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^REQ-[0-9]{3,}-SC-[0-9]{3,}$" },
       "minItems": 1
     },
     "dependsOn": { "type": "array", "items": { "type": "string" } },
@@ -135,6 +146,152 @@ export const CANONICAL_SCHEMAS = {
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1
+    }
+  },
+  "additionalProperties": false
+}
+`,
+  "task-execution-result.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/task-execution-result.schema.json",
+  "title": "sdd-harness task execution result",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "taskId",
+    "status",
+    "summary",
+    "commandEvidence",
+    "fileDelta",
+    "timestamps"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "taskId": {
+      "type": "string",
+      "pattern": "^TASK-[0-9]{3}(?:-(?:RED|GREEN|REFACTOR|VERIFY))?$"
+    },
+    "status": {
+      "enum": ["SUCCEEDED", "FAILED", "BLOCKED", "SKIPPED", "DEGRADED"]
+    },
+    "summary": { "type": "string", "minLength": 1 },
+    "commandEvidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["command", "args", "outputSummary"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "exitCode": { "type": "integer", "minimum": 0 },
+          "outputSummary": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    },
+    "fileDelta": {
+      "type": "object",
+      "required": ["added", "modified", "deleted"],
+      "properties": {
+        "added": { "type": "array", "items": { "type": "string" } },
+        "modified": { "type": "array", "items": { "type": "string" } },
+        "deleted": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "timestamps": {
+      "type": "object",
+      "required": ["startedAt", "endedAt"],
+      "properties": {
+        "startedAt": { "type": "string", "format": "date-time" },
+        "endedAt": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+`,
+  "loop.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/loop.schema.json",
+  "title": "sdd-harness loop specification",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "loopId",
+    "mode",
+    "maxSteps",
+    "stoppingRules",
+    "createdAt",
+    "updatedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "loopId": { "type": "string", "minLength": 1 },
+    "mode": { "enum": ["auto"] },
+    "maxSteps": { "type": "integer", "minimum": 1 },
+    "stoppingRules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}
+`,
+  "loop-run.schema.json": `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/loop-run.schema.json",
+  "title": "sdd-harness loop run",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "loopId",
+    "status",
+    "startedAt",
+    "steps"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "runId": { "type": "string", "minLength": 1 },
+    "loopId": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "PAUSED",
+        "SUCCEEDED",
+        "FAILED",
+        "ABORTED",
+        "ARCHIVED"
+      ]
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": "string", "format": "date-time" },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "command", "status", "startedAt", "endedAt"],
+        "properties": {
+          "step": { "type": "integer", "minimum": 1 },
+          "command": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": ["SUCCEEDED", "FAILED", "BLOCKED", "SKIPPED", "PAUSED"]
+          },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "endedAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
     }
   },
   "additionalProperties": false
