@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/verify-report.schema.json",
+  "title": "sdd-harness verify report v1.2",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "changeId",
+    "result",
+    "generatedAt",
+    "counts",
+    "levels",
+    "failures",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "changeId": { "type": "string", "minLength": 1 },
+    "result": { "enum": ["PASS", "FAIL"] },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "counts": {
+      "type": "object",
+      "required": ["requirements", "scenarios", "tasks", "tests"],
+      "properties": {
+        "requirements": { "type": "integer", "minimum": 0 },
+        "scenarios": { "type": "integer", "minimum": 0 },
+        "tasks": { "type": "integer", "minimum": 0 },
+        "tests": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "levels": {
+      "type": "object",
+      "required": [
+        "artifacts",
+        "tasks",
+        "requirements",
+        "scenarios",
+        "tddEvidence",
+        "tests",
+        "drift"
+      ],
+      "properties": {
+        "artifacts": { "$ref": "#/$defs/level" },
+        "tasks": { "$ref": "#/$defs/level" },
+        "requirements": { "$ref": "#/$defs/level" },
+        "scenarios": { "$ref": "#/$defs/level" },
+        "tddEvidence": { "$ref": "#/$defs/level" },
+        "tests": { "$ref": "#/$defs/level" },
+        "drift": { "$ref": "#/$defs/level" }
+      },
+      "additionalProperties": false
+    },
+    "failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failure" }
+    },
+    "summary": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "level": {
+      "type": "object",
+      "required": ["passed", "failures"],
+      "properties": {
+        "passed": { "type": "boolean" },
+        "failures": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/failure" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "failure": {
+      "type": "object",
+      "required": ["code", "level", "message"],
+      "properties": {
+        "code": {
+          "enum": [
+            "E_VERIFY_ARTIFACT_MISSING",
+            "E_VERIFY_TASK_INCOMPLETE",
+            "E_VERIFY_REQUIREMENT_UNCOVERED",
+            "E_VERIFY_SCENARIO_MISSING",
+            "E_VERIFY_EVIDENCE_INCOMPLETE",
+            "E_VERIFY_TEST_FAILED",
+            "E_VERIFY_DRIFT_DETECTED"
+          ]
+        },
+        "level": {
+          "enum": [
+            "artifacts",
+            "tasks",
+            "requirements",
+            "scenarios",
+            "tddEvidence",
+            "tests",
+            "drift"
+          ]
+        },
+        "message": { "type": "string", "minLength": 1 },
+        "entity": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  }
+}
