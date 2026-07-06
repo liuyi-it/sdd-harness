@@ -1,5 +1,6 @@
 import { SddError } from "../errors.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
+import type { ProjectRuleSnapshot } from "../project-conventions/rule-resolver.js";
 
 export interface VerificationEvidence {
   command: string;
@@ -19,6 +20,7 @@ export interface TaskExecutionRequest {
   root: string;
   task: TaskDefinition;
   contextPack: string;
+  projectRules?: ProjectRuleSnapshot;
   signal?: AbortSignal;
 }
 

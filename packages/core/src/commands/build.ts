@@ -4,6 +4,11 @@ import { join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
 import {
+  readContextPackMetadata,
+  renderContextPack,
+  stripManagedSections,
+} from "../build/context-pack.js";
+import {
   type TaskExecutionResult,
   type TaskExecutor,
 } from "../build/task-executor.js";
@@ -20,6 +25,10 @@ import {
   taskEvidenceFailures,
   tddChainFailures,
 } from "../quality/tdd-evidence.js";
+import {
+  resolveProjectRules,
+  type RuleHost,
+} from "../project-conventions/rule-resolver.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 
@@ -58,7 +67,7 @@ export async function runBuild(
     const tasks = JSON.parse(
       await readFile(join(change, "tasks.json"), "utf8"),
     ) as TaskDefinition[];
-    await assertFreshContextPacks(root, changeId, tasks);
+    await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
     const previousResults = await readResults(
       join(change, "task-results.json"),
     );
@@ -124,12 +133,18 @@ export async function runBuild(
             join(root, ".sdd", "context-packs", changeId, `${task.id}.md`),
             "utf8",
           );
+          const projectRules = await resolveProjectRules(
+            root,
+            [...task.allowedFiles, ...task.expectedNewFiles],
+            readHost(rawArgs),
+          );
           const result = await executeWithLimits(
             executor,
             {
               root,
               task,
               contextPack,
+              projectRules,
               ...(signal === undefined ? {} : { signal }),
             },
             signal,
@@ -332,10 +347,11 @@ function lockOptions(args: Record<string, unknown> | undefined): {
   return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
-async function assertFreshContextPacks(
+async function ensureFreshContextPacks(
   root: string,
   changeId: string,
   tasks: TaskDefinition[],
+  host: RuleHost,
 ): Promise<void> {
   const [spec, design, impact, tasksMarkdown, rawTasksJson, codebaseSummary] =
     await Promise.all([
@@ -355,43 +371,39 @@ async function assertFreshContextPacks(
     tasksMarkdown,
     tasksJson,
   });
+  const projectConventionsHash = await readProjectConventionsHash(root);
   for (const task of tasks) {
-    const contextPack = await readFile(
-      join(root, ".sdd", "context-packs", changeId, `${task.id}.md`),
-      "utf8",
-    );
+    const path = join(root, ".sdd", "context-packs", changeId, `${task.id}.md`);
+    const contextPack = await readFile(path, "utf8");
     const metadata = readContextPackMetadata(contextPack);
+    const rules = await resolveProjectRules(
+      root,
+      [...task.allowedFiles, ...task.expectedNewFiles],
+      host,
+    );
     if (
       metadata.codebaseIndexHash !== expectedCodebaseHash ||
-      metadata.sourceArtifactHash !== expectedSourceHash
+      metadata.sourceArtifactHash !== expectedSourceHash ||
+      metadata.projectRulesHash !== rules.hash ||
+      metadata.projectConventionsHash !== projectConventionsHash
     ) {
-      throw new SddError(
-        "E_MISSING_ARTIFACT",
-        `Context Pack ${task.id} 已失效，请重新执行 sdd plan`,
-        "sdd plan",
+      await writeFile(
+        path,
+        renderContextPack({
+          body: stripManagedSections(contextPack),
+          rules,
+          codebaseSummary,
+          spec,
+          design,
+          impact,
+          tasksMarkdown,
+          tasksJson,
+          projectConventionsHash,
+        }),
+        "utf8",
       );
     }
   }
-}
-
-function readContextPackMetadata(content: string): {
-  codebaseIndexHash: string;
-  sourceArtifactHash: string;
-} {
-  const codebaseIndexHash = content.match(
-    /^Codebase Index Hash: (sha256:[a-f0-9]{64})$/m,
-  )?.[1];
-  const sourceArtifactHash = content.match(
-    /^Source Artifact Hash: (sha256:[a-f0-9]{64})$/m,
-  )?.[1];
-  if (codebaseIndexHash === undefined || sourceArtifactHash === undefined) {
-    throw new SddError(
-      "E_MISSING_ARTIFACT",
-      "Context Pack 元数据缺失或损坏，请重新执行 sdd plan",
-      "sdd plan",
-    );
-  }
-  return { codebaseIndexHash, sourceArtifactHash };
 }
 
 function selectParallelBatch(tasks: TaskDefinition[]): TaskDefinition[] {
@@ -507,4 +519,18 @@ async function executeWithLimits(
     );
   }
   return Promise.race(promises);
+}
+
+function readHost(args: Record<string, unknown> | undefined): RuleHost {
+  return args?.host === "claude-code" ? "claude-code" : "codex";
+}
+
+async function readProjectConventionsHash(root: string): Promise<string> {
+  try {
+    return artifactInputHash(
+      await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"),
+    );
+  } catch {
+    return artifactInputHash("missing-project-conventions");
+  }
 }

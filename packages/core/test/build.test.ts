@@ -6,9 +6,11 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { artifactInputHash } from "../src/artifacts/artifact-writer.js";
+import { renderContextPack } from "../src/build/context-pack.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
+import { resolveProjectRules } from "../src/project-conventions/rule-resolver.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
 function evidenceFor(phase: "RED" | "GREEN" | "REFACTOR" | "VERIFY") {
@@ -29,6 +31,10 @@ function evidenceFor(phase: "RED" | "GREEN" | "REFACTOR" | "VERIFY") {
         ? [{ command: "npm test", passed: true, output: "1 passed" }]
         : [],
   };
+}
+
+function projectRulesHash(content: string): string | undefined {
+  return content.match(/^Project Rules Hash: (sha256:[a-f0-9]{64})$/m)?.[1];
 }
 
 // build 是行为最复杂的阶段之一，因此这里集中覆盖成功、失败、重试、暂停、超时和并行执行。
@@ -258,6 +264,35 @@ describe("sdd build", () => {
     });
   });
 
+  it("refreshes context packs when project rules change after plan", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn(async ({ task }) => ({
+        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+        ...evidenceFor(task.phase),
+      })),
+    });
+    const packPath = join(
+      root,
+      ".sdd/context-packs/add-cancel/TASK-001-RED.md",
+    );
+    const before = await readFile(packPath, "utf8");
+    await writeFile(
+      join(root, "AGENTS.md"),
+      `${await readFile(join(root, "AGENTS.md"), "utf8")}\n## Extra rule\n`,
+      "utf8",
+    );
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+    const after = await readFile(packPath, "utf8");
+    expect(projectRulesHash(after)).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(projectRulesHash(after)).not.toBe(projectRulesHash(before));
+  });
+
   it("TDD 证据命令越权时安全阻断", async () => {
     const { core, root } = await plannedProject({
       execute: vi.fn(async ({ task }) => ({
@@ -436,12 +471,17 @@ describe("sdd build", () => {
     });
   });
 
-  it("当 spec/design/tasks 变化导致 Context Pack 失效时要求重新执行 plan", async () => {
+  it("当 spec/design/tasks 变化导致 Context Pack 失效时自动刷新后继续执行", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts"],
       verification: [{ command: "npm test", passed: true, output: "passed" }],
     });
     const { root, core } = await plannedProject({ execute });
+    const packPath = join(
+      root,
+      ".sdd/context-packs/add-cancel/TASK-001-RED.md",
+    );
+    const before = await readFile(packPath, "utf8");
     await writeFile(
       join(root, ".sdd/changes/add-cancel/design.md"),
       "# 用户修改后的设计\n",
@@ -451,17 +491,16 @@ describe("sdd build", () => {
     const result = await core.execute({ command: "build", cwd: root });
 
     expect(result).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: {
-        code: "E_MISSING_ARTIFACT",
-        next: "sdd plan",
-      },
+      ok: true,
+      state: "BUILD_READY",
     });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalled();
+    expect(projectRulesHash(await readFile(packPath, "utf8"))).toBe(
+      projectRulesHash(before),
+    );
   });
 
-  it("当代码库索引变化导致 Context Pack 失效时要求重新执行 plan", async () => {
+  it("当代码库索引变化导致 Context Pack 失效时自动刷新后继续执行", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts"],
       verification: [{ command: "npm test", passed: true, output: "passed" }],
@@ -476,14 +515,10 @@ describe("sdd build", () => {
     const result = await core.execute({ command: "build", cwd: root });
 
     expect(result).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: {
-        code: "E_MISSING_ARTIFACT",
-        next: "sdd plan",
-      },
+      ok: true,
+      state: "BUILD_READY",
     });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalled();
   });
 
   it("marks a failed task and can retry only failed tasks", async () => {
@@ -706,25 +741,29 @@ describe("sdd build", () => {
       tasksMarkdown,
       tasksJson: JSON.stringify(tasks, null, 2),
     });
-    const contextPack = [
-      "<!-- Context Pack Metadata",
-      `Codebase Index Hash: ${codebaseIndexHash}`,
-      `Source Artifact Hash: ${sourceArtifactHash}`,
-      "Generated At: 2026-07-04T00:00:00.000Z",
-      "-->",
-      "",
-      "# TASK",
-      "",
-      "Allowed Files",
-      "",
-      "Risk",
-      "",
-    ].join("\n");
+    const projectConventionsHash = artifactInputHash(
+      await readFile(join(root, ".sdd/project/conventions.json"), "utf8"),
+    );
+    const body = ["# TASK", "", "Allowed Files", "", "Risk", "", ""].join("\n");
     await Promise.all(
-      tasks.map((task) =>
+      tasks.map(async (task) =>
         writeFile(
           join(root, ".sdd/context-packs/add-cancel", `${task.id}.md`),
-          contextPack.replace("# TASK", `# ${task.id}`),
+          renderContextPack({
+            body: body.replace("# TASK", `# ${task.id}`),
+            rules: await resolveProjectRules(
+              root,
+              [...task.allowedFiles, ...task.expectedNewFiles],
+              "codex",
+            ),
+            codebaseSummary,
+            spec,
+            design,
+            impact,
+            tasksMarkdown,
+            tasksJson: JSON.stringify(tasks, null, 2),
+            projectConventionsHash,
+          }),
           "utf8",
         ),
       ),

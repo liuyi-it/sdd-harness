@@ -179,8 +179,14 @@ describe("design and plan", () => {
     );
     expect(contextPack).toContain("Allowed Files");
     expect(contextPack).toContain("Risk");
+    expect(contextPack).toContain("Project Rules");
+    expect(contextPack).toContain("AGENTS.md");
     expect(contextPack).toMatch(/Codebase Index Hash: sha256:[a-f0-9]{64}/);
     expect(contextPack).toMatch(/Source Artifact Hash: sha256:[a-f0-9]{64}/);
+    expect(contextPack).toMatch(/Project Rules Hash: sha256:[a-f0-9]{64}/);
+    expect(contextPack).toMatch(
+      /Project Conventions Hash: sha256:[a-f0-9]{64}/,
+    );
     expect(contextPack).toContain("Generated At:");
     expect(Buffer.byteLength(contextPack)).toBeLessThanOrEqual(30 * 1024);
     expect(tasksMetadata).toMatchObject({
