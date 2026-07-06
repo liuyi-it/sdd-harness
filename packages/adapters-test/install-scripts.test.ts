@@ -239,6 +239,10 @@ async function createPluginRepo() {
       await readFile(join(process.cwd(), "vendor", vendor, "VERSION.json")),
     );
     await writeFile(
+      join(vendorRoot, "LICENSE"),
+      await readFile(join(process.cwd(), "vendor", vendor, "LICENSE")),
+    );
+    await writeFile(
       join(vendorRoot, "upstream", "LICENSE"),
       await readFile(
         join(process.cwd(), "vendor", vendor, "upstream", "LICENSE"),
