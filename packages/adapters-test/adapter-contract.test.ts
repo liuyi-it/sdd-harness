@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -312,6 +312,15 @@ describe("适配器契约一致性", () => {
 
     const root = await mkdtemp(join(tmpdir(), "sdd-codex-runtime-"));
     await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "test"));
+    await writeFile(
+      join(root, "package.json"),
+      '{"scripts":{"test":"vitest"}}\n',
+      "utf8",
+    );
+    await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+    await writeFile(join(root, "test/order.test.ts"), "// tests\n");
     execFileSync("git", ["init", "-b", "main"], { cwd: root });
     execFileSync("git", ["config", "user.email", "test@example.com"], {
       cwd: root,
@@ -319,7 +328,7 @@ describe("适配器契约一致性", () => {
     execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
       cwd: root,
     });
-    execFileSync("git", ["add", "README.md"], { cwd: root });
+    execFileSync("git", ["add", "."], { cwd: root });
     execFileSync("git", ["commit", "-m", "init"], { cwd: root });
     const adapter = new CodexAdapter({
       taskExecutor: executor,
@@ -381,6 +390,15 @@ describe("适配器契约一致性", () => {
 
     const root = await mkdtemp(join(tmpdir(), "sdd-claude-runtime-"));
     await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+    await mkdir(join(root, "src"));
+    await mkdir(join(root, "test"));
+    await writeFile(
+      join(root, "package.json"),
+      '{"scripts":{"test":"vitest"}}\n',
+      "utf8",
+    );
+    await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
+    await writeFile(join(root, "test/order.test.ts"), "// tests\n");
     execFileSync("git", ["init", "-b", "main"], { cwd: root });
     execFileSync("git", ["config", "user.email", "test@example.com"], {
       cwd: root,
@@ -388,7 +406,7 @@ describe("适配器契约一致性", () => {
     execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
       cwd: root,
     });
-    execFileSync("git", ["add", "README.md"], { cwd: root });
+    execFileSync("git", ["add", "."], { cwd: root });
     execFileSync("git", ["commit", "-m", "init"], { cwd: root });
     const adapter = new ClaudeCodeAdapter({
       taskExecutor: executor,

@@ -369,6 +369,43 @@ describe("sdd build", () => {
       passed: true,
     });
   });
+
+  it("运行级任务制品使用 Git delta 裁决最终 fileDelta", async () => {
+    const execute = vi.fn(async ({ root, task }) => {
+      const target =
+        task.phase === "RED"
+          ? join(root, "src/order.ts")
+          : join(root, "test/order.test.ts");
+      await writeFile(target, `// ${task.id}\n`, "utf8");
+      return {
+        modifiedFiles: ["declared-but-unused.ts"],
+        ...evidenceFor(task.phase),
+      };
+    });
+    const { core, root } = await plannedProject({ execute });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+
+    const runId = JSON.parse(
+      await readFile(join(root, ".sdd/state.json"), "utf8"),
+    ).currentRunId;
+    const persisted = JSON.parse(
+      await readFile(
+        join(root, ".sdd/runs", runId, "tasks", "TASK-001-RED.result.json"),
+        "utf8",
+      ),
+    );
+
+    expect(persisted.fileDelta).toMatchObject({
+      added: [],
+      modified: ["src/order.ts"],
+      deleted: [],
+    });
+  });
+
   it("executes pending tasks and records verification evidence", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts", "test/order.test.ts"],
@@ -455,9 +492,12 @@ describe("sdd build", () => {
 
   it("blocks files outside the task scope", async () => {
     const { root, core } = await plannedProject({
-      execute: vi.fn().mockResolvedValue({
-        modifiedFiles: ["secrets.txt"],
-        verification: [{ command: "npm test", passed: true, output: "pass" }],
+      execute: vi.fn(async ({ root }) => {
+        await writeFile(join(root, "secrets.txt"), "secret\n", "utf8");
+        return {
+          modifiedFiles: ["secrets.txt"],
+          verification: [{ command: "npm test", passed: true, output: "pass" }],
+        };
       }),
     });
 
@@ -733,14 +773,6 @@ describe("sdd build", () => {
       ...tasks.map((task) => `## ${task.id} ${task.title}\n`),
     ].join("\n");
     await writeFile(join(change, "tasks.md"), tasksMarkdown, "utf8");
-    const codebaseIndexHash = artifactInputHash(codebaseSummary);
-    const sourceArtifactHash = artifactInputHash({
-      spec,
-      design,
-      impact,
-      tasksMarkdown,
-      tasksJson: JSON.stringify(tasks, null, 2),
-    });
     const projectConventionsHash = artifactInputHash(
       await readFile(join(root, ".sdd/project/conventions.json"), "utf8"),
     );
