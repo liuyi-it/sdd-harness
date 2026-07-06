@@ -75,7 +75,11 @@ describe("ReviewReport v1.2 + deterministic review", () => {
       current: snapshot({ "secrets.env": "x" }),
       spec,
     });
-    expect(out.issues.some((i) => i.category === "FILE_SCOPE" && i.file === "secrets.env")).toBe(true);
+    expect(
+      out.issues.some(
+        (i) => i.category === "FILE_SCOPE" && i.file === "secrets.env",
+      ),
+    ).toBe(true);
   });
 
   it("does not emit FILE_SCOPE for forbidden files absent from current diff", () => {
