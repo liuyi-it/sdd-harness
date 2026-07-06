@@ -164,6 +164,12 @@ export async function runInit(
       `${JSON.stringify(index.diagnostics, null, 2)}\n`,
       "utf8",
     );
+    const capabilities = await codebase.capabilities();
+    await writeFile(
+      join(sddRoot, "index", "mcp-capabilities.json"),
+      `${JSON.stringify(capabilities, null, 2)}\n`,
+      "utf8",
+    );
     await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
     const loopStore = new LoopStore(root);

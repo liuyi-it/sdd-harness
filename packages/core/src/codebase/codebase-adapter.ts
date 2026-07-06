@@ -1,10 +1,24 @@
-import { opendir, readFile } from "node:fs/promises";
-import { relative, resolve } from "node:path";
+import { mkdir, opendir, readFile, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
+
+import {
+  createMcpQueryBuilder,
+  isSupportedIntent,
+  MCP_FALLBACK_PROVIDER,
+  MCP_PINNED_PROVIDER,
+  MCP_QUERY_UNAVAILABLE,
+  type ImpactPayload,
+  type McpCapabilities,
+  type McpQueryInput,
+  type McpQueryResult,
+} from "./mcp-query.js";
 
 /**
  * CodebaseAdapter 封装两类代码上下文来源：
- * 1. 优先使用 codebase-memory-mcp
+ * 1. 优先使用 codebase-memory-mcp (pinned v0.8.1 / f0c9be1)
  * 2. 不可用时退回受限文件扫描
+ *
+ * 二期新增 V2 capability + 结构化 query 接口，所有跨 provider 一致性由本类负责。
  */
 export interface CodebaseSummary {
   codebaseSummary: string;
@@ -36,6 +50,13 @@ export interface McpTransport {
   index(root: string): Promise<void>;
   summarize(root: string): Promise<CodebaseSummary>;
   inspect?(root: string): Promise<Partial<McpDiagnostics>>;
+  /** V2: 返回 MCP 暴露的工具集合，缺失时按空集合处理并写入 partial。 */
+  capabilities?(root: string): Promise<string[]>;
+  /**
+   * V2: 结构化查询；缺失时 Core 自动以 fallback-file-scan 返回
+   * degraded=true 的同结构结果，禁止调用方自定义 payload shape。
+   */
+  query?(root: string, input: McpQueryInput): Promise<unknown>;
 }
 
 const EXCLUDED_DIRECTORIES = new Set([
@@ -128,6 +149,229 @@ export class CodebaseAdapter {
     });
   }
 
+  /**
+   * V2 capability discovery：返回 MCP 固定版本的工具清单；缺失时按 partial 写入，
+   * 仍必须保留 officialUrl、version、commit 三项事实。
+   */
+  async capabilities(): Promise<McpCapabilities> {
+    const builder = createMcpQueryBuilder();
+    if (
+      this.transport === undefined ||
+      (await this.transport.isAvailable()) === false
+    ) {
+      return {
+        provider: MCP_PINNED_PROVIDER,
+        version: "0.0.0",
+        commit: "f0c9be1",
+        officialUrl: CODEBASE_MEMORY_MCP_URL,
+        availableTools: [],
+        supportedIntents: [
+          "impact",
+          "related-files",
+          "symbols",
+          "callers",
+          "callees",
+          "routes",
+          "tests",
+          "architecture",
+        ],
+        generatedAt: new Date().toISOString(),
+      };
+    }
+    const tools =
+      (await this.transport.capabilities?.(".").catch(() => [])) ?? [];
+    return builder.capabilitiesFrom(tools);
+  }
+
+  /**
+   * V2 query：唯一允许通过 Core 访问代码库上下文的入口。任何 transport.query
+   * 返回必须命中 ImpactPayload / CodebaseSummary 等已知结构；其余 shape 一律降级。
+   */
+  async query<TPayload = unknown>(
+    input: McpQueryInput,
+  ): Promise<McpQueryResult<TPayload>> {
+    if (!isSupportedIntent(input.intent)) {
+      throw new Error(`unsupported intent: ${input.intent}`);
+    }
+    const builder = createMcpQueryBuilder();
+    if (this.transport === undefined) {
+      return builder.buildFallback<TPayload>(
+        input.intent,
+        MCP_QUERY_UNAVAILABLE,
+        { intent: input.intent } as unknown as TPayload,
+      );
+    }
+    const available = await this.transport.isAvailable().catch(() => false);
+    if (available === false || this.transport.query === undefined) {
+      return builder.buildFallback<TPayload>(
+        input.intent,
+        MCP_QUERY_UNAVAILABLE,
+        { intent: input.intent } as unknown as TPayload,
+      );
+    }
+    try {
+      const raw = await this.transport.query(".", input);
+      if (raw === null || typeof raw !== "object") {
+        return builder.buildFallback<TPayload>(
+          input.intent,
+          MCP_QUERY_UNAVAILABLE,
+          { intent: input.intent } as unknown as TPayload,
+        );
+      }
+      const candidate = raw as McpQueryResult<TPayload>;
+      if (
+        typeof candidate.provider !== "string" ||
+        (candidate.provider !== MCP_PINNED_PROVIDER &&
+          candidate.provider !== MCP_FALLBACK_PROVIDER)
+      ) {
+        return builder.buildFallback<TPayload>(
+          input.intent,
+          MCP_QUERY_UNAVAILABLE,
+          { intent: input.intent } as unknown as TPayload,
+        );
+      }
+      return {
+        ...candidate,
+        schemaVersion: "1.2.0",
+        intent: input.intent,
+        provider: candidate.provider,
+        degraded: candidate.degraded === true,
+        confidence: clampConfidence(candidate.confidence),
+        generatedAt: candidate.generatedAt ?? new Date().toISOString(),
+        payload: candidate.payload,
+      };
+    } catch (error) {
+      return builder.buildFallback<TPayload>(
+        input.intent,
+        `MCP query failed: ${error instanceof Error ? error.message : String(error)}`,
+        { intent: input.intent } as unknown as TPayload,
+      );
+    }
+  }
+
+  async writeCapabilityArtifacts(
+    root: string,
+  ): Promise<{ capabilitiesPath: string; diagnosticsPath: string }> {
+    const sddRoot = join(root, ".sdd");
+    await mkdir(join(sddRoot, "index"), { recursive: true });
+    const capabilities = await this.capabilities();
+    const diagnostics = await this.inspectDiagnostics(root);
+    const capabilitiesPath = join(sddRoot, "index", "mcp-capabilities.json");
+    const diagnosticsPath = join(sddRoot, "index", "codebase-diagnostics.json");
+    await writeFile(
+      capabilitiesPath,
+      `${JSON.stringify(capabilities, null, 2)}
+`,
+      "utf8",
+    );
+    await writeFile(
+      diagnosticsPath,
+      `${JSON.stringify(diagnostics, null, 2)}
+`,
+      "utf8",
+    );
+    return { capabilitiesPath, diagnosticsPath };
+  }
+
+  async queryImpact(
+    root: string,
+    input: McpQueryInput,
+  ): Promise<McpQueryResult<ImpactPayload>> {
+    if (input.intent !== "impact") {
+      throw new Error("queryImpact only supports intent=impact");
+    }
+    const builder = createMcpQueryBuilder();
+    if (this.transport === undefined) {
+      return builder.buildFallback<ImpactPayload>(
+        "impact",
+        MCP_QUERY_UNAVAILABLE,
+        {
+          files: [],
+          symbols: [],
+          tests: [],
+          risks: [],
+        },
+      );
+    }
+    const available = await this.transport.isAvailable().catch(() => false);
+    if (available === false || this.transport.query === undefined) {
+      return builder.buildFallback<ImpactPayload>(
+        "impact",
+        MCP_QUERY_UNAVAILABLE,
+        {
+          files: [],
+          symbols: [],
+          tests: [],
+          risks: [],
+        },
+      );
+    }
+    try {
+      const raw = await this.transport.query(root, input);
+      if (raw === null || typeof raw !== "object") {
+        return builder.buildFallback<ImpactPayload>(
+          "impact",
+          MCP_QUERY_UNAVAILABLE,
+          {
+            files: [],
+            symbols: [],
+            tests: [],
+            risks: [],
+          },
+        );
+      }
+      const payload = coerceImpactPayload(
+        (raw as { payload?: unknown }).payload,
+      );
+      return builder.buildImpactResult(input, payload);
+    } catch (error) {
+      return builder.buildFallback<ImpactPayload>(
+        "impact",
+        `MCP impact query failed: ${error instanceof Error ? error.message : String(error)}`,
+        { files: [], symbols: [], tests: [], risks: [] },
+      );
+    }
+  }
+
+  private async inspectDiagnostics(root: string): Promise<McpDiagnostics> {
+    const fallback: McpDiagnostics = {
+      installed: this.transport !== undefined,
+      configured: this.transport !== undefined,
+      connected: false,
+      callable: false,
+      indexed: false,
+      officialUrl: CODEBASE_MEMORY_MCP_URL,
+    };
+    if (this.transport === undefined) return fallback;
+    const inspected = await this.transport
+      .inspect?.(root)
+      .catch(() => undefined);
+    if (inspected === undefined) return fallback;
+    return {
+      installed:
+        typeof inspected.installed === "boolean"
+          ? inspected.installed
+          : fallback.installed,
+      configured:
+        typeof inspected.configured === "boolean"
+          ? inspected.configured
+          : fallback.configured,
+      connected:
+        typeof inspected.connected === "boolean" ? inspected.connected : false,
+      callable:
+        typeof inspected.callable === "boolean" ? inspected.callable : false,
+      indexed:
+        typeof inspected.indexed === "boolean" ? inspected.indexed : false,
+      officialUrl:
+        typeof inspected.officialUrl === "string"
+          ? inspected.officialUrl
+          : fallback.officialUrl,
+      ...(inspected.message === undefined
+        ? {}
+        : { message: inspected.message }),
+    };
+  }
+
   private async fallback(
     root: string,
     diagnostics: McpDiagnostics,
@@ -143,7 +387,7 @@ export class CodebaseAdapter {
     return {
       provider: "fallback-file-scan",
       degraded: true,
-      reason: MCP_UNAVAILABLE_REASON,
+      reason: MCP_QUERY_UNAVAILABLE,
       diagnostics,
       codebaseSummary: [
         "# 代码库摘要",
@@ -195,6 +439,38 @@ export class CodebaseAdapter {
 
 const CODEBASE_MEMORY_MCP_URL =
   "https://github.com/DeusData/codebase-memory-mcp";
+
+function clampConfidence(raw: unknown): number {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0.3;
+  if (raw >= 1) return 0.99;
+  if (raw <= 0) return 0.01;
+  return raw;
+}
+
+function coerceImpactPayload(input: unknown): ImpactPayload {
+  if (input === null || typeof input !== "object")
+    return { files: [], symbols: [], tests: [], risks: [] };
+  const candidate = input as Partial<ImpactPayload> & {
+    files?: unknown;
+    symbols?: unknown;
+    tests?: unknown;
+    risks?: unknown;
+  };
+  return {
+    files: toStringArray(candidate.files),
+    symbols: toStringArray(candidate.symbols),
+    tests: toStringArray(candidate.tests),
+    risks: toStringArray(candidate.risks),
+  };
+}
+
+function toStringArray(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  return input
+    .filter((value): value is string => typeof value === "string")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
 
 async function scanFiles(root: string, limit = 2_000): Promise<string[]> {
   const absoluteRoot = resolve(root);

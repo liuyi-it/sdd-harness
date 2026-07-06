@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { type CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import { type CommandResult } from "../contracts.js";
 import type { SpecEngine } from "../engines/spec/spec-engine.js";
 import { SddError } from "../errors.js";
@@ -33,6 +34,7 @@ export async function runNew(
   root: string,
   rawArgs: Record<string, unknown> | undefined,
   engine: SpecEngine,
+  codebase?: CodebaseAdapter,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
   const args = parseArgs(rawArgs);
@@ -162,10 +164,17 @@ export async function runNew(
         preview.proposal,
         requirementInputs,
       ),
-      writer.write(join(changeDirectory, "impact.md"), preview.impact, {
-        requirement,
-        codebaseSummary,
-      }),
+      writer.write(
+        join(changeDirectory, "impact.md"),
+        await renderImpactWithMcp(
+          preview.impact,
+          codebase,
+          root,
+          changeId,
+          requirement,
+        ),
+        { requirement, codebaseSummary },
+      ),
       writer.write(
         join(changeDirectory, "questions.md"),
         preview.questions,
@@ -358,4 +367,59 @@ function clarificationPreview(
       ),
     ].join("\n\n"),
   };
+}
+
+/**
+ * 调用 MCP intent=impact 查询并附加结构化发现到 impact.md。codebase 不可用或为 fallback
+ * 时仍然返回可读结果，仅附加 "degraded=true" 提示。
+ */
+async function renderImpactWithMcp(
+  baseImpact: string,
+  codebase: CodebaseAdapter | undefined,
+  root: string,
+  changeId: string,
+  requirement: string,
+): Promise<string> {
+  if (codebase === undefined) return baseImpact;
+  let result;
+  try {
+    result = await codebase.queryImpact(root, {
+      intent: "impact",
+      changeId,
+      requirement,
+    });
+  } catch {
+    return baseImpact;
+  }
+  const sections: string[] = [baseImpact, "", "## MCP Impact Findings", ""];
+  sections.push(
+    `- provider: ${result.provider}`,
+    `- degraded: ${result.degraded}`,
+    `- confidence: ${result.confidence}`,
+    `- intent: ${result.intent}`,
+  );
+  if (result.reason !== undefined) sections.push(`- reason: ${result.reason}`);
+  sections.push("");
+  const payload = result.payload;
+  if (payload.files.length > 0) {
+    sections.push("### 可能修改的文件", "");
+    for (const file of payload.files) sections.push(`- ${file}`);
+    sections.push("");
+  }
+  if (payload.symbols.length > 0) {
+    sections.push("### 关联符号", "");
+    for (const symbol of payload.symbols) sections.push(`- ${symbol}`);
+    sections.push("");
+  }
+  if (payload.tests.length > 0) {
+    sections.push("### 关联测试", "");
+    for (const test of payload.tests) sections.push(`- ${test}`);
+    sections.push("");
+  }
+  if (payload.risks.length > 0) {
+    sections.push("### 已知风险", "");
+    for (const risk of payload.risks) sections.push(`- ${risk}`);
+    sections.push("");
+  }
+  return sections.join("\n");
 }
