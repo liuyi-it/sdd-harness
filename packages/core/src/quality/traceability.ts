@@ -35,6 +35,8 @@ export async function readAuthoritativeSpec(
   }
   if (!isSpecDocument(value)) throw corrupted("spec.model.json 结构无效");
   assertValid(value, "spec.model.json");
+  assertStableIds(value);
+  assertRenderSafe(value);
   const parsed = parseAndValidate(markdown);
   if (canonicalJson(value) !== canonicalJson(parsed))
     throw corrupted("spec.model.json 与 spec.md 不一致");
@@ -149,20 +151,26 @@ export function renderTraceability(
         const task = chain.find((candidate) => candidate.phase === phase)!;
         const result = results.find((entry) => entry.taskId === task.id)!;
         lines.push(`${phase} 任务：${task.id}`);
-        lines.push(`修改文件：${result.modifiedFiles.join("、")}`);
-        const commands = result.tddEvidence
-          .filter((entry) => entry.phase === phase)
-          .map((entry) => entry.command);
+        lines.push(`修改文件：${unique(result.modifiedFiles).join("、")}`);
+        const commands = unique(
+          result.tddEvidence
+            .filter((entry) => entry.phase === phase)
+            .map((entry) => entry.command),
+        );
         lines.push(`${phase} 命令：${commands.join("；")}`);
         if (phase === "VERIFY")
           lines.push(
-            `最终验证命令：${result.verification.map((entry) => entry.command).join("；")}`,
+            `最终验证命令：${unique(result.verification.map((entry) => entry.command)).join("；")}`,
           );
         lines.push("");
       }
     }
   }
   return lines.join("\n");
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function parseAndValidate(markdown: string): SpecDocument {
@@ -188,7 +196,7 @@ function parseLegacySpec(markdown: string): SpecDocument {
     /^### (REQ-\d+):\s*(.+)$/gm,
     (_heading, id: string, title: string) => {
       ids.push(id);
-      return `### Requirement: ${title}\nSystem MUST satisfy this legacy requirement.`;
+      return `### Requirement: ${title}`;
     },
   );
   if (ids.length === 0 || new Set(ids).size !== ids.length)
@@ -206,6 +214,39 @@ function parseLegacySpec(markdown: string): SpecDocument {
     });
   });
   return document;
+}
+
+function assertStableIds(document: SpecDocument): void {
+  document.requirements.forEach((requirement, requirementIndex) => {
+    const expected = `REQ-${String(requirementIndex + 1).padStart(3, "0")}`;
+    if (requirement.id !== expected)
+      throw corrupted(
+        `spec.model.json requirements[${requirementIndex}].id 必须为 ${expected}`,
+      );
+    requirement.scenarios.forEach((scenario, scenarioIndex) => {
+      const scenarioExpected = `${expected}-SC-${String(scenarioIndex + 1).padStart(3, "0")}`;
+      if (scenario.id !== scenarioExpected)
+        throw corrupted(
+          `spec.model.json requirements[${requirementIndex}].scenarios[${scenarioIndex}].id 必须为 ${scenarioExpected}`,
+        );
+    });
+  });
+}
+
+function assertRenderSafe(document: SpecDocument): void {
+  const values = [
+    document.title,
+    ...document.requirements.flatMap((requirement) => [
+      requirement.id,
+      requirement.title,
+      ...requirement.scenarios.flatMap((scenario) => [
+        scenario.id,
+        scenario.title,
+      ]),
+    ]),
+  ];
+  if (values.some((value) => /[\r\n\0]/.test(value) || /^#/m.test(value)))
+    throw corrupted("spec.model.json 包含不可安全渲染的字段");
 }
 
 function assertValid(document: SpecDocument, name: string): void {

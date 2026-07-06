@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
-import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
+import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
@@ -18,7 +18,16 @@ import {
   previousStablePhase,
 } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
-import { type StoredTaskResult, verifyGate } from "../quality/quality-gates.js";
+import {
+  driftFailures,
+  reviewGate,
+  verifyGate,
+} from "../quality/quality-gates.js";
+import {
+  assertTaskResultIds,
+  parseTaskResults,
+  parseTasks,
+} from "../quality/quality-schema.js";
 import {
   readAuthoritativeSpec,
   renderTraceability,
@@ -40,23 +49,16 @@ export async function runArchive(
   await lock.acquire("sdd archive", undefined, lockOptions(args));
   const store = new StateStore(root);
   let started = false;
+  let markerWritten = false;
+  let activeChangeId: string | null = null;
   let previousPhase: CommandResult["state"] = "REVIEW_READY";
   try {
     const state = await store.read();
     assertRecoverableCommandState(state, "sdd archive");
     previousPhase = previousStablePhase(state, "REVIEW_READY");
-    if (state.currentPhase === "ARCHIVED") {
-      return {
-        ok: true,
-        state: "ARCHIVED",
-        exitCode: 0,
-        ...(state.currentChangeId === null
-          ? {}
-          : { changeId: state.currentChangeId }),
-      };
-    }
     if (
       state.currentPhase !== "REVIEW_READY" &&
+      state.currentPhase !== "ARCHIVED" &&
       !canResumeCommand(state, "sdd archive")
     ) {
       throw new SddError(
@@ -66,20 +68,14 @@ export async function runArchive(
       );
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
-    try {
-      await assertChangeWritable(root, changeId);
-    } catch (error) {
-      if (error instanceof SddError && error.code === "E_ARCHIVED_READONLY") {
-        return {
-          ok: true,
-          state: "ARCHIVED",
-          exitCode: 0,
-          changeId,
-        };
-      }
-      throw error;
-    }
+    activeChangeId = changeId;
     const change = join(root, ".sdd", "changes", changeId);
+    if (await hasValidMarker(change, changeId)) {
+      const archived = await convergeArchivedState(store);
+      await writeArchiveAudit(root, archived.currentPhase, changeId);
+      return { ok: true, state: "ARCHIVED", exitCode: 0, changeId };
+    }
+    await assertChangeWritable(root, changeId);
     await store.update((current) => ({
       ...current,
       currentPhase: "ARCHIVING",
@@ -100,22 +96,58 @@ export async function runArchive(
             readFile(join(change, "tasks.json"), "utf8"),
             readFile(join(change, "task-results.json"), "utf8"),
           ]);
-        if (!verifyReport.includes("## Result\n\nPASS"))
+        const writer = new ArtifactWriter();
+        await assertPassReport(
+          writer,
+          join(change, "verify-report.md"),
+          verifyReport,
+          "E_VERIFY_REQUIRED",
+          "sdd verify",
+        );
+        await assertPassReport(
+          writer,
+          join(change, "review-report.md"),
+          reviewReport,
+          "E_REVIEW_REQUIRED",
+          "sdd review",
+        );
+        if (
+          !(await writer.isUnmodified(join(change, "verify-snapshot.json"))) ||
+          !(await writer.isUnmodified(join(change, "review-snapshot.json")))
+        )
           throw new SddError(
             "E_VERIFY_REQUIRED",
-            "验证报告结果不是 PASS",
+            "verify/review 快照 metadata 校验失败",
             "sdd verify",
           );
-        if (!reviewReport.includes("## Result\n\nPASS"))
-          throw new SddError(
-            "E_REVIEW_REQUIRED",
-            "审查报告结果不是 PASS",
-            "sdd review",
-          );
-        const tasks = JSON.parse(taskJson) as TaskDefinition[];
-        const parsedResults = JSON.parse(results) as StoredTaskResult[];
+        const tasks = parseTasks(taskJson);
+        const parsedResults = parseTaskResults(results);
+        assertTaskResultIds(tasks, parsedResults);
         const { document } = await readAuthoritativeSpec(change, spec);
+        const [currentSnapshot, baseline, verifySnapshot, reviewSnapshot] =
+          await Promise.all([
+            new GitInspector(root).snapshot(),
+            readSnapshot(join(change, "git-baseline.json")),
+            readSnapshot(join(change, "verify-snapshot.json")),
+            readSnapshot(join(change, "review-snapshot.json")),
+          ]);
+        if (
+          !sameSnapshot(currentSnapshot, verifySnapshot) ||
+          !sameSnapshot(currentSnapshot, reviewSnapshot)
+        )
+          throw new SddError(
+            "E_VERIFY_REQUIRED",
+            "当前 Git 快照与 verify/review 快照不一致",
+            "sdd verify",
+          );
         const gate = verifyGate(document, tasks, parsedResults, state.tasks);
+        const review = reviewGate(tasks, parsedResults);
+        const reportedFiles = parsedResults.flatMap(
+          (result) => result.modifiedFiles,
+        );
+        const drift = driftFailures(baseline, currentSnapshot, reportedFiles);
+        review.failures.push(...drift);
+        review.passed = review.failures.length === 0;
         const artifactFailures = traceabilityFailures(
           document,
           tasks,
@@ -127,6 +159,12 @@ export async function runArchive(
             "E_VERIFY_REQUIRED",
             gate.failures.join("; "),
             "sdd verify",
+          );
+        if (!review.passed)
+          throw new SddError(
+            "E_REVIEW_REQUIRED",
+            review.failures.join("; "),
+            "sdd review",
           );
         if (artifactFailures.length > 0)
           throw new SddError(
@@ -166,21 +204,24 @@ export async function runArchive(
           "",
           "ARCHIVED",
         ].join("\n");
-        const writer = new ArtifactWriter();
-        await writer.write(join(change, "traceability.md"), traceability, {
-          tasks,
-          parsedResults,
-        });
-        await writer.write(join(change, "archive-report.md"), archiveReport, {
-          verifyReport,
-          reviewReport,
-        });
+        await writer.writeGroupAtomically([
+          {
+            path: join(change, "traceability.md"),
+            content: traceability,
+            inputs: { tasks, parsedResults },
+          },
+          {
+            path: join(change, "archive-report.md"),
+            content: archiveReport,
+            inputs: { verifyReport, reviewReport },
+          },
+        ]);
         const stateHash = createHash("sha256")
           .update(JSON.stringify(state))
           .digest("hex");
         const artifactHash = createHash("sha256")
-          .update(traceability)
-          .update(archiveReport)
+          .update(normalizeArtifact(traceability))
+          .update(normalizeArtifact(archiveReport))
           .digest("hex");
         const archivedMarker = `${JSON.stringify({ changeId, archivedAt: new Date().toISOString(), stateHash: `sha256:${stateHash}`, artifactHash: `sha256:${artifactHash}` }, null, 2)}\n`;
         return {
@@ -192,26 +233,9 @@ export async function runArchive(
       signal,
     );
     await writeFile(join(change, ".archived"), archivedMarker, "utf8");
-    const archived = await store.update((current) => ({
-      ...current,
-      currentPhase: "ARCHIVED",
-      inProgressPhase: null,
-      failedCommand: null,
-      failedReason: null,
-      interruptedCommand: null,
-      suggestedCommand: null,
-      artifacts: {
-        ...current.artifacts,
-        traceability: "READY",
-        archiveReport: "READY",
-      },
-    }));
-    await new AuditLogger(root).write({
-      command: "sdd archive",
-      phase: archived.currentPhase,
-      result: "PASS",
-      changeId,
-    });
+    markerWritten = true;
+    const archived = await convergeArchivedState(store);
+    await writeArchiveAudit(root, archived.currentPhase, changeId);
     return { ok: true, state: archived.currentPhase, exitCode: 0, changeId };
   } catch (error) {
     const normalized = normalizeCommandError(
@@ -219,6 +243,26 @@ export async function runArchive(
       "E_STATE_CORRUPTED",
       "sdd archive",
     );
+    if (markerWritten && activeChangeId !== null) {
+      try {
+        const archived = await convergeArchivedState(store);
+        await writeArchiveAudit(root, archived.currentPhase, activeChangeId);
+        return {
+          ok: true,
+          state: "ARCHIVED",
+          exitCode: 0,
+          changeId: activeChangeId,
+        };
+      } catch {
+        return {
+          ok: false,
+          state: "ARCHIVING",
+          exitCode: normalized.exitCode,
+          changeId: activeChangeId,
+          error: normalized.toCommandError(),
+        };
+      }
+    }
     if (started) {
       await persistCommandFailure(store, normalized, {
         command: "sdd archive",
@@ -230,6 +274,109 @@ export async function runArchive(
   } finally {
     await lock.release();
   }
+}
+
+async function convergeArchivedState(store: StateStore) {
+  return store.update((current) => ({
+    ...current,
+    currentPhase: "ARCHIVED",
+    inProgressPhase: null,
+    failedCommand: null,
+    failedReason: null,
+    interruptedCommand: null,
+    lastError: null,
+    suggestedCommand: null,
+    artifacts: {
+      ...current.artifacts,
+      traceability: "READY",
+      archiveReport: "READY",
+    },
+  }));
+}
+
+async function writeArchiveAudit(
+  root: string,
+  phase: string,
+  changeId: string,
+): Promise<void> {
+  await new AuditLogger(root).write({
+    command: "sdd archive",
+    phase,
+    result: "PASS",
+    changeId,
+  });
+}
+
+async function hasValidMarker(
+  change: string,
+  changeId: string,
+): Promise<boolean> {
+  try {
+    const value: unknown = JSON.parse(
+      await readFile(join(change, ".archived"), "utf8"),
+    );
+    if (typeof value !== "object" || value === null) throw new Error("invalid");
+    const marker = value as Record<string, unknown>;
+    const writer = new ArtifactWriter();
+    const [traceability, archiveReport] = await Promise.all([
+      readFile(join(change, "traceability.md"), "utf8"),
+      readFile(join(change, "archive-report.md"), "utf8"),
+    ]);
+    const artifactHash = `sha256:${createHash("sha256")
+      .update(traceability)
+      .update(archiveReport)
+      .digest("hex")}`;
+    if (
+      marker.changeId !== changeId ||
+      typeof marker.archivedAt !== "string" ||
+      Number.isNaN(Date.parse(marker.archivedAt)) ||
+      !/^sha256:[a-f0-9]{64}$/.test(String(marker.stateHash)) ||
+      marker.artifactHash !== artifactHash ||
+      !(await writer.isUnmodified(join(change, "traceability.md"))) ||
+      !(await writer.isUnmodified(join(change, "archive-report.md")))
+    )
+      throw new Error("invalid");
+    return true;
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return false;
+    throw new SddError("E_STATE_CORRUPTED", ".archived 结构无效");
+  }
+}
+
+function normalizeArtifact(content: string): string {
+  return content.endsWith("\n") ? content : `${content}\n`;
+}
+
+async function assertPassReport(
+  writer: ArtifactWriter,
+  path: string,
+  report: string,
+  code: "E_VERIFY_REQUIRED" | "E_REVIEW_REQUIRED",
+  next: string,
+): Promise<void> {
+  const matches = [...report.matchAll(/^## Result\n\n(PASS|FAIL)$/gm)];
+  if (
+    !(await writer.isUnmodified(path)) ||
+    matches.length !== 1 ||
+    matches[0]![1] !== "PASS"
+  )
+    throw new SddError(
+      code,
+      `${path.split("/").at(-1)} 不是可信的唯一 PASS 报告`,
+      next,
+    );
+}
+
+async function readSnapshot(path: string) {
+  const snapshot = snapshotFromJson(JSON.parse(await readFile(path, "utf8")));
+  if (snapshot === null)
+    throw new SddError("E_STATE_CORRUPTED", `${path} 结构无效`);
+  return snapshot;
+}
+
+function sameSnapshot(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

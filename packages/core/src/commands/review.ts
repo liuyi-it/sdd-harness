@@ -1,17 +1,17 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
-import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
+import { driftFailures, reviewGate } from "../quality/quality-gates.js";
 import {
-  driftFailures,
-  reviewGate,
-  type StoredTaskResult,
-} from "../quality/quality-gates.js";
+  assertTaskResultIds,
+  parseTaskResults,
+  parseTasks,
+} from "../quality/quality-schema.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
@@ -68,21 +68,13 @@ export async function runReview(
     const resultBundle = await withTimeout(
       (async () => {
         const currentSnapshot = await new GitInspector(root).snapshot();
-        if (
-          state.currentPhase === "REVIEW_READY" &&
-          (await reviewSnapshotUnchanged(change, currentSnapshot))
-        ) {
-          return {
-            reused: true as const,
-            currentSnapshot,
-          };
-        }
-        const tasks = JSON.parse(
-          await readFile(join(change, "tasks.json"), "utf8"),
-        ) as TaskDefinition[];
-        const results = JSON.parse(
-          await readFile(join(change, "task-results.json"), "utf8"),
-        ) as StoredTaskResult[];
+        const [rawTasks, rawResults] = await Promise.all([
+          readFile(join(change, "tasks.json"), "utf8"),
+          readFile(join(change, "task-results.json"), "utf8"),
+        ]);
+        const tasks = parseTasks(rawTasks);
+        const results = parseTaskResults(rawResults);
+        assertTaskResultIds(tasks, results);
         const baseline = snapshotFromJson(
           JSON.parse(await readFile(join(change, "git-baseline.json"), "utf8")),
         );
@@ -91,6 +83,16 @@ export async function runReview(
         const drift = driftFailures(baseline, currentSnapshot, reportedFiles);
         gate.failures.push(...drift);
         gate.passed = gate.failures.length === 0;
+        if (
+          state.currentPhase === "REVIEW_READY" &&
+          gate.passed &&
+          (await reviewSnapshotUnchanged(change, currentSnapshot))
+        ) {
+          return {
+            reused: true as const,
+            currentSnapshot,
+          };
+        }
         const report = [
           "# 审查报告",
           "",
@@ -152,10 +154,10 @@ export async function runReview(
             results,
           },
         );
-        await writeFile(
+        await new ArtifactWriter().write(
           join(change, "review-snapshot.json"),
-          `${JSON.stringify(currentSnapshot, null, 2)}\n`,
-          "utf8",
+          JSON.stringify(currentSnapshot, null, 2),
+          { currentSnapshot },
         );
         return {
           reused: false as const,
@@ -243,7 +245,12 @@ async function reviewSnapshotUnchanged(
     : never,
 ): Promise<boolean> {
   try {
-    await readFile(join(change, "review-report.md"), "utf8");
+    const writer = new ArtifactWriter();
+    if (
+      !(await writer.isUnmodified(join(change, "review-report.md"))) ||
+      !(await writer.isUnmodified(join(change, "review-snapshot.json")))
+    )
+      return false;
     const saved = snapshotFromJson(
       JSON.parse(await readFile(join(change, "review-snapshot.json"), "utf8")),
     );

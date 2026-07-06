@@ -16,6 +16,7 @@ import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { GitInspector } from "../src/git/git-inspector.js";
+import { StateStore } from "../src/state/state-store.js";
 import type { StoredTaskResult } from "../src/quality/quality-gates.js";
 import { traceabilityFailures } from "../src/quality/traceability.js";
 import type { SpecDocument } from "../src/engines/openspec/model.js";
@@ -329,7 +330,7 @@ describe("quality commands", () => {
     const { root, core } = await builtProject();
     const path = join(root, ".sdd/changes/add-cancel/tasks.json");
     const tasks = JSON.parse(await readFile(path, "utf8"));
-    tasks[0].scenarios = ["SCN-GHOST"];
+    tasks[0].scenarios = ["REQ-999-SC-001"];
     await writeFile(path, `${JSON.stringify(tasks, null, 2)}\n`, "utf8");
 
     const result = await core.execute({ command: "verify", cwd: root });
@@ -338,7 +339,7 @@ describe("quality commands", () => {
       ok: false,
       error: { code: "E_VERIFY_FAILED" },
     });
-    expect(result.error?.message).toContain("SCN-GHOST");
+    expect(result.error?.message).toContain("REQ-999-SC-001");
   });
 
   it("legacy：缺少 spec.model.json 时兼容严格 Markdown 规格", async () => {
@@ -352,12 +353,16 @@ describe("quality commands", () => {
         "",
         "### REQ-001: 旧格式需求",
         "",
+        "系统 MUST 支持旧格式行为。",
+        "",
         "#### Scenario: 旧格式场景",
         "- GIVEN 条件成立",
         "- WHEN 执行操作",
         "- THEN 返回结果",
         "",
         "### REQ-002: 第二个旧格式需求",
+        "",
+        "系统 MUST 支持第二个旧格式行为。",
         "",
         "#### Scenario: 第二个旧格式场景",
         "- GIVEN 第二个条件成立",
@@ -606,6 +611,173 @@ describe("quality commands", () => {
     await expect(access(join(change, ".archived"))).rejects.toThrow();
   });
 
+  it("review 后源码变化会阻止 archive", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    await writeFile(
+      join(root, "src/order.ts"),
+      "export const order = { changed: true };\n",
+    );
+
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      {
+        ok: false,
+        error: { code: "E_VERIFY_REQUIRED" },
+      },
+    );
+    await expect(
+      access(join(root, ".sdd/changes/add-cancel/.archived")),
+    ).rejects.toThrow();
+  });
+
+  it("追加伪造 PASS 会因报告 metadata 与唯一 Result 校验失败", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const reportPath = join(root, ".sdd/changes/add-cancel/verify-report.md");
+    await writeFile(
+      reportPath,
+      `${await readFile(reportPath, "utf8")}\n## Result\n\nPASS\n`,
+    );
+
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      {
+        ok: false,
+        error: { code: "E_VERIFY_REQUIRED" },
+      },
+    );
+  });
+
+  it("marker 写入后 state 更新失败不落 FAILED，重跑后收敛", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const originalUpdate = StateStore.prototype.update;
+    let markerUpdateAttempts = 0;
+    const updateSpy = vi
+      .spyOn(StateStore.prototype, "update")
+      .mockImplementation(async function (this: StateStore, updater) {
+        try {
+          await access(join(root, ".sdd/changes/add-cancel/.archived"));
+          markerUpdateAttempts += 1;
+          throw new Error("注入 marker 后 state 更新失败");
+        } catch (error) {
+          if (markerUpdateAttempts > 0) throw error;
+        }
+        return originalUpdate.call(this, updater);
+      });
+
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      { ok: false },
+    );
+    expect(markerUpdateAttempts).toBeGreaterThanOrEqual(2);
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).not.toMatchObject({ currentPhase: "FAILED" });
+    updateSpy.mockRestore();
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      { ok: true, state: "ARCHIVED" },
+    );
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({
+      currentPhase: "ARCHIVED",
+      inProgressPhase: null,
+      failedCommand: null,
+      artifacts: { traceability: "READY", archiveReport: "READY" },
+    });
+    expect(await readFile(join(root, ".sdd/logs/audit.log"), "utf8")).toContain(
+      '"command":"sdd archive"',
+    );
+  });
+
+  it("归档组写中途失败不会暴露半套主制品", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const originalWrite = ArtifactWriter.prototype.write;
+    vi.spyOn(ArtifactWriter.prototype, "write").mockImplementation(
+      async function (this: ArtifactWriter, path, ...args) {
+        if (path.includes("archive-report.md.tmp-"))
+          throw new Error("注入组写失败");
+        return originalWrite.call(this, path, ...args);
+      },
+    );
+
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      { ok: false },
+    );
+    const change = join(root, ".sdd/changes/add-cancel");
+    await expect(access(join(change, "traceability.md"))).rejects.toThrow();
+    await expect(access(join(change, "archive-report.md"))).rejects.toThrow();
+    await expect(access(join(change, ".archived"))).rejects.toThrow();
+  });
+
+  it("verify 对深层 task schema 错误返回稳定路径", async () => {
+    const { root, core } = await builtProject();
+    const path = join(root, ".sdd/changes/add-cancel/tasks.json");
+    const tasks = JSON.parse(await readFile(path, "utf8"));
+    tasks[0].scenarios = null;
+    await writeFile(path, JSON.stringify(tasks));
+
+    const result = await core.execute({ command: "verify", cwd: root });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+    expect(result.error?.message).toContain("tasks.json[0].scenarios");
+  });
+
+  it("review 重复执行前仍会深层校验持久化任务结果", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    const path = join(root, ".sdd/changes/add-cancel/task-results.json");
+    const results = JSON.parse(await readFile(path, "utf8"));
+    results[0].modifiedFiles = null;
+    await writeFile(path, JSON.stringify(results));
+
+    const result = await core.execute({ command: "review", cwd: root });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+    expect(result.error?.message).toContain(
+      "task-results.json[0].modifiedFiles",
+    );
+  });
+
+  it("verify 拒绝不存在的任务依赖", async () => {
+    const { root, core } = await builtProject();
+    const path = join(root, ".sdd/changes/add-cancel/tasks.json");
+    const tasks = JSON.parse(await readFile(path, "utf8"));
+    tasks[0].dependsOn = ["TASK-GHOST"];
+    await writeFile(path, JSON.stringify(tasks));
+
+    const result = await core.execute({ command: "verify", cwd: root });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+    expect(result.error?.message).toContain("不存在依赖任务 TASK-GHOST");
+  });
+
+  it("verify 拒绝非稳定顺序的 model ID", async () => {
+    const { root, core } = await builtProject();
+    const path = join(root, ".sdd/changes/add-cancel/spec.model.json");
+    const model = JSON.parse(await readFile(path, "utf8"));
+    model.requirements[0].id = "REQ-999";
+    await writeFile(path, JSON.stringify(model));
+
+    const result = await core.execute({ command: "verify", cwd: root });
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+    expect(result.error?.message).toContain("必须为 REQ-001");
+  });
+
   it("即使 state 被误改，只要存在 .archived 也拒绝再次写入", async () => {
     const { root, core } = await builtProject();
     await core.execute({ command: "verify", cwd: root });
@@ -635,6 +807,24 @@ describe("quality commands", () => {
       ok: false,
       error: { code: "E_ARCHIVED_READONLY" },
     });
+  });
+
+  it("archive 拒绝 artifactHash 与归档制品不一致的 marker", async () => {
+    const { root, core } = await builtProject();
+    await core.execute({ command: "verify", cwd: root });
+    await core.execute({ command: "review", cwd: root });
+    await core.execute({ command: "archive", cwd: root });
+    const markerPath = join(root, ".sdd/changes/add-cancel/.archived");
+    const marker = JSON.parse(await readFile(markerPath, "utf8"));
+    marker.artifactHash = `sha256:${"0".repeat(64)}`;
+    await writeFile(markerPath, JSON.stringify(marker));
+
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      {
+        ok: false,
+        error: { code: "E_STATE_CORRUPTED" },
+      },
+    );
   });
 
   it("当 --change 与当前活动变更不一致时拒绝执行 archive", async () => {

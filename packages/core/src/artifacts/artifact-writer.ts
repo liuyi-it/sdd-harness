@@ -1,5 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  open,
+  readFile,
+  rename,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 
 /**
@@ -15,6 +22,73 @@ export interface ArtifactMetadata {
 }
 
 export class ArtifactWriter {
+  constructor(
+    private readonly renameFile: (
+      source: string,
+      target: string,
+    ) => Promise<void> = rename,
+  ) {}
+
+  async writeGroupAtomically(
+    artifacts: Array<{ path: string; content: string; inputs: unknown }>,
+  ): Promise<void> {
+    const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const prepared: Array<{ temporary: string; target: string }> = [];
+    const backups: Array<{ backup: string; target: string }> = [];
+    const committed: string[] = [];
+    try {
+      for (const artifact of artifacts) {
+        const temporary = `${artifact.path}.tmp-${nonce}`;
+        await this.write(temporary, artifact.content, artifact.inputs);
+        await syncFile(temporary);
+        await syncFile(`${temporary}.meta.json`);
+        prepared.push({ temporary, target: artifact.path });
+      }
+      for (const item of prepared.flatMap(({ temporary, target }) => [
+        { temporary, target },
+        { temporary: `${temporary}.meta.json`, target: `${target}.meta.json` },
+      ])) {
+        const backup = `${item.target}.bak-${nonce}`;
+        try {
+          await this.renameFile(item.target, backup);
+          await syncFile(backup);
+          await syncDirectory(dirname(item.target));
+          backups.push({ backup, target: item.target });
+        } catch (error) {
+          if (!isEnoent(error)) throw error;
+        }
+      }
+      for (const item of prepared) {
+        await this.renameFile(item.temporary, item.target);
+        committed.push(item.target);
+        await syncFile(item.target);
+        await syncDirectory(dirname(item.target));
+        await this.renameFile(
+          `${item.temporary}.meta.json`,
+          `${item.target}.meta.json`,
+        );
+        committed.push(`${item.target}.meta.json`);
+        await syncFile(`${item.target}.meta.json`);
+        await syncDirectory(dirname(item.target));
+      }
+      await Promise.all(backups.map(({ backup }) => unlink(backup)));
+      await syncDirectories(backups.map(({ target }) => dirname(target)));
+    } catch (error) {
+      await Promise.all(
+        committed.map((path) => unlink(path).catch(() => undefined)),
+      );
+      for (const { backup, target } of backups.reverse())
+        await this.renameFile(backup, target);
+      await Promise.all(
+        prepared
+          .flatMap((item) => [item.temporary, `${item.temporary}.meta.json`])
+          .map((path) => unlink(path).catch(() => undefined)),
+      );
+      await syncDirectories(prepared.map(({ target }) => dirname(target)));
+      throw error;
+    }
+  }
+
   async write(
     path: string,
     content: string,
@@ -44,8 +118,11 @@ export class ArtifactWriter {
         readFile(path, "utf8"),
         readFile(`${path}.meta.json`, "utf8"),
       ]);
-      const metadata = JSON.parse(metadataText) as ArtifactMetadata;
-      return metadata.artifactHash === sha256(content);
+      const metadata: unknown = JSON.parse(metadataText);
+      return (
+        isArtifactMetadata(metadata) &&
+        metadata.artifactHash === sha256(content)
+      );
     } catch {
       return false;
     }
@@ -150,6 +227,32 @@ export class ArtifactWriter {
       ),
     );
     return "written";
+  }
+}
+
+async function syncFile(path: string): Promise<void> {
+  const handle = await open(path, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function syncDirectories(paths: string[]): Promise<void> {
+  await Promise.all([...new Set(paths)].map(syncDirectory));
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  try {
+    const handle = await open(path, "r");
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // Directory fsync is not supported by every Windows filesystem.
   }
 }
 

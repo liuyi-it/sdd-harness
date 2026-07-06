@@ -1,17 +1,12 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
-import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
-import {
-  driftFailures,
-  type StoredTaskResult,
-  verifyGate,
-} from "../quality/quality-gates.js";
+import { driftFailures, verifyGate } from "../quality/quality-gates.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
@@ -24,6 +19,11 @@ import {
 } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
 import { readAuthoritativeSpec } from "../quality/traceability.js";
+import {
+  assertTaskResultIds,
+  parseTaskResults,
+  parseTasks,
+} from "../quality/quality-schema.js";
 
 /**
  * verify 阶段关注“需求是否被任务覆盖，任务是否有通过的执行证据”。
@@ -74,11 +74,9 @@ export async function runVerify(
           readFile(join(change, "task-results.json"), "utf8"),
           store.read(),
         ]);
-        const tasks = parseRecordArray<TaskDefinition>(rawTasks, "tasks.json");
-        const results = parseRecordArray<StoredTaskResult>(
-          rawResults,
-          "task-results.json",
-        );
+        const tasks = parseTasks(rawTasks);
+        const results = parseTaskResults(rawResults);
+        assertTaskResultIds(tasks, results);
         const authoritative = await readAuthoritativeSpec(change, spec);
         const gate = verifyGate(
           authoritative.document,
@@ -149,10 +147,10 @@ export async function runVerify(
             results,
           },
         );
-        await writeFile(
+        await new ArtifactWriter().write(
           join(change, "verify-snapshot.json"),
-          `${JSON.stringify(currentSnapshot, null, 2)}\n`,
-          "utf8",
+          JSON.stringify(currentSnapshot, null, 2),
+          { currentSnapshot },
         );
         return {
           reused: false as const,
@@ -227,22 +225,6 @@ export async function runVerify(
   }
 }
 
-function parseRecordArray<T>(raw: string, name: string): T[] {
-  const value: unknown = JSON.parse(raw);
-  if (
-    !Array.isArray(value) ||
-    value.some(
-      (entry) =>
-        typeof entry !== "object" ||
-        entry === null ||
-        (Object.getPrototypeOf(entry) !== Object.prototype &&
-          Object.getPrototypeOf(entry) !== null),
-    )
-  )
-    throw new SddError("E_STATE_CORRUPTED", `${name} 结构无效`);
-  return value as T[];
-}
-
 function lockOptions(args: Record<string, unknown> | undefined): {
   timeoutMs?: number;
 } {
@@ -257,7 +239,12 @@ async function verifySnapshotUnchanged(
     : never,
 ): Promise<boolean> {
   try {
-    await readFile(join(change, "verify-report.md"), "utf8");
+    const writer = new ArtifactWriter();
+    if (
+      !(await writer.isUnmodified(join(change, "verify-report.md"))) ||
+      !(await writer.isUnmodified(join(change, "verify-snapshot.json")))
+    )
+      return false;
     const saved = snapshotFromJson(
       JSON.parse(await readFile(join(change, "verify-snapshot.json"), "utf8")),
     );
