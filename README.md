@@ -65,6 +65,8 @@
 
 输入粗略需求后不会立即写代码，而是先进行需求分析，并自动提出需要确认的问题。存在未澄清问题时流程会停在 `CLARIFYING` 状态。
 
+完整需求会转换为内置 OpenSpec 语义的结构化制品：Requirement、Scenario、ADDED/MODIFIED/REMOVED delta 及对应 JSON 模型。规格格式、规范性关键字和场景完整性不通过时，流程不会进入设计阶段。
+
 ### 3. 阶段化开发
 
 一次需求会被拆成多个清晰阶段，每个阶段都有明确目标和输出：
@@ -72,6 +74,8 @@
 ```text
 new → design → plan → build → verify → review → archive
 ```
+
+`plan` 会按每个 Requirement 生成严格依赖的 `RED → GREEN → REFACTOR → VERIFY` 原子任务链。`build` 要求宿主返回真实 TDD 证据：RED 至少包含一次观察到的预期失败，后续阶段必须通过，缺失或伪造证据会阻止状态推进。
 
 ### 4. 自动编排
 
@@ -82,6 +86,8 @@ new → design → plan → build → verify → review → archive
 - 每次需求变更都会生成对应的文档和记录，统一存放在项目的 `.sdd/` 目录。
 - 状态文件采用原子写入 + 备份恢复，绝不猜测状态。
 - 内置路径穿越防护、文件范围校验、只读 Git / 测试命令白名单；仓库内容与 MCP 输出**只作为数据**，不会被当作指令执行。
+- `verify` 和 `archive` 会检查 Requirement → Scenario → 四阶段任务 → 修改文件 → 测试命令的完整追踪链；归档前还会重新检查报告摘要、Git 漂移和任务范围。
+- OpenSpec `v1.4.1` 与 Superpowers `v6.1.1` 的固定上游快照保存在 `vendor/`，逐文件清单、符号链接、许可证和 commit 均由发布校验检查，不会自动跟随 latest。
 
 ---
 

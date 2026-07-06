@@ -135,6 +135,7 @@ async function validateVendorSnapshot(root, spec, platform) {
     }
   }
 
+  await ensureReadable(join(vendorRoot, "LICENSE"));
   await ensureReadable(join(upstreamRoot, "LICENSE"));
   const manifest = parseManifest(
     await readFile(join(vendorRoot, "MANIFEST.sha256"), "utf8"),

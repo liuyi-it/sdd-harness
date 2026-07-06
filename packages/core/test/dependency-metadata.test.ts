@@ -28,7 +28,9 @@ describe("第三方依赖元数据", () => {
     }
 
     for (const path of [
+      "vendor/openspec/LICENSE",
       "vendor/openspec/upstream/LICENSE",
+      "vendor/superpowers/LICENSE",
       "vendor/superpowers/upstream/LICENSE",
     ]) {
       await expect(access(join(process.cwd(), path))).resolves.toBeUndefined();

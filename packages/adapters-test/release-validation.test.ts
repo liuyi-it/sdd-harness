@@ -280,6 +280,15 @@ describe("release validation", () => {
     );
   });
 
+  it("fails when a required top-level vendor LICENSE is missing", async () => {
+    const root = await makeReleaseCopy();
+    await rm(join(root, "vendor/openspec/LICENSE"));
+
+    await expect(validateReleaseLayout(root)).rejects.toThrow(
+      /缺少发布必需文件.*LICENSE/,
+    );
+  });
+
   it("fails when a symbolic link is replaced by a regular file", async () => {
     const root = await makeReleaseCopy();
     const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
