@@ -30,6 +30,8 @@ import {
 } from "../state/schema-migration.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
+import { createDefaultLoopSpec } from "../loop/loop-spec.js";
+import { LoopStore } from "../loop/loop-store.js";
 import {
   createEmptyProjectProfile,
   discoverProjectConventions,
@@ -57,6 +59,7 @@ const REQUIRED_DIRECTORIES = [
   "adapters",
   "schemas",
   "project",
+  "loop",
 ] as const;
 
 const configSchema = z
@@ -163,6 +166,10 @@ export async function runInit(
     );
     await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
+    const loopStore = new LoopStore(root);
+    const loopOutcome = await loopStore.writeSpec(createDefaultLoopSpec(), {
+      force: args?.force === true,
+    });
     const conventionsStore = new ProjectConventionsStore(root);
     const emptyProject = await isEmptyProject(root);
     const structurePolicy = readStructurePolicy(args);
@@ -192,6 +199,9 @@ export async function runInit(
         next: "sdd init",
         warnings: [
           "空项目需要先通过 structurePolicy 指定目录结构策略，可选 free-design 或 user-defined",
+          ...(loopOutcome === "candidate"
+            ? ["检测到人工修改的 loop spec，已生成候选文件供人工合并"]
+            : []),
         ],
       };
     }
@@ -224,7 +234,12 @@ export async function runInit(
       state: ready.currentPhase,
       exitCode: 0,
       next: "sdd new",
-      ...buildWarnings(index, integration.candidateFiles, configWarnings),
+      ...buildWarnings(
+        index,
+        integration.candidateFiles,
+        configWarnings,
+        loopOutcome,
+      ),
     };
   } catch (error) {
     const normalized = normalizeCommandError(
@@ -424,6 +439,7 @@ function buildWarnings(
   index: { degraded: boolean; reason?: string | null },
   candidateFiles: string[],
   configWarnings: string[],
+  loopOutcome?: "written" | "unchanged" | "candidate",
 ): { warnings?: string[] } {
   const warnings: string[] = [];
   if (index.degraded) {
@@ -438,6 +454,9 @@ function buildWarnings(
     warnings.push(
       `检测到人工修改，已生成候选文件供人工合并：${candidateFiles.join(", ")}`,
     );
+  }
+  if (loopOutcome === "candidate") {
+    warnings.push("检测到人工修改的 loop spec，已生成候选文件供人工合并");
   }
   warnings.push(...configWarnings);
   return warnings.length === 0 ? {} : { warnings };

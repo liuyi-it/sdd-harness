@@ -18,6 +18,7 @@ import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { PHASES, type Phase } from "../contracts.js";
 import { SddError } from "../errors.js";
+import { LoopStore } from "../loop/loop-store.js";
 import {
   CURRENT_SCHEMA_VERSION,
   migrateWorkflowState,
@@ -166,7 +167,9 @@ export class StateStore {
       }
       const parsed = workflowStateSchema.parse(raw);
       await this.validateChangeReference(parsed);
-      return await this.normalizeTransientState(parsed);
+      return await this.normalizeActiveLoop(
+        await this.normalizeTransientState(parsed),
+      );
     } catch (error) {
       if (
         error instanceof SddError &&
@@ -335,6 +338,38 @@ export class StateStore {
       `${JSON.stringify(recovered, null, 2)}\n`,
       "utf8",
     );
+    return recovered;
+  }
+
+  private async normalizeActiveLoop(
+    state: WorkflowState,
+  ): Promise<WorkflowState> {
+    if (
+      state.activeLoop === null ||
+      typeof state.activeLoop !== "object" ||
+      !("runId" in state.activeLoop) ||
+      typeof state.activeLoop.runId !== "string"
+    ) {
+      return state;
+    }
+    const loop = state.activeLoop as {
+      loopId: string;
+      runId: string;
+      status: string;
+      recovered?: boolean;
+    };
+    if (await new LoopStore(this.root).hasRun(loop.runId)) return state;
+    const recovered = workflowStateSchema.parse({
+      ...state,
+      activeLoop: {
+        ...loop,
+        status: "PAUSED",
+        recovered: true,
+      },
+      version: state.version + 1,
+      updatedAt: new Date().toISOString(),
+    });
+    await this.write(recovered);
     return recovered;
   }
 }
