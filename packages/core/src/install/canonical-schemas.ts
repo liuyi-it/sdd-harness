@@ -212,6 +212,22 @@ export const CANONICAL_SCHEMAS = {
         "endedAt": { "type": "string", "format": "date-time" }
       },
       "additionalProperties": false
+    },
+    "mode": {
+      "type": "object",
+      "required": ["requested", "actual"],
+      "properties": {
+        "requested": { "enum": ["subagent", "main-agent"] },
+        "actual": { "enum": ["subagent", "main-agent"] }
+      },
+      "additionalProperties": false
+    },
+    "notes": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "legacy": {
+      "type": "object"
     }
   },
   "additionalProperties": false

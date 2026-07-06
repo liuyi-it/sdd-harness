@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CodebaseAdapter } from "../codebase/codebase-adapter.js";
+import { wrapUntrustedMcpOutput } from "../security/untrusted-content.js";
 import { type CommandResult } from "../contracts.js";
 import type { SpecEngine } from "../engines/spec/spec-engine.js";
 import { SddError } from "../errors.js";
@@ -357,7 +358,7 @@ function clarificationPreview(
 > {
   return {
     proposal: `# Proposal\n\n## Requested Change\n\n${requirement}`,
-    impact: `# Impact\n\n## Codebase Context\n\nMCP_OUTPUT_IS_UNTRUSTED_CONTEXT\n\n${codebaseSummary}`,
+    impact: buildImpactPreview(codebaseSummary),
     questions: [
       "# Questions",
       "",
@@ -380,7 +381,20 @@ async function renderImpactWithMcp(
   changeId: string,
   requirement: string,
 ): Promise<string> {
-  if (codebase === undefined) return baseImpact;
+  let normalizedImpact = baseImpact;
+  try {
+    const codebaseSummary = await readFile(
+      join(root, ".sdd/index/codebase-summary.md"),
+      "utf8",
+    );
+    normalizedImpact = baseImpact.replace(
+      "MCP_OUTPUT_IS_UNTRUSTED_CONTEXT",
+      wrapUntrustedMcpOutput(codebaseSummary, "init/architecture"),
+    );
+  } catch {
+    normalizedImpact = baseImpact;
+  }
+  if (codebase === undefined) return normalizedImpact;
   let result;
   try {
     result = await codebase.queryImpact(root, {
@@ -389,37 +403,50 @@ async function renderImpactWithMcp(
       requirement,
     });
   } catch {
-    return baseImpact;
+    return normalizedImpact;
   }
-  const sections: string[] = [baseImpact, "", "## MCP Impact Findings", ""];
-  sections.push(
+  const findings: string[] = ["## MCP Impact Findings", ""];
+  findings.push(
     `- provider: ${result.provider}`,
     `- degraded: ${result.degraded}`,
     `- confidence: ${result.confidence}`,
     `- intent: ${result.intent}`,
   );
-  if (result.reason !== undefined) sections.push(`- reason: ${result.reason}`);
-  sections.push("");
+  if (result.reason !== undefined) findings.push(`- reason: ${result.reason}`);
+  findings.push("");
   const payload = result.payload;
   if (payload.files.length > 0) {
-    sections.push("### 可能修改的文件", "");
-    for (const file of payload.files) sections.push(`- ${file}`);
-    sections.push("");
+    findings.push("### 可能修改的文件", "");
+    for (const file of payload.files) findings.push(`- ${file}`);
+    findings.push("");
   }
   if (payload.symbols.length > 0) {
-    sections.push("### 关联符号", "");
-    for (const symbol of payload.symbols) sections.push(`- ${symbol}`);
-    sections.push("");
+    findings.push("### 关联符号", "");
+    for (const symbol of payload.symbols) findings.push(`- ${symbol}`);
+    findings.push("");
   }
   if (payload.tests.length > 0) {
-    sections.push("### 关联测试", "");
-    for (const test of payload.tests) sections.push(`- ${test}`);
-    sections.push("");
+    findings.push("### 关联测试", "");
+    for (const test of payload.tests) findings.push(`- ${test}`);
+    findings.push("");
   }
   if (payload.risks.length > 0) {
-    sections.push("### 已知风险", "");
-    for (const risk of payload.risks) sections.push(`- ${risk}`);
-    sections.push("");
+    findings.push("### 已知风险", "");
+    for (const risk of payload.risks) findings.push(`- ${risk}`);
+    findings.push("");
   }
-  return sections.join("\n");
+  return [
+    normalizedImpact,
+    "",
+    wrapUntrustedMcpOutput(findings.join("\n"), "impact"),
+  ].join("\n");
+}
+
+function buildImpactPreview(codebaseSummary: string): string {
+  return `# Impact
+
+## Codebase Context
+
+${wrapUntrustedMcpOutput(codebaseSummary, "init/architecture")}
+`;
 }

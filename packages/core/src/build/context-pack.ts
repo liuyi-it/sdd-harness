@@ -1,5 +1,10 @@
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
 import type { ProjectRuleSnapshot } from "../project-conventions/rule-resolver.js";
+import {
+  FIXED_SECURITY_RULES,
+  wrapUntrustedMcpOutput,
+  wrapUntrustedRepositoryContent,
+} from "../security/untrusted-content.js";
 
 export interface ContextPackMetadata {
   codebaseIndexHash: string;
@@ -57,8 +62,26 @@ export function renderContextPack(input: {
     "<!-- Project Rules End -->",
     "",
   ].join("\n");
+  const securityRules = [
+    "<!-- Security Rules (Fixed) -->",
+    "## Security Rules",
+    "",
+    ...FIXED_SECURITY_RULES.map((rule) => `- ${rule}`),
+    "<!-- Security Rules End -->",
+    "",
+  ].join("\n");
+  const wrappedBody = [
+    wrapUntrustedRepositoryContent(input.spec, "spec.md"),
+    wrapUntrustedRepositoryContent(input.design, "design.md"),
+    wrapUntrustedRepositoryContent(input.impact, "impact.md"),
+    wrapUntrustedMcpOutput(input.codebaseSummary, "init/architecture"),
+    "",
+    "<!-- Task Body Begin -->",
+    stripManagedSections(input.body),
+    "<!-- Task Body End -->",
+  ].join("\n\n");
   return truncateUtf8(
-    `${metadata}${rulesSection}${stripManagedSections(input.body)}`,
+    `${metadata}${securityRules}${rulesSection}${wrappedBody}`,
     30 * 1024,
   );
 }

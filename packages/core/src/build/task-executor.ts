@@ -2,6 +2,7 @@ import { SddError } from "../errors.js";
 import type { GitSnapshot } from "../git/git-inspector.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import type { ProjectRuleSnapshot } from "../project-conventions/rule-resolver.js";
+import type { TaskConstraints } from "../security/untrusted-content.js";
 
 export interface VerificationEvidence {
   command: string;
@@ -25,12 +26,7 @@ export interface TaskExecutionRequest {
   task: TaskDefinition;
   contextPack: string;
   gitBaseline: GitSnapshot | null;
-  constraints: {
-    allowedFiles: string[];
-    expectedNewFiles: string[];
-    forbiddenFiles: string[];
-    allowedCommands: string[];
-  };
+  constraints: TaskConstraints;
   mode: "subagent" | "main-agent";
   projectRules?: ProjectRuleSnapshot;
   signal?: AbortSignal;

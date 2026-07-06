@@ -5,10 +5,16 @@ import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
 import { SddError } from "../errors.js";
-import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
+import {
+  GitInspector,
+  snapshotFromJson,
+  type GitSnapshot,
+} from "../git/git-inspector.js";
 import { driftFailures, reviewGate } from "../quality/quality-gates.js";
 import {
+  createReviewIssue,
   createReviewReport,
+  type ReviewIssue,
   writeReviewReport,
 } from "../quality/review-report.js";
 import { runDeterministicReview } from "../quality/deterministic-review.js";
@@ -19,6 +25,7 @@ import {
 } from "../quality/quality-schema.js";
 import { FileLock } from "../state/file-lock.js";
 import { readAuthoritativeSpec } from "../quality/traceability.js";
+import { scanSecrets } from "../security/secrets-scanner.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 import {
@@ -98,13 +105,18 @@ export async function runReview(
           current: currentSnapshot,
           spec: authoritative.document,
         });
+        const secretIssues = await detectSecretLeakIssues(
+          root,
+          baseline,
+          currentSnapshot,
+        );
         const reviewReport = createReviewReport({
           changeId,
-          issues: deterministic.issues,
+          issues: deterministic.issues.concat(secretIssues),
           ...(gate.failures.length === 0
             ? {}
             : {
-                issues: deterministic.issues.concat(
+                issues: deterministic.issues.concat(secretIssues).concat(
                   gate.failures.map((failure) =>
                     failure.includes("未跟踪")
                       ? {
@@ -278,6 +290,40 @@ export async function runReview(
   } finally {
     await lock.release();
   }
+}
+
+async function detectSecretLeakIssues(
+  root: string,
+  baseline: GitSnapshot | null,
+  current: GitSnapshot | null,
+) {
+  if (baseline === null || current === null) return [];
+  if (!baseline.available || !current.available) return [];
+  const issues: ReviewIssue[] = [];
+  for (const file of current.files) {
+    const baselineHash = baseline.hashes[file];
+    const currentHash = current.hashes[file];
+    if (baselineHash !== undefined && baselineHash === currentHash) continue;
+    const path = join(root, file);
+    let contents: string;
+    try {
+      contents = await readFile(path, "utf8");
+    } catch {
+      continue;
+    }
+    const findings = scanSecrets({ text: contents, file }).findings;
+    for (const finding of findings) {
+      issues.push(
+        createReviewIssue({
+          category: "SECRET_LEAK",
+          severity: "MAJOR",
+          file,
+          message: `文件 ${file} 命中敏感信息规则 ${finding.rule}，预览 ${finding.preview}`,
+        }),
+      );
+    }
+  }
+  return issues;
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

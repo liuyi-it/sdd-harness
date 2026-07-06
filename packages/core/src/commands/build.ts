@@ -23,6 +23,7 @@ import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { GitInspector } from "../git/git-inspector.js";
 import { isCommandAllowed } from "../security/shell-policy.js";
+import { buildTaskConstraints } from "../security/untrusted-content.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 import { FileLock } from "../state/file-lock.js";
 import { scopePatternsOverlap } from "../security/scope-overlap.js";
@@ -159,12 +160,13 @@ export async function runBuild(
               task,
               contextPack,
               gitBaseline: gitBefore.available ? gitBefore : null,
-              constraints: {
+              constraints: buildTaskConstraints({
                 allowedFiles: task.allowedFiles,
                 expectedNewFiles: task.expectedNewFiles,
                 forbiddenFiles: task.forbiddenFiles,
                 allowedCommands: task.verification,
-              },
+                maxExecutionMs: timeoutMilliseconds(rawArgs) ?? 0,
+              }),
               mode: "main-agent",
               projectRules,
               ...(signal === undefined ? {} : { signal }),

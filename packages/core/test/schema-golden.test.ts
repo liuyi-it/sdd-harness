@@ -118,6 +118,11 @@ function validTaskExecutionResult() {
       startedAt: new Date().toISOString(),
       endedAt: new Date().toISOString(),
     },
+    mode: {
+      requested: "subagent",
+      actual: "main-agent",
+    },
+    notes: ["宿主不支持 subagent，已降级为主代理执行"],
   };
 }
 
