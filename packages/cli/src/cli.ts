@@ -9,6 +9,11 @@ import { runStatus } from "./commands/status.js";
 import { runNew } from "./commands/new.js";
 import { runDesign } from "./commands/design.js";
 import { runPlan } from "./commands/plan.js";
+import { runBuild } from "./commands/build.js";
+import { runVerify } from "./commands/verify.js";
+import { runReview } from "./commands/review.js";
+import { runArchive } from "./commands/archive.js";
+import { runAuto } from "./commands/auto.js";
 
 const PKG_VERSION = "0.1.0";
 
@@ -119,10 +124,42 @@ async function main(): Promise<void> {
     case "plan":
       result = await runPlan(core, cwd, extraArgs, undefined);
       break;
+    case "build": {
+      const buildPositionals = positionals.slice(1);
+      const subcommand = buildPositionals[0]; // "next" | "complete" | undefined
+      const taskIdx = buildPositionals.indexOf("--task");
+      const resultIdx = buildPositionals.indexOf("--result");
+      const taskId = taskIdx >= 0 ? buildPositionals[taskIdx + 1] : undefined;
+      const resultPath =
+        resultIdx >= 0 ? buildPositionals[resultIdx + 1] : undefined;
+      result = await runBuild(
+        core,
+        cwd,
+        subcommand,
+        taskId,
+        resultPath,
+        extraArgs,
+        undefined,
+      );
+      break;
+    }
+    case "verify":
+      result = await runVerify(core, cwd, extraArgs, undefined);
+      break;
+    case "review":
+      result = await runReview(core, cwd, extraArgs, undefined);
+      break;
+    case "archive":
+      result = await runArchive(core, cwd, extraArgs, undefined);
+      break;
+    case "auto": {
+      const requirement = positionals.slice(1).join(" ") || "";
+      result = await runAuto(core, cwd, requirement, extraArgs, undefined);
+      break;
+    }
     default:
-      // build / verify / review / archive / auto — 后续阶段实现
-      console.log(`Command: ${command} (not yet implemented)`);
-      process.exit(ExitCode.SUCCESS);
+      // 理论上不会到达（COMMANDS 列表已预检）
+      process.exit(ExitCode.GENERAL_ERROR);
   }
 
   if (json) outputJson(result);
