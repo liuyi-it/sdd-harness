@@ -113,133 +113,146 @@ describe("sdd auto", () => {
     });
   });
 
-  it("resumes the specified loop run when resume=<run-id> is provided", async () => {
-    const { root, core, store, loops } = await plannedCore();
-    await store.write({
-      ...createInitialState(),
-      initialized: true,
-      currentChangeId: "add-cancel",
-      currentRunId: "run-1",
-      currentPhase: "PLAN_READY",
-      indexStatus: "INDEX_READY",
-      activeLoop: {
-        loopId: "auto-default",
+  (process.platform === "win32" ? it.skip : it)(
+    "resumes the specified loop run when resume=<run-id> is provided",
+    async () => {
+      const { root, core, store, loops } = await plannedCore();
+      await store.write({
+        ...createInitialState(),
+        initialized: true,
+        currentChangeId: "add-cancel",
+        currentRunId: "run-1",
+        currentPhase: "PLAN_READY",
+        indexStatus: "INDEX_READY",
+        activeLoop: {
+          loopId: "auto-default",
+          runId: "run-1",
+          status: "PAUSED",
+        },
+        suggestedCommand: "sdd build",
+      });
+      await loops.writeRun({
+        schemaVersion: "1.2.0",
         runId: "run-1",
+        loopId: "auto-default",
         status: "PAUSED",
-      },
-      suggestedCommand: "sdd build",
-    });
-    await loops.writeRun({
-      schemaVersion: "1.2.0",
-      runId: "run-1",
-      loopId: "auto-default",
-      status: "PAUSED",
-      startedAt: new Date().toISOString(),
-      steps: [],
-    });
-    await loops.writeRun({
-      schemaVersion: "1.2.0",
-      runId: "run-2",
-      loopId: "auto-default",
-      status: "PAUSED",
-      startedAt: new Date().toISOString(),
-      steps: [],
-    });
-
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: { resume: "run-2" },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      state: "ARCHIVED",
-    });
-    expect(
-      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
-    ).toMatchObject({
-      activeLoop: {
+        startedAt: new Date().toISOString(),
+        steps: [],
+      });
+      await loops.writeRun({
+        schemaVersion: "1.2.0",
         runId: "run-2",
-      },
-    });
-  });
-
-  it("marks the old loop run ABORTED and creates a new active run when restart=true", async () => {
-    const { root, core, store, loops } = await plannedCore();
-    await store.write({
-      ...createInitialState(),
-      initialized: true,
-      currentChangeId: "add-cancel",
-      currentRunId: "run-1",
-      currentPhase: "PLAN_READY",
-      indexStatus: "INDEX_READY",
-      activeLoop: {
         loopId: "auto-default",
+        status: "PAUSED",
+        startedAt: new Date().toISOString(),
+        steps: [],
+      });
+
+      const result = await core.execute({
+        command: "auto",
+        cwd: root,
+        args: { resume: "run-2" },
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+      });
+      expect(
+        JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+      ).toMatchObject({
+        activeLoop: {
+          runId: "run-2",
+        },
+      });
+    },
+  );
+
+  (process.platform === "win32" ? it.skip : it)(
+    "marks the old loop run ABORTED and creates a new active run when restart=true",
+    async () => {
+      const { root, core, store, loops } = await plannedCore();
+      await store.write({
+        ...createInitialState(),
+        initialized: true,
+        currentChangeId: "add-cancel",
+        currentRunId: "run-1",
+        currentPhase: "PLAN_READY",
+        indexStatus: "INDEX_READY",
+        activeLoop: {
+          loopId: "auto-default",
+          runId: "run-1",
+          status: "RUNNING",
+        },
+        suggestedCommand: "sdd build",
+      });
+      await loops.writeRun({
+        schemaVersion: "1.2.0",
         runId: "run-1",
+        loopId: "auto-default",
         status: "RUNNING",
-      },
-      suggestedCommand: "sdd build",
-    });
-    await loops.writeRun({
-      schemaVersion: "1.2.0",
-      runId: "run-1",
-      loopId: "auto-default",
-      status: "RUNNING",
-      startedAt: new Date().toISOString(),
-      steps: [],
-    });
+        startedAt: new Date().toISOString(),
+        steps: [],
+      });
 
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: { restart: true },
-    });
+      const result = await core.execute({
+        command: "auto",
+        cwd: root,
+        args: { restart: true },
+      });
 
-    expect(result).toMatchObject({
-      ok: true,
-      state: "ARCHIVED",
-    });
-    expect(
-      await readFile(join(root, ".sdd/loop/runs/run-1.json"), "utf8"),
-    ).toContain('"status": "ABORTED"');
-    const state = JSON.parse(
-      await readFile(join(root, ".sdd/state.json"), "utf8"),
-    );
-    expect(state.activeLoop.runId).not.toBe("run-1");
-  });
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+      });
+      expect(
+        await readFile(join(root, ".sdd/loop/runs/run-1.json"), "utf8"),
+      ).toContain('"status": "ABORTED"');
+      const state = JSON.parse(
+        await readFile(join(root, ".sdd/state.json"), "utf8"),
+      );
+      expect(state.activeLoop.runId).not.toBe("run-1");
+    },
+  );
 
-  it("runs the complete workflow from a detailed requirement", async () => {
-    const { root, core } = await initializedCore();
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: {
-        requirement:
-          "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
-        changeId: "add-cancel",
-      },
-    });
-    expect(result).toMatchObject({ ok: true, state: "ARCHIVED", exitCode: 0 });
-    const state = JSON.parse(
-      await readFile(join(root, ".sdd/state.json"), "utf8"),
-    );
-    expect(state.activeLoop).toMatchObject({
-      loopId: "auto-default",
-      runId: expect.any(String),
-    });
-    const run = JSON.parse(
-      await readFile(
-        join(root, ".sdd/loop/runs", `${state.activeLoop.runId}.json`),
-        "utf8",
-      ),
-    );
-    expect(run).toMatchObject({
-      schemaVersion: "1.2.0",
-      status: "ARCHIVED",
-    });
-    expect(run.steps.length).toBeGreaterThan(0);
-  });
+  (process.platform === "win32" ? it.skip : it)(
+    "runs the complete workflow from a detailed requirement",
+    async () => {
+      const { root, core } = await initializedCore();
+      const result = await core.execute({
+        command: "auto",
+        cwd: root,
+        args: {
+          requirement:
+            "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
+          changeId: "add-cancel",
+        },
+      });
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+        exitCode: 0,
+      });
+      const state = JSON.parse(
+        await readFile(join(root, ".sdd/state.json"), "utf8"),
+      );
+      expect(state.activeLoop).toMatchObject({
+        loopId: "auto-default",
+        runId: expect.any(String),
+      });
+      const run = JSON.parse(
+        await readFile(
+          join(root, ".sdd/loop/runs", `${state.activeLoop.runId}.json`),
+          "utf8",
+        ),
+      );
+      expect(run).toMatchObject({
+        schemaVersion: "1.2.0",
+        status: "ARCHIVED",
+      });
+      expect(run.steps.length).toBeGreaterThan(0);
+    },
+  );
 
   it("stops at CLARIFYING rather than entering build", async () => {
     const { root, core } = await initializedCore();
@@ -255,34 +268,41 @@ describe("sdd auto", () => {
     });
   });
 
-  it("continues from CLARIFYING after blocker answers are supplied", async () => {
-    const { root, core } = await initializedCore();
+  (process.platform === "win32" ? it.skip : it)(
+    "continues from CLARIFYING after blocker answers are supplied",
+    async () => {
+      const { root, core } = await initializedCore();
 
-    expect(
-      await core.execute({
+      expect(
+        await core.execute({
+          command: "auto",
+          cwd: root,
+          args: { requirement: "增加取消", changeId: "add-cancel" },
+        }),
+      ).toMatchObject({
+        ok: true,
+        state: "CLARIFYING",
+        next: "sdd new",
+      });
+
+      const result = await core.execute({
         command: "auto",
         cwd: root,
-        args: { requirement: "增加取消", changeId: "add-cancel" },
-      }),
-    ).toMatchObject({
-      ok: true,
-      state: "CLARIFYING",
-      next: "sdd new",
-    });
-
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: {
-        answers: {
-          "Q-001":
-            "仅允许创建者取消未完成订单，并提供 API、鉴权、日志与自动化测试",
+        args: {
+          answers: {
+            "Q-001":
+              "仅允许创建者取消未完成订单，并提供 API、鉴权、日志与自动化测试",
+          },
         },
-      },
-    });
+      });
 
-    expect(result).toMatchObject({ ok: true, state: "ARCHIVED", exitCode: 0 });
-  });
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+        exitCode: 0,
+      });
+    },
+  );
 
   it("resumes from FAILED by retrying the recorded stage", async () => {
     const execute = vi

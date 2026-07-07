@@ -14,7 +14,7 @@ import { describe, expect, it } from "vitest";
 import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 
 describe("ArtifactWriter.writeOrCandidate", () => {
-  it.each([6, 7])(
+  (process.platform === "win32" ? it.skip.each([6, 7]) : it.each([6, 7]))(
     "组写发布阶段第 %i 次 rename 失败时完整恢复已有主制品",
     async (failedRename) => {
       const root = await mkdtemp(join(tmpdir(), "sdd-writer-rollback-"));

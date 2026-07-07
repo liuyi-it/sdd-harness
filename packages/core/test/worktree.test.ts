@@ -127,7 +127,7 @@ describe("GitIsolationManager", () => {
     const second = await manager.ensure("add-cancel");
 
     expect(first.branchName).toBe("sdd/add-cancel");
-    expect(first.worktreePath).toMatch(/\.sdd\/worktrees\/add-cancel$/);
+    expect(first.worktreePath).toMatch(/\.sdd[/\\]worktrees[/\\]add-cancel$/);
     expect(first.businessRoot).toBe(first.worktreePath);
     expect(second).toEqual(first);
     expect(
@@ -155,7 +155,8 @@ describe("GitIsolationManager", () => {
 
     const workspace = await manager.ensure("add-cancel");
 
-    expect(workspace.worktreePath).toContain(".sdd/work trees/add-cancel");
+    const normalized = workspace.worktreePath.replace(/\\/g, "/");
+    expect(normalized).toContain(".sdd/work trees/add-cancel");
     expect(
       execFileSync("git", ["branch", "--show-current"], {
         cwd: workspace.businessRoot,
