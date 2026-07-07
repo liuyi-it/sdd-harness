@@ -1,2 +1,5 @@
+# 所有文本文件统一使用 LF，解决 Windows CRLF 导致的 Prettier/ESLint 误报
+* text=auto eol=lf
+
 vendor/openspec/upstream/** -whitespace
 vendor/superpowers/upstream/** -whitespace
