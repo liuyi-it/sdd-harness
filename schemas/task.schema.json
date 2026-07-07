@@ -6,20 +6,31 @@
   "required": [
     "id",
     "title",
+    "phase",
     "status",
     "requirements",
+    "scenarios",
     "dependsOn",
     "allowedFiles",
     "verification",
     "doneCriteria"
   ],
   "properties": {
-    "id": { "type": "string", "pattern": "^TASK-[0-9]{3,}$" },
+    "id": {
+      "type": "string",
+      "pattern": "^TASK-[0-9]{3}(?:-(?:RED|GREEN|REFACTOR|VERIFY))?$"
+    },
     "title": { "type": "string", "minLength": 1 },
+    "phase": { "enum": ["RED", "GREEN", "REFACTOR", "VERIFY"] },
     "status": { "enum": ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"] },
     "requirements": {
       "type": "array",
       "items": { "type": "string", "pattern": "^REQ-[0-9]{3,}$" },
+      "minItems": 1
+    },
+    "scenarios": {
+      "type": "array",
+      "items": { "type": "string", "pattern": "^REQ-[0-9]{3,}-SC-[0-9]{3,}$" },
       "minItems": 1
     },
     "dependsOn": { "type": "array", "items": { "type": "string" } },

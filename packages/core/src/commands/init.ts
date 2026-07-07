@@ -1,4 +1,11 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  appendFile,
+  copyFile,
+  mkdir,
+  readFile,
+  writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
 
 import { parse, stringify } from "yaml";
@@ -17,8 +24,20 @@ import {
 } from "../dependency-integrity.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
+import {
+  CURRENT_SCHEMA_VERSION,
+  migrateConfigDocument,
+} from "../state/schema-migration.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
+import { createDefaultLoopSpec } from "../loop/loop-spec.js";
+import { LoopStore } from "../loop/loop-store.js";
+import {
+  createEmptyProjectProfile,
+  discoverProjectConventions,
+  isEmptyProject,
+} from "../project-conventions/scanner.js";
+import { ProjectConventionsStore } from "../project-conventions/store.js";
 import {
   assertRecoverableCommandState,
   normalizeCommandError,
@@ -39,11 +58,13 @@ const REQUIRED_DIRECTORIES = [
   "plugins",
   "adapters",
   "schemas",
+  "project",
+  "loop",
 ] as const;
 
 const configSchema = z
   .object({
-    schemaVersion: z.literal("1.0.0"),
+    schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
     project: z.object({ name: z.string().min(1) }).passthrough(),
     plugins: z.object({}).passthrough(),
     codebase: z.object({}).passthrough(),
@@ -97,6 +118,7 @@ export async function runInit(
       join(sddRoot, "config.yml"),
       stringify(defaultConfig(root)),
     );
+    await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
     const integration = await installProjectIntegration(root, {
       force: args?.force === true,
@@ -142,8 +164,58 @@ export async function runInit(
       `${JSON.stringify(index.diagnostics, null, 2)}\n`,
       "utf8",
     );
+    const capabilities = await codebase.capabilities();
+    await writeFile(
+      join(sddRoot, "index", "mcp-capabilities.json"),
+      `${JSON.stringify(capabilities, null, 2)}\n`,
+      "utf8",
+    );
     await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
+    const loopStore = new LoopStore(root);
+    const loopOutcome = await loopStore.writeSpec(createDefaultLoopSpec(), {
+      force: args?.force === true,
+    });
+    const conventionsStore = new ProjectConventionsStore(root);
+    const emptyProject = await isEmptyProject(root);
+    const structurePolicy = readStructurePolicy(args);
+    if (emptyProject && structurePolicy === undefined) {
+      const clarifying = await store.update((state) => ({
+        ...state,
+        initialized: true,
+        currentPhase: "CLARIFYING",
+        previousPhase: "NOT_INITIALIZED",
+        inProgressPhase: null,
+        indexStatus: "INDEX_READY",
+        codebaseProvider: index.provider,
+        degraded: index.degraded,
+        degradedReason: index.reason ?? null,
+        suggestedCommand: "sdd init",
+      }));
+      await new AuditLogger(root).write({
+        command: "sdd init",
+        phase: clarifying.currentPhase,
+        result: "PAUSED",
+        message: "空项目需要先确认目录结构策略",
+      });
+      return {
+        ok: true,
+        state: clarifying.currentPhase,
+        exitCode: 0,
+        next: "sdd init",
+        warnings: [
+          "空项目需要先通过 structurePolicy 指定目录结构策略，可选 free-design 或 user-defined",
+          ...(loopOutcome === "candidate"
+            ? ["检测到人工修改的 loop spec，已生成候选文件供人工合并"]
+            : []),
+        ],
+      };
+    }
+    await conventionsStore.write(
+      emptyProject
+        ? createEmptyProjectProfile(root, structurePolicy ?? "free-design")
+        : await discoverProjectConventions(root),
+    );
 
     const ready = await store.update((state) => ({
       ...state,
@@ -168,7 +240,12 @@ export async function runInit(
       state: ready.currentPhase,
       exitCode: 0,
       next: "sdd new",
-      ...buildWarnings(index, integration.candidateFiles, configWarnings),
+      ...buildWarnings(
+        index,
+        integration.candidateFiles,
+        configWarnings,
+        loopOutcome,
+      ),
     };
   } catch (error) {
     const normalized = normalizeCommandError(
@@ -191,7 +268,7 @@ export async function runInit(
 
 function defaultConfig(root: string): Record<string, unknown> {
   return {
-    schemaVersion: "1.0.0",
+    schemaVersion: CURRENT_SCHEMA_VERSION,
     project: {
       name: root.split(/[\\/]/).filter(Boolean).at(-1) ?? "auto-detect",
     },
@@ -368,6 +445,7 @@ function buildWarnings(
   index: { degraded: boolean; reason?: string | null },
   candidateFiles: string[],
   configWarnings: string[],
+  loopOutcome?: "written" | "unchanged" | "candidate",
 ): { warnings?: string[] } {
   const warnings: string[] = [];
   if (index.degraded) {
@@ -383,8 +461,20 @@ function buildWarnings(
       `检测到人工修改，已生成候选文件供人工合并：${candidateFiles.join(", ")}`,
     );
   }
+  if (loopOutcome === "candidate") {
+    warnings.push("检测到人工修改的 loop spec，已生成候选文件供人工合并");
+  }
   warnings.push(...configWarnings);
   return warnings.length === 0 ? {} : { warnings };
+}
+
+function readStructurePolicy(
+  args: Record<string, unknown> | undefined,
+): "free-design" | "user-defined" | undefined {
+  return args?.structurePolicy === "free-design" ||
+    args?.structurePolicy === "user-defined"
+    ? args.structurePolicy
+    : undefined;
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {
@@ -423,6 +513,31 @@ async function validateConfig(path: string): Promise<string[]> {
   return unknownKeys.length === 0
     ? []
     : [`config.yml 包含未知字段，已保留原值：${unknownKeys.join(", ")}`];
+}
+
+async function migrateConfigIfNeeded(
+  root: string,
+  path: string,
+): Promise<void> {
+  const raw = parse(await readFile(path, "utf8"));
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new SddError(
+      "E_STATE_CORRUPTED",
+      "config.yml 必须是对象",
+      "sdd init",
+    );
+  }
+  const document = raw as Record<string, unknown>;
+  if (document.schemaVersion === CURRENT_SCHEMA_VERSION) return;
+  const migrated = migrateConfigDocument(document);
+  await copyFile(path, `${path}.migration.bak`);
+  await writeFile(path, stringify(migrated), "utf8");
+  await mkdir(join(root, ".sdd", "logs"), { recursive: true });
+  await appendFile(
+    join(root, ".sdd", "logs", "migration.log"),
+    `${new Date().toISOString()} 1.0.0 -> 1.2.0 (config.yml)\n`,
+    "utf8",
+  );
 }
 
 async function exists(path: string): Promise<boolean> {

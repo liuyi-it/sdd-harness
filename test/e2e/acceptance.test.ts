@@ -162,6 +162,12 @@ describe("MVP acceptance", () => {
         ),
       );
     }
+    expect(
+      await readFile(
+        join(claudeRoot, ".sdd/changes/add-cancel/archive-report.md"),
+        "utf8",
+      ),
+    ).toContain("- finalHead: (unavailable)");
 
     expect(
       await readdir(join(claudeRoot, ".sdd/context-packs/add-cancel")),

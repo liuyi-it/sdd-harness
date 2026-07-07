@@ -1,5 +1,8 @@
 import { SddError } from "../errors.js";
+import type { GitSnapshot } from "../git/git-inspector.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
+import type { ProjectRuleSnapshot } from "../project-conventions/rule-resolver.js";
+import type { TaskConstraints } from "../security/untrusted-content.js";
 
 export interface VerificationEvidence {
   command: string;
@@ -16,9 +19,16 @@ export interface TddEvidence {
 }
 
 export interface TaskExecutionRequest {
+  schemaVersion: "1.2.0";
   root: string;
+  changeId: string;
+  runId: string;
   task: TaskDefinition;
   contextPack: string;
+  gitBaseline: GitSnapshot | null;
+  constraints: TaskConstraints;
+  mode: "subagent" | "main-agent";
+  projectRules?: ProjectRuleSnapshot;
   signal?: AbortSignal;
 }
 
@@ -32,12 +42,49 @@ export interface TaskExecutionResult {
   verification: VerificationEvidence[];
 }
 
+export interface AllowedCommand {
+  command: string;
+  args: string[];
+}
+
+export interface TaskCommandEvidence extends AllowedCommand {
+  exitCode?: number;
+  outputSummary: string;
+}
+
+export interface TaskFileDelta {
+  added: string[];
+  modified: string[];
+  deleted: string[];
+}
+
+export interface TaskExecutionResultV2 {
+  schemaVersion: "1.2.0";
+  taskId?: string;
+  status: "SUCCEEDED" | "FAILED" | "BLOCKED" | "SKIPPED" | "DEGRADED";
+  summary: string;
+  commandEvidence: TaskCommandEvidence[];
+  fileDelta: TaskFileDelta;
+  timestamps: {
+    startedAt: string;
+    endedAt: string;
+  };
+  mode?: {
+    requested: "subagent" | "main-agent";
+    actual: "subagent" | "main-agent";
+  };
+  notes?: string[];
+  legacy?: TaskExecutionResult;
+}
+
+export type TaskExecutionOutput = TaskExecutionResult | TaskExecutionResultV2;
+
 export interface TaskExecutor {
-  execute(request: TaskExecutionRequest): Promise<TaskExecutionResult>;
+  execute(request: TaskExecutionRequest): Promise<TaskExecutionOutput>;
 }
 
 export class MissingTaskExecutor implements TaskExecutor {
-  async execute(): Promise<TaskExecutionResult> {
+  async execute(): Promise<TaskExecutionOutput> {
     throw new SddError(
       "E_COMPONENT_UNAVAILABLE",
       "宿主适配器必须为 sdd build 提供 TaskExecutor",

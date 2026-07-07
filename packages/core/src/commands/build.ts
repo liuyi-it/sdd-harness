@@ -1,9 +1,19 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
 import {
+  readContextPackMetadata,
+  renderContextPack,
+  stripManagedSections,
+} from "../build/context-pack.js";
+import {
+  normalizeTaskExecutionResult,
+  type NormalizedTaskExecutionArtifact,
+} from "../build/task-result-normalizer.js";
+import {
+  type TaskExecutionOutput,
   type TaskExecutionResult,
   type TaskExecutor,
 } from "../build/task-executor.js";
@@ -13,6 +23,7 @@ import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { GitInspector } from "../git/git-inspector.js";
 import { isCommandAllowed } from "../security/shell-policy.js";
+import { buildTaskConstraints } from "../security/untrusted-content.js";
 import { validateTaskFiles } from "../security/task-scope.js";
 import { FileLock } from "../state/file-lock.js";
 import { scopePatternsOverlap } from "../security/scope-overlap.js";
@@ -20,6 +31,10 @@ import {
   taskEvidenceFailures,
   tddChainFailures,
 } from "../quality/tdd-evidence.js";
+import {
+  resolveProjectRules,
+  type RuleHost,
+} from "../project-conventions/rule-resolver.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 
@@ -29,6 +44,11 @@ import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
  */
 interface TaskResult extends TaskExecutionResult {
   taskId: string;
+}
+
+interface AcceptedTaskExecution {
+  legacy: TaskResult;
+  artifact: NormalizedTaskExecutionArtifact;
 }
 
 export async function runBuild(
@@ -54,11 +74,12 @@ export async function runBuild(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
     await assertChangeWritable(root, changeId);
+    const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = JSON.parse(
       await readFile(join(change, "tasks.json"), "utf8"),
     ) as TaskDefinition[];
-    await assertFreshContextPacks(root, changeId, tasks);
+    await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
     const previousResults = await readResults(
       join(change, "task-results.json"),
     );
@@ -82,7 +103,7 @@ export async function runBuild(
 
     const completed = new Set(results.map((result) => result.taskId));
     const remaining = tasks.filter((task) => !completed.has(task.id));
-    const git = new GitInspector(root);
+    const git = new GitInspector(businessRoot);
     let gitBefore = await git.snapshot();
     const warnings =
       gitBefore.available && gitBefore.files.length > 0
@@ -120,22 +141,41 @@ export async function runBuild(
       if (signal?.aborted === true) throw interruptionError();
       const executions = await Promise.all(
         batch.map(async (task) => {
+          const startedAt = new Date().toISOString();
           const contextPack = await readFile(
             join(root, ".sdd", "context-packs", changeId, `${task.id}.md`),
             "utf8",
           );
+          const projectRules = await resolveProjectRules(
+            root,
+            [...task.allowedFiles, ...task.expectedNewFiles],
+            readHost(rawArgs),
+          );
           const result = await executeWithLimits(
             executor,
             {
-              root,
+              schemaVersion: "1.2.0",
+              root: businessRoot,
+              changeId,
+              runId: state.currentRunId ?? "unknown-run",
               task,
               contextPack,
+              gitBaseline: gitBefore.available ? gitBefore : null,
+              constraints: buildTaskConstraints({
+                allowedFiles: task.allowedFiles,
+                expectedNewFiles: task.expectedNewFiles,
+                forbiddenFiles: task.forbiddenFiles,
+                allowedCommands: task.verification,
+                maxExecutionMs: timeoutMilliseconds(rawArgs) ?? 0,
+              }),
+              mode: "main-agent",
+              projectRules,
               ...(signal === undefined ? {} : { signal }),
             },
             signal,
             timeoutMilliseconds(rawArgs),
           );
-          return { task, result };
+          return { task, result, startedAt, endedAt: new Date().toISOString() };
         }),
       );
       const invalid: SddError[] = [];
@@ -147,23 +187,53 @@ export async function runBuild(
           invalid.push(error as SddError);
           return false;
         }
-      }) as Array<{ task: TaskDefinition; result: TaskExecutionResult }>;
+      }) as Array<{
+        task: TaskDefinition;
+        result: TaskExecutionOutput;
+        startedAt: string;
+        endedAt: string;
+      }>;
       const gitAfter = await git.snapshot();
-      // 执行器返回的 modifiedFiles 不是唯一信源，仍要结合 Git 差异做补全。
       const actualDelta = git.delta(gitBefore, gitAfter);
-      assignUnreportedFiles(shaped, actualDelta);
-      const accepted: TaskResult[] = [];
-      for (const { task, result } of shaped) {
+      const actualFilesByTask = adjudicateActualFiles(batch, actualDelta);
+      const accepted: AcceptedTaskExecution[] = [];
+      for (const { task, result, startedAt, endedAt } of shaped) {
         try {
-          accepted.push(validateExecution(task, result));
+          const legacySource = toLegacyResult(task.id, result);
+          const legacy = validateExecution(
+            task,
+            result,
+            actualFilesByTask.get(task.id)?.length
+              ? (actualFilesByTask.get(task.id) ?? [])
+              : legacySource.modifiedFiles,
+          );
+          accepted.push({
+            legacy,
+            artifact: normalizeTaskExecutionResult(
+              attachTaskId(task.id, result, legacy),
+              {
+                actualFileDelta: {
+                  added: [],
+                  modified: legacy.modifiedFiles,
+                  deleted: [],
+                },
+                startedAt,
+                endedAt,
+                requestedMode: "subagent",
+                actualMode: "main-agent",
+                degradedReason:
+                  "当前宿主未接入 subagent，已降级为 main-agent 执行",
+              },
+            ),
+          });
         } catch (error) {
           invalid.push(error as SddError);
         }
       }
       for (const taskResult of accepted) {
-        results.push(taskResult);
-        completed.add(taskResult.taskId);
-        activeTasks.delete(taskResult.taskId);
+        results.push(taskResult.legacy);
+        completed.add(taskResult.legacy.taskId);
+        activeTasks.delete(taskResult.legacy.taskId);
         const resultDirectory = join(
           root,
           ".sdd",
@@ -173,8 +243,8 @@ export async function runBuild(
         );
         await mkdir(resultDirectory, { recursive: true });
         await writeFile(
-          join(resultDirectory, `${taskResult.taskId}.result.json`),
-          `${JSON.stringify(taskResult, null, 2)}\n`,
+          join(resultDirectory, `${taskResult.legacy.taskId}.result.json`),
+          `${JSON.stringify(taskResult.artifact, null, 2)}\n`,
           "utf8",
         );
       }
@@ -183,7 +253,7 @@ export async function runBuild(
         tasks: {
           ...current.tasks,
           ...Object.fromEntries(
-            accepted.map((result) => [result.taskId, "DONE"]),
+            accepted.map((result) => [result.legacy.taskId, "DONE"]),
           ),
         },
       }));
@@ -262,11 +332,34 @@ export async function runBuild(
   }
 }
 
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
+}
+
 function assertExecutionResultShape(
   taskId: string,
   value: unknown,
-): asserts value is TaskExecutionResult {
+): asserts value is TaskExecutionOutput {
   const record = value as Record<string, unknown> | null;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    record?.schemaVersion === "1.2.0" &&
+    Array.isArray(record.commandEvidence) &&
+    typeof record.fileDelta === "object" &&
+    record.fileDelta !== null
+  ) {
+    return;
+  }
   if (
     typeof value !== "object" ||
     value === null ||
@@ -286,13 +379,15 @@ function assertExecutionResultShape(
 
 function validateExecution(
   task: TaskDefinition,
-  result: TaskExecutionResult,
+  result: TaskExecutionOutput,
+  actualModifiedFiles: string[],
 ): TaskResult {
-  const modifiedFiles = [...new Set(result.modifiedFiles)];
+  const legacy = toLegacyResult(task.id, result);
+  const modifiedFiles = [...new Set(actualModifiedFiles)];
   validateTaskFiles(modifiedFiles, task);
-  const evidenceFailures = taskEvidenceFailures(task, result);
+  const evidenceFailures = taskEvidenceFailures(task, legacy);
   if (evidenceFailures.length > 0) {
-    const blockedCommand = result.tddEvidence.find(
+    const blockedCommand = legacy.tddEvidence.find(
       (entry) =>
         typeof entry === "object" &&
         entry !== null &&
@@ -310,19 +405,19 @@ function validateExecution(
       "sdd build",
     );
   }
-  for (const evidence of result.verification)
+  for (const evidence of legacy.verification)
     if (!isCommandAllowed(evidence.command))
       throw new SddError(
         "E_SECURITY_BLOCKED",
         `验证命令未在允许清单内：${evidence.command}`,
       );
-  if (result.verification.some((evidence) => !evidence.passed))
+  if (legacy.verification.some((evidence) => !evidence.passed))
     throw new SddError(
       "E_VERIFY_FAILED",
       `任务 ${task.id} 验证失败`,
       "sdd build",
     );
-  return { taskId: task.id, ...result, modifiedFiles };
+  return { taskId: task.id, ...legacy, modifiedFiles };
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {
@@ -332,10 +427,11 @@ function lockOptions(args: Record<string, unknown> | undefined): {
   return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
-async function assertFreshContextPacks(
+async function ensureFreshContextPacks(
   root: string,
   changeId: string,
   tasks: TaskDefinition[],
+  host: RuleHost,
 ): Promise<void> {
   const [spec, design, impact, tasksMarkdown, rawTasksJson, codebaseSummary] =
     await Promise.all([
@@ -355,43 +451,39 @@ async function assertFreshContextPacks(
     tasksMarkdown,
     tasksJson,
   });
+  const projectConventionsHash = await readProjectConventionsHash(root);
   for (const task of tasks) {
-    const contextPack = await readFile(
-      join(root, ".sdd", "context-packs", changeId, `${task.id}.md`),
-      "utf8",
-    );
+    const path = join(root, ".sdd", "context-packs", changeId, `${task.id}.md`);
+    const contextPack = await readFile(path, "utf8");
     const metadata = readContextPackMetadata(contextPack);
+    const rules = await resolveProjectRules(
+      root,
+      [...task.allowedFiles, ...task.expectedNewFiles],
+      host,
+    );
     if (
       metadata.codebaseIndexHash !== expectedCodebaseHash ||
-      metadata.sourceArtifactHash !== expectedSourceHash
+      metadata.sourceArtifactHash !== expectedSourceHash ||
+      metadata.projectRulesHash !== rules.hash ||
+      metadata.projectConventionsHash !== projectConventionsHash
     ) {
-      throw new SddError(
-        "E_MISSING_ARTIFACT",
-        `Context Pack ${task.id} 已失效，请重新执行 sdd plan`,
-        "sdd plan",
+      await writeFile(
+        path,
+        renderContextPack({
+          body: stripManagedSections(contextPack),
+          rules,
+          codebaseSummary,
+          spec,
+          design,
+          impact,
+          tasksMarkdown,
+          tasksJson,
+          projectConventionsHash,
+        }),
+        "utf8",
       );
     }
   }
-}
-
-function readContextPackMetadata(content: string): {
-  codebaseIndexHash: string;
-  sourceArtifactHash: string;
-} {
-  const codebaseIndexHash = content.match(
-    /^Codebase Index Hash: (sha256:[a-f0-9]{64})$/m,
-  )?.[1];
-  const sourceArtifactHash = content.match(
-    /^Source Artifact Hash: (sha256:[a-f0-9]{64})$/m,
-  )?.[1];
-  if (codebaseIndexHash === undefined || sourceArtifactHash === undefined) {
-    throw new SddError(
-      "E_MISSING_ARTIFACT",
-      "Context Pack 元数据缺失或损坏，请重新执行 sdd plan",
-      "sdd plan",
-    );
-  }
-  return { codebaseIndexHash, sourceArtifactHash };
 }
 
 function selectParallelBatch(tasks: TaskDefinition[]): TaskDefinition[] {
@@ -412,21 +504,17 @@ function taskScopesOverlap(
   return scopePatternsOverlap(leftPatterns, rightPatterns);
 }
 
-function assignUnreportedFiles(
-  executions: Array<{ task: TaskDefinition; result: TaskExecutionResult }>,
+function adjudicateActualFiles(
+  tasks: TaskDefinition[],
   actualFiles: string[],
-): void {
-  const reported = new Set(
-    executions.flatMap(({ result }) => result.modifiedFiles),
-  );
-  for (const file of actualFiles.filter(
-    (candidate) => !reported.has(candidate),
-  )) {
-    const owners = executions.filter(({ task }) => fileFitsTask(file, task));
+): Map<string, string[]> {
+  const allocations = new Map(tasks.map((task) => [task.id, [] as string[]]));
+  for (const file of actualFiles) {
+    const owners = tasks.filter((task) => fileFitsTask(file, task));
     if (owners.length === 0) {
       throw new SddError(
         "E_SECURITY_BLOCKED",
-        `未申报的文件超出任务范围：${file}`,
+        `Git delta 中存在超出任务范围的文件：${file}`,
       );
     }
     if (owners.length > 1) {
@@ -435,8 +523,9 @@ function assignUnreportedFiles(
         `该文件可能归属于多个并行任务：${file}`,
       );
     }
-    owners[0]?.result.modifiedFiles.push(file);
+    allocations.get(owners[0]!.id)?.push(file);
   }
+  return allocations;
 }
 
 function fileFitsTask(file: string, task: TaskDefinition): boolean {
@@ -474,8 +563,8 @@ async function executeWithLimits(
   request: Parameters<TaskExecutor["execute"]>[0],
   signal: AbortSignal | undefined,
   timeout: number | undefined,
-): Promise<TaskExecutionResult> {
-  const promises: Array<Promise<TaskExecutionResult>> = [
+): Promise<TaskExecutionOutput> {
+  const promises: Array<Promise<TaskExecutionOutput>> = [
     executor.execute(request),
   ];
   if (timeout !== undefined) {
@@ -507,4 +596,40 @@ async function executeWithLimits(
     );
   }
   return Promise.race(promises);
+}
+
+function toLegacyResult(
+  taskId: string,
+  result: TaskExecutionOutput,
+): TaskExecutionResult {
+  if ("modifiedFiles" in result) return result;
+  if (result.legacy !== undefined) return result.legacy;
+  throw new SddError(
+    "E_TDD_EVIDENCE_REQUIRED",
+    `任务 ${taskId} 的 v2 执行结果缺少 legacy 证据`,
+    "sdd build",
+  );
+}
+
+function attachTaskId(
+  taskId: string,
+  result: TaskExecutionOutput,
+  legacy: TaskExecutionResult,
+): TaskExecutionOutput | (TaskExecutionResult & { taskId: string }) {
+  if ("modifiedFiles" in result) return { ...legacy, taskId };
+  return { ...result, taskId };
+}
+
+function readHost(args: Record<string, unknown> | undefined): RuleHost {
+  return args?.host === "claude-code" ? "claude-code" : "codex";
+}
+
+async function readProjectConventionsHash(root: string): Promise<string> {
+  try {
+    return artifactInputHash(
+      await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"),
+    );
+  } catch {
+    return artifactInputHash("missing-project-conventions");
+  }
 }

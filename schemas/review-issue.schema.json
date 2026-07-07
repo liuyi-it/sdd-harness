@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/review-issue.schema.json",
+  "title": "sdd-harness review issue v1.2",
+  "type": "object",
+  "required": ["id", "category", "severity", "message"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^RV-[a-f0-9]{12}$" },
+    "category": {
+      "enum": [
+        "FILE_SCOPE",
+        "UNRELATED_CHANGE",
+        "SECURITY",
+        "TESTING",
+        "BLOCKER",
+        "SECRET_LEAK"
+      ]
+    },
+    "severity": { "enum": ["MAJOR", "MINOR", "INFO"] },
+    "file": { "type": "string" },
+    "task": { "type": "string" },
+    "message": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

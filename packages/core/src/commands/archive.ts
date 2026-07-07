@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
+import { GitRunner } from "../git-isolation/git-runner.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
@@ -69,6 +70,8 @@ export async function runArchive(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
     activeChangeId = changeId;
+    const businessRoot = resolveBusinessRoot(root, state);
+    const workspaceMeta = state.workspace ?? null;
     const change = join(root, ".sdd", "changes", changeId);
     if (await hasValidMarker(change, changeId)) {
       const archived = await convergeArchivedState(store);
@@ -126,11 +129,15 @@ export async function runArchive(
         const { document } = await readAuthoritativeSpec(change, spec);
         const [currentSnapshot, baseline, verifySnapshot, reviewSnapshot] =
           await Promise.all([
-            new GitInspector(root).snapshot(),
+            new GitInspector(businessRoot).snapshot(),
             readSnapshot(join(change, "git-baseline.json")),
             readSnapshot(join(change, "verify-snapshot.json")),
             readSnapshot(join(change, "review-snapshot.json")),
           ]);
+        const finalHead = await resolveFinalHead(
+          businessRoot,
+          workspaceMeta !== null,
+        );
         if (
           !sameSnapshot(currentSnapshot, verifySnapshot) ||
           !sameSnapshot(currentSnapshot, reviewSnapshot)
@@ -195,6 +202,12 @@ export async function runArchive(
           "## 审查结果",
           "",
           "PASS",
+          "",
+          "## 隔离工作区",
+          "",
+          `- branchName: ${workspaceMeta?.branchName ?? "(none)"}`,
+          `- worktreePath: ${workspaceMeta?.worktreePath ?? "(controlRoot)"}`,
+          `- finalHead: ${finalHead}`,
           "",
           "## 风险与回滚",
           "",
@@ -274,6 +287,19 @@ export async function runArchive(
   } finally {
     await lock.release();
   }
+}
+
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
 }
 
 async function convergeArchivedState(store: StateStore) {
@@ -366,6 +392,18 @@ async function assertPassReport(
       `${path.split("/").at(-1)} 不是可信的唯一 PASS 报告`,
       next,
     );
+}
+
+async function resolveFinalHead(
+  businessRoot: string,
+  requireGitHead: boolean,
+): Promise<string> {
+  try {
+    return await new GitRunner().revParse(businessRoot, "HEAD");
+  } catch (error) {
+    if (requireGitHead) throw error;
+    return "(unavailable)";
+  }
 }
 
 async function readSnapshot(path: string) {

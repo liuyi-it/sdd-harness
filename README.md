@@ -61,6 +61,8 @@
 
 初始化项目时建立当前项目的代码库上下文（优先使用 `codebase-memory-mcp`，不可用时自动降级为受限文件扫描），让后续需求分析、方案设计和任务拆解基于真实代码结构进行。
 
+如果当前是空项目，`init` 不会凭空假设目录规范，而是进入 `CLARIFYING`，要求先确认目录结构约定；如果是已有项目，则会扫描并固化当前目录规范，后续任务默认持续遵守。
+
 ### 2. 需求澄清
 
 输入粗略需求后不会立即写代码，而是先进行需求分析，并自动提出需要确认的问题。存在未澄清问题时流程会停在 `CLARIFYING` 状态。
@@ -77,9 +79,11 @@ new → design → plan → build → verify → review → archive
 
 `plan` 会按每个 Requirement 生成严格依赖的 `RED → GREEN → REFACTOR → VERIFY` 原子任务链。`build` 要求宿主返回真实 TDD 证据：RED 至少包含一次观察到的预期失败，后续阶段必须通过，缺失或伪造证据会阻止状态推进。
 
+每个 build 任务都会显式注入项目规则快照：包括 `AGENTS.md` / `CLAUDE.md`、项目目录规范画像，以及对应哈希。规则或目录规范在 `plan` 之后发生变化时，Context Pack 会在 `build` 前自动刷新。
+
 ### 4. 自动编排
 
-`auto` 命令是阶段编排器，从当前状态顺序推进，每次只调用一个单阶段命令，不绕过任何阶段自身的检查。遇到阻塞会暂停并提示下一步。
+`auto` 命令是带审计记录的有界 Loop：从当前状态顺序推进，每次只调用一个单阶段命令，不绕过任何阶段自身的检查。运行信息会持久化到 `.sdd/loop/`，支持继续当前运行、`resume=<run-id>` 恢复指定运行，以及 `restart=true` 中止旧运行后重开。
 
 ### 5. 可追踪制品与安全边界
 
@@ -117,6 +121,13 @@ new → design → plan → build → verify → review → archive
 NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
                 → BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
 ```
+
+补充说明：
+
+- 空项目 `init` 可能先进入 `CLARIFYING`，等待确认目录结构约定。
+- `auto` 运行期间会同步维护 `activeLoop`、运行历史和每步审计记录。
+- `build` 会优先使用 Git delta 裁决最终文件变更，再写入运行级任务结果制品。
+- 启用 `workflow.gitIsolation.createWorktree` 后，业务代码在 `.sdd/worktrees/<change-id>` 中执行；`.sdd/` 仍固定写回主项目根目录。
 
 ---
 

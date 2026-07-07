@@ -1,18 +1,31 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
 import { SddError } from "../errors.js";
-import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
+import {
+  GitInspector,
+  snapshotFromJson,
+  type GitSnapshot,
+} from "../git/git-inspector.js";
 import { driftFailures, reviewGate } from "../quality/quality-gates.js";
+import {
+  createReviewIssue,
+  createReviewReport,
+  type ReviewIssue,
+  writeReviewReport,
+} from "../quality/review-report.js";
+import { runDeterministicReview } from "../quality/deterministic-review.js";
 import {
   assertTaskResultIds,
   parseTaskResults,
   parseTasks,
 } from "../quality/quality-schema.js";
 import { FileLock } from "../state/file-lock.js";
+import { readAuthoritativeSpec } from "../quality/traceability.js";
+import { scanSecrets } from "../security/secrets-scanner.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 import {
@@ -55,6 +68,7 @@ export async function runReview(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
     await assertChangeWritable(root, changeId);
+    const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
       ...current,
@@ -67,7 +81,7 @@ export async function runReview(
     started = true;
     const resultBundle = await withTimeout(
       (async () => {
-        const currentSnapshot = await new GitInspector(root).snapshot();
+        const currentSnapshot = await new GitInspector(businessRoot).snapshot();
         const [rawTasks, rawResults] = await Promise.all([
           readFile(join(change, "tasks.json"), "utf8"),
           readFile(join(change, "task-results.json"), "utf8"),
@@ -75,6 +89,8 @@ export async function runReview(
         const tasks = parseTasks(rawTasks);
         const results = parseTaskResults(rawResults);
         assertTaskResultIds(tasks, results);
+        const rawSpec = await readFile(join(change, "spec.md"), "utf8");
+        const authoritative = await readAuthoritativeSpec(change, rawSpec);
         const baseline = snapshotFromJson(
           JSON.parse(await readFile(join(change, "git-baseline.json"), "utf8")),
         );
@@ -83,6 +99,52 @@ export async function runReview(
         const drift = driftFailures(baseline, currentSnapshot, reportedFiles);
         gate.failures.push(...drift);
         gate.passed = gate.failures.length === 0;
+        const deterministic = runDeterministicReview({
+          tasks,
+          results,
+          baseline,
+          current: currentSnapshot,
+          spec: authoritative.document,
+        });
+        const secretIssues = await detectSecretLeakIssues(
+          businessRoot,
+          baseline,
+          currentSnapshot,
+        );
+        const reviewReport = createReviewReport({
+          changeId,
+          issues: deterministic.issues.concat(secretIssues),
+          ...(gate.failures.length === 0
+            ? {}
+            : {
+                issues: deterministic.issues.concat(secretIssues).concat(
+                  gate.failures.map((failure) =>
+                    failure.includes("未跟踪")
+                      ? {
+                          id: "RV-" + failure,
+                          category: "UNRELATED_CHANGE" as const,
+                          severity: "MAJOR" as const,
+                          message: failure,
+                        }
+                      : {
+                          id: "RV-" + failure,
+                          category: "FILE_SCOPE" as const,
+                          severity: "MAJOR" as const,
+                          message: failure,
+                        },
+                  ),
+                ),
+              }),
+        });
+        // reportPaths 会写入 .sdd/changes/<change-id>/review-report.v1.2.{json,md} 并被 archive 复用
+        await writeReviewReport(root, changeId, reviewReport);
+        if (reviewReport.result === "BLOCK")
+          throw new SddError(
+            "E_REVIEW_FAILED",
+            reviewReport.summary,
+            "sdd review",
+          );
+
         if (
           state.currentPhase === "REVIEW_READY" &&
           gate.passed &&
@@ -229,6 +291,53 @@ export async function runReview(
   } finally {
     await lock.release();
   }
+}
+
+async function detectSecretLeakIssues(
+  businessRoot: string,
+  baseline: GitSnapshot | null,
+  current: GitSnapshot | null,
+) {
+  if (baseline === null || current === null) return [];
+  if (!baseline.available || !current.available) return [];
+  const issues: ReviewIssue[] = [];
+  for (const file of current.files) {
+    const baselineHash = baseline.hashes[file];
+    const currentHash = current.hashes[file];
+    if (baselineHash !== undefined && baselineHash === currentHash) continue;
+    const path = join(businessRoot, file);
+    let contents: string;
+    try {
+      contents = await readFile(path, "utf8");
+    } catch {
+      continue;
+    }
+    const findings = scanSecrets({ text: contents, file }).findings;
+    for (const finding of findings) {
+      issues.push(
+        createReviewIssue({
+          category: "SECRET_LEAK",
+          severity: "MAJOR",
+          file,
+          message: `文件 ${file} 命中敏感信息规则 ${finding.rule}，预览 ${finding.preview}`,
+        }),
+      );
+    }
+  }
+  return issues;
+}
+
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

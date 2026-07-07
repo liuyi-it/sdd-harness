@@ -6,9 +6,14 @@ import {
   ArtifactWriter,
   artifactInputHash,
 } from "../artifacts/artifact-writer.js";
+import { renderContextPack } from "../build/context-pack.js";
 import { type CommandResult } from "../contracts.js";
 import type { TddEngine } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
+import {
+  resolveProjectRules,
+  type RuleHost,
+} from "../project-conventions/rule-resolver.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
@@ -128,18 +133,35 @@ export async function runPlan(
     const tasksJson = JSON.stringify(artifacts.tasks, null, 2);
     const packDirectory = join(root, ".sdd", "context-packs", changeId);
     await mkdir(packDirectory, { recursive: true });
+    const host = readHost(args);
+    const projectConventionsHash = await readProjectConventionsHash(root);
     await Promise.all(
-      Object.entries(artifacts.contextPacks).map(([taskId, content]) =>
-        writer.write(
-          join(packDirectory, `${taskId}.md`),
-          contextPackWithMetadata(content, {
+      artifacts.tasks.map(async (task) => {
+        const content = artifacts.contextPacks[task.id];
+        if (content === undefined) {
+          throw new SddError(
+            "E_STATE_CORRUPTED",
+            `缺少任务 ${task.id} 的 Context Pack`,
+          );
+        }
+        const rules = await resolveProjectRules(
+          root,
+          [...task.allowedFiles, ...task.expectedNewFiles],
+          host,
+        );
+        return writer.write(
+          join(packDirectory, `${task.id}.md`),
+          renderContextPack({
+            body: content,
+            rules,
             ...input,
             tasksMarkdown: normalizeArtifactContent(artifacts.tasksMarkdown),
             tasksJson,
+            projectConventionsHash,
           }),
           input,
-        ),
-      ),
+        );
+      }),
     );
     const tasks = Object.fromEntries(
       artifacts.tasks.map((task) => [task.id, task.status]),
@@ -199,42 +221,20 @@ function lockOptions(args: Record<string, unknown> | undefined): {
   return timeoutMs === undefined ? {} : { timeoutMs };
 }
 
-function contextPackWithMetadata(
-  content: string,
-  input: {
-    spec: string;
-    design: string;
-    impact: string;
-    tasksMarkdown: string;
-    tasksJson: string;
-    codebaseSummary: string;
-  },
-): string {
-  const metadata = [
-    "<!-- Context Pack Metadata",
-    `Codebase Index Hash: ${artifactInputHash(input.codebaseSummary)}`,
-    `Source Artifact Hash: ${artifactInputHash({
-      spec: input.spec,
-      design: input.design,
-      impact: input.impact,
-      tasksMarkdown: input.tasksMarkdown,
-      tasksJson: input.tasksJson,
-    })}`,
-    `Generated At: ${new Date().toISOString()}`,
-    "-->",
-    "",
-  ].join("\n");
-  return truncateUtf8(`${metadata}${content}`, 30 * 1024);
-}
-
-function truncateUtf8(value: string, maxBytes: number): string {
-  if (Buffer.byteLength(value) <= maxBytes) return value;
-  let end = value.length;
-  while (end > 0 && Buffer.byteLength(value.slice(0, end)) > maxBytes - 32)
-    end -= 1;
-  return `${value.slice(0, end)}\n\n[Context truncated]\n`;
-}
-
 function normalizeArtifactContent(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+function readHost(args: Record<string, unknown> | undefined): RuleHost {
+  return args?.host === "claude-code" ? "claude-code" : "codex";
+}
+
+async function readProjectConventionsHash(root: string): Promise<string> {
+  try {
+    return artifactInputHash(
+      await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"),
+    );
+  } catch {
+    return artifactInputHash("missing-project-conventions");
+  }
 }

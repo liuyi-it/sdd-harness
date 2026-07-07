@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/review-report.schema.json",
+  "title": "sdd-harness review report v1.2",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "changeId",
+    "result",
+    "generatedAt",
+    "severityCounts",
+    "issues",
+    "summary"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "changeId": { "type": "string", "minLength": 1 },
+    "result": { "enum": ["PASS", "BLOCK"] },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "severityCounts": {
+      "type": "object",
+      "required": ["MAJOR", "MINOR", "INFO"],
+      "properties": {
+        "MAJOR": { "type": "integer", "minimum": 0 },
+        "MINOR": { "type": "integer", "minimum": 0 },
+        "INFO": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "categoryCounts": { "type": "object" },
+    "issues": {
+      "type": "array",
+      "items": { "$ref": "review-issue.schema.json" }
+    },
+    "summary": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

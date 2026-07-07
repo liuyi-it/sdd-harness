@@ -16,6 +16,7 @@ async function project(): Promise<string> {
   const root = await mkdtemp(join(tmpdir(), "sdd-init-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Fixture\n", "utf8");
+  await writeFile(join(root, "package.json"), '{"name":"fixture"}\n', "utf8");
   return root;
 }
 
@@ -137,6 +138,42 @@ describe("init and status", () => {
         expect.stringContaining("codebase-memory-mcp unavailable"),
       ]),
     );
+  });
+
+  it("pauses init for an empty project until structurePolicy is provided", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-init-empty-"));
+    roots.push(root);
+    await writeFile(join(root, "README.md"), "# Empty\n", "utf8");
+    const core = new Core({ codebase: new CodebaseAdapter() });
+
+    const first = await core.execute({ command: "init", cwd: root });
+
+    expect(first).toMatchObject({
+      ok: true,
+      state: "CLARIFYING",
+      next: "sdd init",
+    });
+
+    const second = await core.execute({
+      command: "init",
+      cwd: root,
+      args: { structurePolicy: "free-design" },
+    });
+
+    expect(second).toMatchObject({
+      ok: true,
+      state: "INDEX_READY",
+      next: "sdd new",
+    });
+    expect(
+      JSON.parse(
+        await readFile(join(root, ".sdd/project/conventions.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      schemaVersion: "1.2.0",
+      projectType: "empty",
+      strategy: "free-design",
+    });
   });
 
   it("initializes every required directory, index artifact, config, state, and audit log", async () => {
@@ -571,6 +608,91 @@ describe("init and status", () => {
     await expect(
       access(join(root, ".sdd/index/architecture.md")),
     ).resolves.toBeUndefined();
+  });
+
+  it("migrates legacy 1.0.0 state and config during init", async () => {
+    const root = await project();
+    await mkdir(join(root, ".sdd"), { recursive: true });
+    await writeFile(
+      join(root, ".sdd/state.json"),
+      `${JSON.stringify({
+        schemaVersion: "1.0.0",
+        version: 4,
+        updatedAt: new Date().toISOString(),
+        initialized: true,
+        currentChangeId: null,
+        currentRunId: null,
+        currentPhase: "INDEX_READY",
+        indexStatus: "INDEX_READY",
+        codebaseProvider: "codebase-memory-mcp",
+        degraded: false,
+        degradedReason: null,
+        lastCommand: "sdd init",
+        lastError: null,
+        previousPhase: null,
+        inProgressPhase: null,
+        failedCommand: null,
+        failedReason: null,
+        interruptedCommand: null,
+        recoverable: true,
+        suggestedCommand: "sdd new",
+        tasks: {},
+        artifacts: {},
+      })}\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(root, ".sdd/config.yml"),
+      [
+        'schemaVersion: "1.0.0"',
+        "project:",
+        "  name: fixture",
+        "plugins:",
+        "  claudeCode:",
+        "    enabled: true",
+        "  codex:",
+        "    enabled: true",
+        "codebase:",
+        '  provider: "codebase-memory-mcp"',
+        '  fallbackProvider: "file-scan"',
+        "  autoIndexOnInit: true",
+        "workflow:",
+        "  maxClarifyingQuestionsPerRound: 5",
+        "  requireBlockerAnswers: true",
+        "  stopOnFailure: true",
+        "quality:",
+        "  requireFileScopeCheck: true",
+        "  requireDriftCheck: true",
+        "security:",
+        "  blockOutsideRepo: true",
+        "  blockSymlinksOutsideRepo: true",
+        "  redactSecretsInLogs: true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const result = await new Core({ codebase: new CodebaseAdapter() }).execute({
+      command: "init",
+      cwd: root,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "INDEX_READY",
+    });
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({
+      schemaVersion: "1.2.0",
+      activeLoop: null,
+    });
+    expect(await readFile(join(root, ".sdd/config.yml"), "utf8")).toContain(
+      "schemaVersion: 1.2.0",
+    );
+    expect(
+      await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
+    ).toContain("目标 schemaVersion：1.2.0");
   });
 
   it("writes candidate files instead of overwriting manually edited integration files", async () => {

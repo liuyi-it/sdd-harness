@@ -22,6 +22,7 @@ async function initializedProject(): Promise<{ root: string; core: Core }> {
   const root = await mkdtemp(join(tmpdir(), "sdd-new-"));
   roots.push(root);
   await writeFile(join(root, "README.md"), "# Orders\n", "utf8");
+  await writeFile(join(root, "package.json"), '{"name":"orders"}\n', "utf8");
   const core = new Core({ codebase: new CodebaseAdapter() });
   await core.execute({ command: "init", cwd: root });
   return { root, core };

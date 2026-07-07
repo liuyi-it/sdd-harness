@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
@@ -7,6 +7,12 @@ import { type CommandResult } from "../contracts.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
 import { driftFailures, verifyGate } from "../quality/quality-gates.js";
+import {
+  classifyFailure,
+  createVerifyReport,
+  type VerifyFailure,
+  writeVerifyReport,
+} from "../quality/verify-report.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
@@ -56,6 +62,7 @@ export async function runVerify(
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
     await assertChangeWritable(root, changeId);
+    const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     await store.update((current) => ({
       ...current,
@@ -84,7 +91,7 @@ export async function runVerify(
           results,
           currentState.tasks,
         );
-        const currentSnapshot = await new GitInspector(root).snapshot();
+        const currentSnapshot = await new GitInspector(businessRoot).snapshot();
         if (
           state.currentPhase === "VERIFY_READY" &&
           gate.passed &&
@@ -176,13 +183,48 @@ export async function runVerify(
         data: { alreadyReady: true },
       };
     }
-    const { gate } = resultBundle;
-    if (!gate.passed)
-      throw new SddError(
+    const { gate, tasks, results: taskResults, spec } = resultBundle;
+    let requirementCount = 0;
+    let scenarioCount = 0;
+    try {
+      const totalSpec = JSON.parse(spec) as unknown as {
+        requirements?: Array<{ scenarios?: unknown[] }>;
+      };
+      if (Array.isArray(totalSpec?.requirements)) {
+        requirementCount = totalSpec.requirements.length;
+        scenarioCount = totalSpec.requirements.reduce(
+          (acc: number, req: { scenarios?: unknown[] }) =>
+            acc + (Array.isArray(req.scenarios) ? req.scenarios.length : 0),
+          0,
+        );
+      }
+    } catch {
+      // verify-report 仅统计场景数；解析失败时退回到 0，不影响业务失败语义。
+    }
+    const verifyReport = createVerifyReport({
+      changeId,
+      counts: {
+        requirements: requirementCount,
+        scenarios: scenarioCount,
+        tasks: tasks.length,
+        tests: taskResults.reduce(
+          (acc: number, r) =>
+            acc + (Array.isArray(r.verification) ? r.verification.length : 0),
+          0,
+        ),
+      },
+      failures: gate.failures.map(toVerifyFailure),
+    });
+    const reportPaths = await writeVerifyReport(root, changeId, verifyReport);
+    if (!gate.passed) {
+      const error = new SddError(
         "E_VERIFY_FAILED",
         gate.failures.join("; "),
         "sdd verify",
-      );
+      ) as SddError & { reportPaths?: { jsonPath: string; mdPath: string } };
+      error.reportPaths = reportPaths;
+      throw error;
+    }
     const ready = await store.update((current) => ({
       ...current,
       currentPhase: "VERIFY_READY",
@@ -223,6 +265,19 @@ export async function runVerify(
   } finally {
     await lock.release();
   }
+}
+
+function resolveBusinessRoot(
+  controlRoot: string,
+  state: Awaited<ReturnType<StateStore["read"]>>,
+): string {
+  const worktreePath = state.workspace?.worktreePath;
+  if (typeof worktreePath !== "string" || worktreePath.length === 0) {
+    return controlRoot;
+  }
+  return isAbsolute(worktreePath)
+    ? worktreePath
+    : join(controlRoot, worktreePath);
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {
@@ -276,4 +331,42 @@ function reportDocument(
     "",
     passed ? "PASS" : "FAIL",
   ].join("\n");
+}
+
+/**
+ * 把 verifyGate / drift 的扁平字符串映射到结构化失败对象；解析不出来时回退为 tasks 级别。
+ */
+function toVerifyFailure(message: string): VerifyFailure {
+  if (
+    message.includes("TASK-") ||
+    message.includes("已处理") ||
+    message.includes("未能")
+  )
+    return classifyFailure("tasks", message, extractEntity(message, "TASK-"));
+  if (message.includes("REQ-"))
+    return classifyFailure(
+      "requirements",
+      message,
+      extractEntity(message, "REQ-"),
+    );
+  if (message.includes("SC-"))
+    return classifyFailure("scenarios", message, extractEntity(message, "SC-"));
+  if (message.includes("Acceptance"))
+    return classifyFailure("scenarios", message, "acceptance-criteria");
+  if (message.includes("未跟踪到任务结果"))
+    return classifyFailure("drift", message);
+  if (message.includes("未证明观察到预期失败") || message.includes("缺少"))
+    return classifyFailure(
+      "tddEvidence",
+      message,
+      extractEntity(message, "TASK-"),
+    );
+  return classifyFailure("tasks", message);
+}
+
+function extractEntity(message: string, prefix: string): string | undefined {
+  const idx = message.indexOf(prefix);
+  if (idx < 0) return undefined;
+  const tail = message.slice(idx).split(/\s|;/)[0] ?? "";
+  return tail || undefined;
 }

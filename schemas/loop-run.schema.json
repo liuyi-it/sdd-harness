@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/loop-run.schema.json",
+  "title": "sdd-harness loop run",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "runId",
+    "loopId",
+    "status",
+    "startedAt",
+    "steps"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.2.0" },
+    "runId": { "type": "string", "minLength": 1 },
+    "loopId": { "type": "string", "minLength": 1 },
+    "status": {
+      "enum": [
+        "PENDING",
+        "RUNNING",
+        "PAUSED",
+        "SUCCEEDED",
+        "FAILED",
+        "ABORTED",
+        "ARCHIVED"
+      ]
+    },
+    "startedAt": { "type": "string", "format": "date-time" },
+    "endedAt": { "type": "string", "format": "date-time" },
+    "steps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["step", "command", "status", "startedAt", "endedAt"],
+        "properties": {
+          "step": { "type": "integer", "minimum": 1 },
+          "command": { "type": "string", "minLength": 1 },
+          "status": {
+            "enum": ["SUCCEEDED", "FAILED", "BLOCKED", "SKIPPED", "PAUSED"]
+          },
+          "startedAt": { "type": "string", "format": "date-time" },
+          "endedAt": { "type": "string", "format": "date-time" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

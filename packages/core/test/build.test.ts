@@ -6,9 +6,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { artifactInputHash } from "../src/artifacts/artifact-writer.js";
+import { renderContextPack } from "../src/build/context-pack.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
+import { GitIsolationManager } from "../src/git-isolation/manager.js";
+import { resolveProjectRules } from "../src/project-conventions/rule-resolver.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
 function evidenceFor(phase: "RED" | "GREEN" | "REFACTOR" | "VERIFY") {
@@ -29,6 +32,10 @@ function evidenceFor(phase: "RED" | "GREEN" | "REFACTOR" | "VERIFY") {
         ? [{ command: "npm test", passed: true, output: "1 passed" }]
         : [],
   };
+}
+
+function projectRulesHash(content: string): string | undefined {
+  return content.match(/^Project Rules Hash: (sha256:[a-f0-9]{64})$/m)?.[1];
 }
 
 // build 是行为最复杂的阶段之一，因此这里集中覆盖成功、失败、重试、暂停、超时和并行执行。
@@ -258,6 +265,35 @@ describe("sdd build", () => {
     });
   });
 
+  it("refreshes context packs when project rules change after plan", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn(async ({ task }) => ({
+        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+        ...evidenceFor(task.phase),
+      })),
+    });
+    const packPath = join(
+      root,
+      ".sdd/context-packs/add-cancel/TASK-001-RED.md",
+    );
+    const before = await readFile(packPath, "utf8");
+    await writeFile(
+      join(root, "AGENTS.md"),
+      `${await readFile(join(root, "AGENTS.md"), "utf8")}\n## Extra rule\n`,
+      "utf8",
+    );
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+    const after = await readFile(packPath, "utf8");
+    expect(projectRulesHash(after)).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(projectRulesHash(after)).not.toBe(projectRulesHash(before));
+  });
+
   it("TDD 证据命令越权时安全阻断", async () => {
     const { core, root } = await plannedProject({
       execute: vi.fn(async ({ task }) => ({
@@ -334,6 +370,114 @@ describe("sdd build", () => {
       passed: true,
     });
   });
+
+  it("运行级任务制品使用 Git delta 裁决最终 fileDelta", async () => {
+    const execute = vi.fn(async ({ root, task }) => {
+      const target =
+        task.phase === "RED"
+          ? join(root, "src/order.ts")
+          : join(root, "test/order.test.ts");
+      await writeFile(target, `// ${task.id}\n`, "utf8");
+      return {
+        modifiedFiles: ["declared-but-unused.ts"],
+        ...evidenceFor(task.phase),
+      };
+    });
+    const { core, root } = await plannedProject({ execute });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+
+    const runId = JSON.parse(
+      await readFile(join(root, ".sdd/state.json"), "utf8"),
+    ).currentRunId;
+    const persisted = JSON.parse(
+      await readFile(
+        join(root, ".sdd/runs", runId, "tasks", "TASK-001-RED.result.json"),
+        "utf8",
+      ),
+    );
+
+    expect(persisted.fileDelta).toMatchObject({
+      added: [],
+      modified: ["src/order.ts"],
+      deleted: [],
+    });
+  });
+
+  it("在隔离工作区执行任务，但 .sdd 与主工作区状态仍写回 controlRoot", async () => {
+    const seenRoots: string[] = [];
+    const execute = vi.fn(async ({ root, task }) => {
+      seenRoots.push(root);
+      const target =
+        task.phase === "RED"
+          ? join(root, "src/order.ts")
+          : join(root, "test/order.test.ts");
+      await writeFile(target, `// isolated ${task.id}\n`, "utf8");
+      return {
+        modifiedFiles: [
+          target.endsWith("order.ts") ? "src/order.ts" : "test/order.test.ts",
+        ],
+        ...evidenceFor(task.phase),
+      };
+    });
+    const { core, root } = await plannedProject({ execute });
+    const manager = new GitIsolationManager(root, {
+      createBranch: true,
+      createWorktree: true,
+      branchPattern: "sdd/<change-id>",
+      worktreeDir: ".sdd/worktrees",
+    });
+    const workspace = await manager.ensure("add-cancel");
+    const store = new StateStore(root);
+    await store.write({
+      ...(await store.read()),
+      workspace: {
+        branchName: workspace.branchName,
+        worktreePath: workspace.worktreePath,
+        baselineCommit: workspace.baselineCommit,
+      },
+    });
+
+    const result = await core.execute({ command: "build", cwd: root });
+
+    expect(result).toMatchObject({ ok: true, state: "BUILD_READY" });
+    expect(seenRoots.length).toBeGreaterThan(0);
+    expect(seenRoots.every((entry) => entry === workspace.businessRoot)).toBe(
+      true,
+    );
+    expect(await readFile(join(root, "src/order.ts"), "utf8")).toBe(
+      "export const order = {};\n",
+    );
+    expect(
+      await readFile(join(workspace.businessRoot, "src/order.ts"), "utf8"),
+    ).toContain("isolated");
+    const state = JSON.parse(
+      await readFile(join(root, ".sdd/state.json"), "utf8"),
+    ) as {
+      currentPhase: string;
+      workspace?: {
+        branchName: string | null;
+        worktreePath: string | null;
+        baselineCommit: string;
+      };
+    };
+    expect(state.currentPhase).toBe("BUILD_READY");
+    expect(state.workspace).toMatchObject({
+      branchName: "sdd/add-cancel",
+      baselineCommit: workspace.baselineCommit,
+    });
+    const runId = state.currentRunId as string;
+    await expect(
+      readFile(
+        join(root, ".sdd/runs", runId, "tasks", "TASK-001-RED.result.json"),
+        "utf8",
+      ),
+    ).resolves.toContain('"taskId": "TASK-001-RED"');
+  });
+
   it("executes pending tasks and records verification evidence", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts", "test/order.test.ts"],
@@ -420,9 +564,12 @@ describe("sdd build", () => {
 
   it("blocks files outside the task scope", async () => {
     const { root, core } = await plannedProject({
-      execute: vi.fn().mockResolvedValue({
-        modifiedFiles: ["secrets.txt"],
-        verification: [{ command: "npm test", passed: true, output: "pass" }],
+      execute: vi.fn(async ({ root }) => {
+        await writeFile(join(root, "secrets.txt"), "secret\n", "utf8");
+        return {
+          modifiedFiles: ["secrets.txt"],
+          verification: [{ command: "npm test", passed: true, output: "pass" }],
+        };
       }),
     });
 
@@ -436,12 +583,17 @@ describe("sdd build", () => {
     });
   });
 
-  it("当 spec/design/tasks 变化导致 Context Pack 失效时要求重新执行 plan", async () => {
+  it("当 spec/design/tasks 变化导致 Context Pack 失效时自动刷新后继续执行", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts"],
       verification: [{ command: "npm test", passed: true, output: "passed" }],
     });
     const { root, core } = await plannedProject({ execute });
+    const packPath = join(
+      root,
+      ".sdd/context-packs/add-cancel/TASK-001-RED.md",
+    );
+    const before = await readFile(packPath, "utf8");
     await writeFile(
       join(root, ".sdd/changes/add-cancel/design.md"),
       "# 用户修改后的设计\n",
@@ -451,17 +603,16 @@ describe("sdd build", () => {
     const result = await core.execute({ command: "build", cwd: root });
 
     expect(result).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: {
-        code: "E_MISSING_ARTIFACT",
-        next: "sdd plan",
-      },
+      ok: true,
+      state: "BUILD_READY",
     });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalled();
+    expect(projectRulesHash(await readFile(packPath, "utf8"))).toBe(
+      projectRulesHash(before),
+    );
   });
 
-  it("当代码库索引变化导致 Context Pack 失效时要求重新执行 plan", async () => {
+  it("当代码库索引变化导致 Context Pack 失效时自动刷新后继续执行", async () => {
     const execute = vi.fn().mockResolvedValue({
       modifiedFiles: ["src/order.ts"],
       verification: [{ command: "npm test", passed: true, output: "passed" }],
@@ -476,14 +627,10 @@ describe("sdd build", () => {
     const result = await core.execute({ command: "build", cwd: root });
 
     expect(result).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: {
-        code: "E_MISSING_ARTIFACT",
-        next: "sdd plan",
-      },
+      ok: true,
+      state: "BUILD_READY",
     });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalled();
   });
 
   it("marks a failed task and can retry only failed tasks", async () => {
@@ -698,33 +845,29 @@ describe("sdd build", () => {
       ...tasks.map((task) => `## ${task.id} ${task.title}\n`),
     ].join("\n");
     await writeFile(join(change, "tasks.md"), tasksMarkdown, "utf8");
-    const codebaseIndexHash = artifactInputHash(codebaseSummary);
-    const sourceArtifactHash = artifactInputHash({
-      spec,
-      design,
-      impact,
-      tasksMarkdown,
-      tasksJson: JSON.stringify(tasks, null, 2),
-    });
-    const contextPack = [
-      "<!-- Context Pack Metadata",
-      `Codebase Index Hash: ${codebaseIndexHash}`,
-      `Source Artifact Hash: ${sourceArtifactHash}`,
-      "Generated At: 2026-07-04T00:00:00.000Z",
-      "-->",
-      "",
-      "# TASK",
-      "",
-      "Allowed Files",
-      "",
-      "Risk",
-      "",
-    ].join("\n");
+    const projectConventionsHash = artifactInputHash(
+      await readFile(join(root, ".sdd/project/conventions.json"), "utf8"),
+    );
+    const body = ["# TASK", "", "Allowed Files", "", "Risk", "", ""].join("\n");
     await Promise.all(
-      tasks.map((task) =>
+      tasks.map(async (task) =>
         writeFile(
           join(root, ".sdd/context-packs/add-cancel", `${task.id}.md`),
-          contextPack.replace("# TASK", `# ${task.id}`),
+          renderContextPack({
+            body: body.replace("# TASK", `# ${task.id}`),
+            rules: await resolveProjectRules(
+              root,
+              [...task.allowedFiles, ...task.expectedNewFiles],
+              "codex",
+            ),
+            codebaseSummary,
+            spec,
+            design,
+            impact,
+            tasksMarkdown,
+            tasksJson: JSON.stringify(tasks, null, 2),
+            projectConventionsHash,
+          }),
           "utf8",
         ),
       ),
