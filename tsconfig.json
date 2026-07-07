@@ -1,8 +1,6 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/core" },
-    { "path": "packages/claude-code-plugin" },
-    { "path": "packages/codex-plugin" }
+    { "path": "packages/core" }
   ]
 }

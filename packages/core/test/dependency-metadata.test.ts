@@ -197,7 +197,7 @@ describe("仓库元数据与安装文档", () => {
       readFile(join(process.cwd(), "docs/plugin-installation.md"), "utf8"),
     ]);
 
-    expect(packageJson.engines?.node).toBe(">=20");
+    expect(packageJson.engines?.node).toBe(">=22");
 
     for (const document of [readme, installDoc]) {
       expect(document).toContain("macOS");
