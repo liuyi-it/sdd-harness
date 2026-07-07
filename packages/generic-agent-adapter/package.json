@@ -1,0 +1,14 @@
+{
+  "name": "@sdd-harness/generic-agent-adapter",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Generic Agent Protocol adapter for sdd-harness",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "docs/",
+    "examples/",
+    "AGENT_PROTOCOL.md"
+  ]
+}

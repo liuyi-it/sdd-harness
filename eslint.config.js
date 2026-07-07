@@ -9,6 +9,7 @@ export default tseslint.config(
       ".worktrees/**",
       "node_modules/**",
       "vendor/**/upstream/**",
+      "packages/generic-agent-adapter/examples/**",
     ],
   },
   eslint.configs.recommended,
