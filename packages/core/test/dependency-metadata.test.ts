@@ -113,11 +113,14 @@ describe("第三方依赖元数据", () => {
     expect(agentsDigest).toBe(claudeDigest);
   });
 
-  it("仅对原样上游快照关闭 Git 空白错误检查", async () => {
-    expect(await readFile(join(process.cwd(), ".gitattributes"), "utf8")).toBe(
-      "vendor/openspec/upstream/** -whitespace\n" +
-        "vendor/superpowers/upstream/** -whitespace\n",
+  it("对所有文件强制 LF 行尾，仅对上游快照关闭空白检查", async () => {
+    const content = await readFile(
+      join(process.cwd(), ".gitattributes"),
+      "utf8",
     );
+    expect(content).toContain("* text=auto eol=lf");
+    expect(content).toContain("vendor/openspec/upstream/** -whitespace");
+    expect(content).toContain("vendor/superpowers/upstream/** -whitespace");
   });
 
   it("公共声明保留固定依赖的 readonly 与版本字面量类型", async () => {
