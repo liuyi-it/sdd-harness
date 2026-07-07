@@ -289,52 +289,25 @@ describe("release validation", () => {
     );
   });
 
-  it("fails when a symbolic link is replaced by a regular file", async () => {
+  it("fails when AGENTS.md content diverges from the recorded snapshot", async () => {
     const root = await makeReleaseCopy();
     const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
-    await rm(path);
-    await writeFile(path, "CLAUDE.md", "utf8");
+    await writeFile(path, "modified\n", "utf8");
 
-    await expect(
-      validateReleaseLayout(root, { platform: "darwin" }),
-    ).rejects.toThrow(/类型不一致/);
+    await expect(validateReleaseLayout(root)).rejects.toThrow(/摘要不一致/);
   });
 
   it.skipIf(process.platform === "win32")(
-    "fails when a symbolic link target is modified",
+    "fails when AGENTS.md is replaced by a symbolic link",
     async () => {
       const root = await makeReleaseCopy();
       const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
       await rm(path);
       await symlink("README.md", path);
 
-      await expect(validateReleaseLayout(root)).rejects.toThrow(
-        /符号链接目标不一致/,
-      );
+      await expect(validateReleaseLayout(root)).rejects.toThrow(/类型不一致/);
     },
   );
-
-  it("accepts a Windows checkout that materializes a symlink as its target text", async () => {
-    const root = await makeReleaseCopy();
-    const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
-    await rm(path);
-    await writeFile(path, "CLAUDE.md", "utf8");
-
-    await expect(
-      validateReleaseLayout(root, { platform: "win32" }),
-    ).resolves.toBeUndefined();
-  });
-
-  it("rejects a modified Windows symlink placeholder without creating a symlink", async () => {
-    const root = await makeReleaseCopy();
-    const path = join(root, "vendor/superpowers/upstream/AGENTS.md");
-    await rm(path);
-    await writeFile(path, "README.md", "utf8");
-
-    await expect(
-      validateReleaseLayout(root, { platform: "win32" }),
-    ).rejects.toThrow(/Windows 符号链接占位文件内容不一致/);
-  });
 
   it.each([
     "../escape",

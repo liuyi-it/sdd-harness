@@ -38,7 +38,8 @@ const vendorSpecs = [
     directory: "superpowers",
     metadata: {
       ...pickVersionMetadata(PINNED_DEPENDENCIES.superpowers),
-      localModifications: "None; adapters live outside upstream/.",
+      localModifications:
+        "AGENTS.md materialized as a regular copy of CLAUDE.md for Windows checkout compatibility; adapters live outside upstream/.",
     },
   },
 ];
@@ -162,22 +163,7 @@ async function validateVendorSnapshot(root, spec, platform) {
   for (const [path, expected] of manifest) {
     const actual = actualByPath.get(path);
     if (actual.type !== expected.type) {
-      if (
-        platform === "win32" &&
-        expected.type === "symlink" &&
-        actual.type === "file"
-      ) {
-        const placeholder = await readFile(join(upstreamRoot, path), "utf8");
-        if (placeholder !== expected.target) {
-          throw new Error(
-            `${spec.directory} Windows 符号链接占位文件内容不一致：upstream/${path}`,
-          );
-        }
-      } else {
-        throw new Error(
-          `${spec.directory} 快照条目类型不一致：upstream/${path}`,
-        );
-      }
+      throw new Error(`${spec.directory} 快照条目类型不一致：upstream/${path}`);
     }
     if (actual.type === "symlink" && actual.target !== expected.target) {
       throw new Error(

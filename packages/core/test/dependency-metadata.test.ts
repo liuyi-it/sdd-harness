@@ -48,7 +48,8 @@ describe("第三方依赖元数据", () => {
       },
       superpowers: {
         ...pickVersionMetadata(PINNED_DEPENDENCIES.superpowers),
-        localModifications: "None; adapters live outside upstream/.",
+        localModifications:
+          "AGENTS.md materialized as a regular copy of CLAUDE.md for Windows checkout compatibility; adapters live outside upstream/.",
       },
     };
 
@@ -96,14 +97,20 @@ describe("第三方依赖元数据", () => {
       expect(manifestPaths).toEqual(await listSnapshotEntries(vendorRoot));
     }
 
-    expect(
-      await readFile(
-        join(process.cwd(), "vendor/superpowers/MANIFEST.sha256"),
-        "utf8",
-      ),
-    ).toMatch(
-      /^[a-f0-9]{64} {2}symlink upstream\/AGENTS\.md -> "CLAUDE\.md"$/m,
+    const superpowersManifest = await readFile(
+      join(process.cwd(), "vendor/superpowers/MANIFEST.sha256"),
+      "utf8",
     );
+    expect(superpowersManifest).toMatch(
+      /^[a-f0-9]{64} {2}file upstream\/AGENTS\.md$/m,
+    );
+    const agentsDigest = superpowersManifest.match(
+      /^([a-f0-9]{64}) {2}file upstream\/AGENTS\.md$/m,
+    )?.[1];
+    const claudeDigest = superpowersManifest.match(
+      /^([a-f0-9]{64}) {2}file upstream\/CLAUDE\.md$/m,
+    )?.[1];
+    expect(agentsDigest).toBe(claudeDigest);
   });
 
   it("仅对原样上游快照关闭 Git 空白错误检查", async () => {
