@@ -35,10 +35,10 @@
 git clone https://github.com/liuyi-it/sdd-harness.git
 cd sdd-harness
 
-# macOS / Linux
+# macOS / Linux / Windows Git Bash
 bash scripts/install.sh
 
-# Windows PowerShell
+# Windows PowerShell（备选）
 powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ```
 

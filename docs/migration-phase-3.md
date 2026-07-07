@@ -25,13 +25,13 @@ git pull
 
 ### 3. 重新安装
 
-macOS / Linux:
+macOS / Linux / Windows Git Bash:
 
 ```bash
 bash scripts/install.sh
 ```
 
-Windows PowerShell:
+Windows PowerShell（备选）:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/install.ps1
