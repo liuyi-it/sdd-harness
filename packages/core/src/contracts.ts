@@ -85,7 +85,7 @@ export const ExitCode = {
   SCHEMA_VALIDATION_FAILED: 4,
   SECURITY_BLOCKED: 5,
   COMPONENT_UNAVAILABLE: 6,
-  TIMEOUT: 7,
+  TIMEOUT: 124,
 } as const;
 
 export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];

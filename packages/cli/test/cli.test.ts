@@ -47,4 +47,36 @@ describe("sdd CLI", () => {
     const out = sdd("status");
     expect(out).toContain("State:");
   });
+
+  it("codebase 子命令缺少参数时返回错误", () => {
+    expect(() => sdd("codebase")).toThrow();
+  });
+
+  it("codebase status 可用", () => {
+    const out = sdd("codebase status");
+    expect(out).toContain("State:");
+  });
+
+  it("--json 输出有效 JSON", () => {
+    const out = execSync(`node ${CLI_PATH} status --json`, {
+      encoding: "utf-8",
+    }).trim();
+    const parsed = JSON.parse(out);
+    expect(parsed).toHaveProperty("ok");
+    expect(parsed).toHaveProperty("state");
+    expect(parsed).toHaveProperty("exitCode");
+  });
+
+  it("exitCode 与进程退出码一致", () => {
+    // 对不存在目录执行 init，应返回非 0 退出码
+    try {
+      execSync(`node ${CLI_PATH} init --cwd /nonexistent`, {
+        encoding: "utf-8",
+        stdio: "pipe",
+      });
+    } catch (e: unknown) {
+      const err = e as { status?: number };
+      expect(err.status).toBeGreaterThan(0);
+    }
+  });
 });

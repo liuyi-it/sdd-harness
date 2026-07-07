@@ -70,6 +70,14 @@ export function stopManagedMcp(result: McpLifecycleResult): void {
   if (result.pid) {
     try {
       process.kill(result.pid, "SIGTERM");
+      // 等待 2 秒后强制 SIGKILL
+      setTimeout(() => {
+        try {
+          process.kill(result.pid!, "SIGKILL");
+        } catch {
+          // 进程已退出
+        }
+      }, 2000);
     } catch {
       // 进程可能已退出
     }

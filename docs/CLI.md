@@ -43,7 +43,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 | 4      | SCHEMA_VALIDATION_FAILED |
 | 5      | SECURITY_BLOCKED         |
 | 6      | COMPONENT_UNAVAILABLE    |
-| 7      | TIMEOUT                  |
+| 124    | TIMEOUT                  |
 
 CLI 进程退出码始终等于 `CommandResult.exitCode`。
 

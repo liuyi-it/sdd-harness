@@ -2,13 +2,19 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { McpDiagnostics, McpDiagnosticError } from "./types.js";
 
-/** 写入 diagnostics.json */
+/** 写入 diagnostics.json，路径经过安全校验 */
 export async function writeDiagnostics(
   root: string,
   diagnosticsFile: string,
   diagnostics: McpDiagnostics,
 ): Promise<void> {
-  const filePath = path.join(root, diagnosticsFile);
+  // 防止 diagnosticsFile 以 / 开头导致 root 被忽略
+  const safeFile = diagnosticsFile.replace(/^\/+/, "");
+  const filePath = path.join(root, safeFile);
+  // 确保路径不逃逸 root
+  if (!filePath.startsWith(path.resolve(root))) {
+    throw new Error("E_PATH_OUTSIDE_REPO: diagnosticsFile 路径非法");
+  }
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(diagnostics, null, 2), "utf-8");
 }

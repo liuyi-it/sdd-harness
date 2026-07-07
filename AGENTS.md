@@ -2,7 +2,7 @@
 
 ## 项目结构与模块划分
 
-本仓库是一个基于 Node.js workspaces 的多包项目。核心流程在 `packages/core/src`，包括状态机、命令实现、安全校验和安装器；对应测试在 `packages/core/test`。CLI 入口在 `packages/cli`，提供 `sdd` / `sdd-harness` 命令。Agent Adapte 层分为 `packages/claude-code-adapter`、`packages/codex-adapter`、`packages/opencode-adapter`，分别提供命令/技能清单与规则文件。`packages/codebase-memory` 负责内置托管 codebase-memory-mcp 及降级处理。`packages/agent-protocol` 定义 Agent Task Protocol 类型与校验。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目。
+本仓库是一个基于 Node.js workspaces 的多包项目。核心流程在 `packages/core/src`，包括状态机、命令实现、安全校验和安装器；对应测试在 `packages/core/test`。CLI 入口在 `packages/cli`，提供 `sdd` / `sdd-harness` 命令。Agent Adapter 层分为 `packages/claude-code-adapter`、`packages/codex-adapter`、`packages/opencode-adapter`，分别提供命令/技能清单与规则文件。`packages/codebase-memory` 负责内置托管 codebase-memory-mcp 及降级处理。`packages/agent-protocol` 定义 Agent Task Protocol 类型与校验。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目。
 
 ## Karpathy 风格执行规则
 

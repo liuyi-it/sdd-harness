@@ -7,6 +7,7 @@ export function outputJson(result: CommandResult): void {
     state: result.state,
     exitCode: result.exitCode,
   };
+  if (result.data !== undefined) json.data = result.data;
   if (result.changeId !== undefined) json.changeId = result.changeId;
   if (result.next !== undefined) json.next = result.next;
   if (result.warnings !== undefined) json.warnings = result.warnings;

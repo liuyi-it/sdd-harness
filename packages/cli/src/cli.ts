@@ -14,6 +14,7 @@ import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
 import { runAuto } from "./commands/auto.js";
+import { runCodebase } from "./commands/codebase.js";
 
 const PKG_VERSION = "0.1.0";
 
@@ -32,6 +33,7 @@ const HELP_TEXT = `sdd — SDD Agent Harness CLI
   review            审查
   archive           归档
   auto <需求>        自动推进完整流程
+  codebase           代码库上下文管理 (status/doctor/index/query/rebuild)
 
 通用参数:
   --json            JSON 输出
@@ -56,6 +58,7 @@ const COMMANDS = [
   "review",
   "archive",
   "auto",
+  "codebase",
 ];
 
 async function main(): Promise<void> {
@@ -99,7 +102,7 @@ async function main(): Promise<void> {
   const json = values.json ?? false;
   const extraArgs: Record<string, unknown> = {};
   if (values.change) extraArgs.change = values.change;
-  if (values.timeout) extraArgs.timeout = values.timeout;
+  if (values.timeout) extraArgs.timeout = Number(values.timeout);
   if (values["non-interactive"]) extraArgs["non-interactive"] = true;
   if (values.force) extraArgs.force = true;
   if (values.verbose) extraArgs.verbose = true;
@@ -111,7 +114,7 @@ async function main(): Promise<void> {
       result = await runInit(core, cwd, extraArgs, undefined);
       break;
     case "status":
-      result = await runStatus(core, cwd, undefined);
+      result = await runStatus(core, cwd, extraArgs, undefined);
       break;
     case "new": {
       const requirement = positionals.slice(1).join(" ") || "";
@@ -155,6 +158,12 @@ async function main(): Promise<void> {
     case "auto": {
       const requirement = positionals.slice(1).join(" ") || "";
       result = await runAuto(core, cwd, requirement, extraArgs, undefined);
+      break;
+    }
+    case "codebase": {
+      const codebasePositionals = positionals.slice(1);
+      const subcommand = codebasePositionals[0];
+      result = await runCodebase(core, cwd, subcommand, extraArgs, undefined);
       break;
     }
     default:
