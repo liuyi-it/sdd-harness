@@ -1,0 +1,24 @@
+{
+  "name": "@sdd-harness/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "sdd": "./dist/cli.js",
+    "sdd-harness": "./dist/cli.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@sdd-harness/core": "0.1.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
