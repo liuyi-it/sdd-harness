@@ -57,16 +57,18 @@
 - `packages/core/package.json`: 同上
 - 所有新建包: `engines.node` 设为 `">=22"`
 - `tsconfig.json`: 新增 references 指向 cli、agent-protocol、codebase-memory 及各 adapter
-- 新增 `scripts/install.sh`：一键全局安装脚本
-- 新增 `scripts/uninstall.sh`：一键卸载脚本
+- 新增 `scripts/install.sh`：macOS/Linux 一键安装脚本
+- 新增 `scripts/install.ps1`：Windows PowerShell 一键安装脚本
+- 新增 `scripts/uninstall.sh`：macOS/Linux 卸载脚本
+- 新增 `scripts/uninstall.ps1`：Windows PowerShell 卸载脚本
 
 ### 4.2 一键安装脚本
 
-`scripts/install.sh`:
+#### macOS / Linux: `scripts/install.sh`
 
 ```bash
 #!/usr/bin/env bash
-# sdd-harness 一键全局安装脚本
+# sdd-harness 一键全局安装脚本 (macOS/Linux)
 # 用法: bash scripts/install.sh
 set -euo pipefail
 
@@ -76,7 +78,7 @@ echo "=== sdd-harness 安装 ==="
 NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
 if [ "$NODE_VERSION" -lt 22 ]; then
   echo "错误: sdd-harness 要求 Node.js >= 22，当前版本: $(node -v)"
-  echo "请升级 Node.js 后重试。"
+  echo "请升级 Node.js 后重试: https://nodejs.org/"
   exit 1
 fi
 
@@ -108,16 +110,75 @@ echo "可用命令: sdd, sdd-harness"
 echo "使用 sdd init 初始化项目"
 ```
 
-`scripts/uninstall.sh`:
+#### Windows: `scripts/install.ps1`
 
+```powershell
+<#
+.SYNOPSIS
+  sdd-harness 一键全局安装脚本 (Windows PowerShell)
+.DESCRIPTION
+  检查 Node.js >= 22，安装依赖，构建，全局 link。
+  用法: powershell -ExecutionPolicy Bypass -File scripts/install.ps1
+#>
+
+Write-Host "=== sdd-harness 安装 ===" -ForegroundColor Cyan
+
+# 检查 Node.js 版本
+$nodeVersion = (node -v) -replace 'v', ''
+$majorVersion = [int]($nodeVersion -split '\.')[0]
+if ($majorVersion -lt 22) {
+    Write-Host "错误: sdd-harness 要求 Node.js >= 22，当前版本: $(node -v)" -ForegroundColor Red
+    Write-Host "请升级 Node.js 后重试: https://nodejs.org/"
+    exit 1
+}
+
+# 进入项目根目录
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ProjectRoot = Resolve-Path "$ScriptDir\.."
+Set-Location $ProjectRoot
+
+# 安装依赖
+Write-Host "安装依赖..." -ForegroundColor Yellow
+npm install
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# 构建
+Write-Host "构建..." -ForegroundColor Yellow
+npm run build
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# 全局 link
+Write-Host "全局安装 sdd CLI..." -ForegroundColor Yellow
+npm link --workspace=packages/cli
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+# 验证
+Write-Host "验证安装..." -ForegroundColor Yellow
+sdd --version
+sdd-harness --version
+
+Write-Host ""
+Write-Host "=== 安装完成 ===" -ForegroundColor Green
+Write-Host "可用命令: sdd, sdd-harness"
+Write-Host "使用 sdd init 初始化项目"
+```
+
+#### 卸载脚本
+
+`scripts/uninstall.sh`:
 ```bash
 #!/usr/bin/env bash
-# sdd-harness 卸载脚本
 set -euo pipefail
-
 echo "卸载 sdd-harness..."
-npm unlink --workspace=packages/cli 2>/dev/null || npm uninstall -g @sdd-harness/cli 2>/dev/null || true
+npm unlink --workspace=packages/cli 2>/dev/null || true
 echo "sdd-harness 已卸载"
+```
+
+`scripts/uninstall.ps1`:
+```powershell
+Write-Host "卸载 sdd-harness..." -ForegroundColor Yellow
+npm unlink --workspace=packages/cli 2>$null
+Write-Host "sdd-harness 已卸载" -ForegroundColor Green
 ```
 
 ### 4.3 packages/cli 结构
@@ -222,14 +283,14 @@ CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
 1. `npm install && npm run build` 成功
 2. `node packages/cli/dist/cli.js --version` 输出 `0.1.0`
-3. `bash scripts/install.sh` 一键安装成功
-4. `sdd --version` 和 `sdd-harness --version` 均可执行
+3. `bash scripts/install.sh`（macOS/Linux）或 `powershell -File scripts/install.ps1`（Windows）一键安装成功
+4. `sdd --version` 和 `sdd-harness --version` 三平台均可执行
 5. `sdd init --json` 返回 `{ok: true, state: "INDEX_READY", exitCode: 0}`
 6. `sdd status --json` 返回结构化状态
 7. 所有命令 `--help` 输出正确
 8. exitCode 与 `CommandResult.exitCode` 一致
 9. 旧 plugin 包 (`claude-code-plugin`, `codex-plugin`) 已删除
-10. `bash scripts/uninstall.sh` 可正常卸载
+10. `bash scripts/uninstall.sh` / `powershell -File scripts/uninstall.ps1` 可正常卸载
 
 ---
 
@@ -744,13 +805,15 @@ while true:
 - 支持的 Agent 表格
 - 内置 codebase-memory-mcp 说明
 - 要求 Node.js >= 22
-- 不发布 npm，通过仓库自带安装脚本全局安装
+- 不发布 npm，通过仓库自带安装脚本（支持 macOS/Linux/Windows）全局安装
 
 ### 9.3 migration-phase-3.md 关键内容
 
 1. 升级 Node.js 到 >= 22
 2. 拉取最新代码: `git pull`
-3. 重新安装: `bash scripts/install.sh`
+3. 重新安装:
+   - macOS/Linux: `bash scripts/install.sh`
+   - Windows: `powershell -ExecutionPolicy Bypass -File scripts/install.ps1`
 4. 更新 .sdd/config.yml（添加 codebase 配置段）
 5. 重新 `sdd init`
 6. 兼容性说明：已有 .sdd/ 制品应兼容读取
@@ -784,9 +847,9 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 4. CI workflow node matrix 不含 20
 5. 所有包版本一致 (0.1.0)
 6. `sdd --version` 输出正确
-7. `scripts/install.sh` 一键安装成功
-8. 安装后 `sdd` / `sdd-harness` 两个命令均可用
-9. `scripts/uninstall.sh` 卸载成功
+7. `scripts/install.sh`（macOS/Linux）和 `scripts/install.ps1`（Windows）均可一键安装成功
+8. 安装后 `sdd` / `sdd-harness` 两个命令三平台均可用
+9. `scripts/uninstall.sh` / `scripts/uninstall.ps1` 卸载成功
 10. 所有 JSON Schema 通过验证
 11. 所有 adapter 文档存在
 12. Generic Protocol E2E 通过
@@ -825,9 +888,9 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 
 ## 10. 总体验收标准（三期完成）
 
-1. 可以 `git clone` 仓库后 `bash scripts/install.sh` 一键安装
+1. 可以 `git clone` 仓库后通过安装脚本一键安装（macOS/Linux: `bash scripts/install.sh`，Windows: `powershell -File scripts/install.ps1`）
 2. Node.js 22 环境下可以 `npm install / build / test`
-3. 安装后可以执行 `sdd --version` 和 `sdd-harness --version`
+3. 三平台安装后均可以执行 `sdd --version` 和 `sdd-harness --version`
 4. 可以执行 `sdd init`
 5. 可以执行 `sdd status --json`
 6. 可以执行 `sdd auto "需求" --json`
@@ -870,7 +933,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 43. docs/requirements-traceability.md 包含三期验收映射
 44. docs/migration-phase-3.md 包含完整迁移步骤
 45. 19 项新增文档 + 7 项已有文档更新全部完成
-46. `scripts/install.sh` / `scripts/uninstall.sh` 可用
+46. `scripts/install.sh`、`scripts/install.ps1`、`scripts/uninstall.sh`、`scripts/uninstall.ps1` 四个脚本均可用
 47. 不发布 npm，无 npm registry 依赖
 
 ---
