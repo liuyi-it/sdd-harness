@@ -44,8 +44,7 @@ const vendorSpecs = [
   },
 ];
 
-export async function validateReleaseLayout(root = repoRoot, options = {}) {
-  const platform = options.platform ?? process.platform;
+export async function validateReleaseLayout(root = repoRoot) {
   for (const spec of pluginSpecs) {
     const manifest = JSON.parse(
       await readFile(join(root, spec.manifestPath), "utf8"),
@@ -112,7 +111,7 @@ export async function validateReleaseLayout(root = repoRoot, options = {}) {
   }
 
   for (const spec of vendorSpecs) {
-    await validateVendorSnapshot(root, spec, platform);
+    await validateVendorSnapshot(root, spec);
   }
 }
 
@@ -121,7 +120,7 @@ function pickVersionMetadata(dependency) {
   return { name, version, commit, repository, license };
 }
 
-async function validateVendorSnapshot(root, spec, platform) {
+async function validateVendorSnapshot(root, spec) {
   const vendorRoot = join(root, "vendor", spec.directory);
   const upstreamRoot = join(vendorRoot, "upstream");
   const metadata = JSON.parse(

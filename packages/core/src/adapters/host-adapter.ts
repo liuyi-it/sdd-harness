@@ -286,7 +286,15 @@ function textView(result: CommandResult): string {
     }
   }
   if (result.warnings !== undefined && result.warnings.length > 0) {
-    lines.push("", "Warnings:", ...result.warnings.map((item) => `- ${item}`));
+    lines.push(
+      "",
+      "Warnings:",
+      ...result.warnings.map((item) =>
+        typeof item === "string"
+          ? `- ${item}`
+          : `- [${item.code}] ${item.message}`,
+      ),
+    );
   }
   return `${lines.join("\n")}\n`;
 }

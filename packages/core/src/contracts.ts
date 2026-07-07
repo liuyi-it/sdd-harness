@@ -76,6 +76,49 @@ export const ERROR_EXIT_CODES = {
 
 export type ErrorCode = keyof typeof ERROR_EXIT_CODES;
 
+/** 三期统一退出码，CLI 进程退出码必须等于 CommandResult.exitCode */
+export const ExitCode = {
+  SUCCESS: 0,
+  GENERAL_ERROR: 1,
+  INVALID_ARGS: 2,
+  STATE_CONFLICT: 3,
+  SCHEMA_VALIDATION_FAILED: 4,
+  SECURITY_BLOCKED: 5,
+  COMPONENT_UNAVAILABLE: 6,
+  TIMEOUT: 7,
+} as const;
+
+export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];
+
+/** CLI 结构化警告 */
+export interface CliWarning {
+  /** 警告码，如 "W_CODEBASE_MEMORY_UNAVAILABLE" */
+  code: string;
+  /** 人类可读警告信息 */
+  message: string;
+  /** 建议的下一步命令，如 "sdd codebase doctor" */
+  next?: string;
+  /** 额外诊断详情 */
+  details?: Record<string, unknown>;
+}
+
+/** Agent 行动要求 — 三期 build next 返回此结构 */
+export interface AgentActionRequired {
+  type: "AGENT_TASK_EXECUTION";
+  taskId: string;
+  changeId: string;
+  contextPack: string;
+  allowedFiles: string[];
+  expectedNewFiles: string[];
+  forbiddenFiles: string[];
+  verification: Array<{ command: string; args: string[] }>;
+  resultFile: string;
+  codebase: {
+    provider: "codebase-memory-mcp" | "fallback-file-scan";
+    degraded: boolean;
+  };
+}
+
 export interface CommandRequest {
   command: CommandName;
   cwd: string;
@@ -100,7 +143,9 @@ export interface CommandResult {
     format: "json" | "text";
     content: string;
   };
-  warnings?: string[];
+  warnings?: Array<string | CliWarning>;
+  /** Agent 行动要求 — build next 时返回，指导 Agent 执行任务 */
+  actionRequired?: AgentActionRequired;
   error?: CommandError;
 }
 

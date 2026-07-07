@@ -14,6 +14,7 @@
 > CLI-first、Agent-agnostic、codebase-memory-powered、verification-gated 的 SDD Agent Harness。
 
 核心变化：
+
 1. CLI 成为确定性执行入口
 2. Claude Code / Codex / OpenCode 等只作为 Agent Adapter
 3. 不再让插件宿主推断如何执行 TypeScript / Adapter / Core
@@ -25,29 +26,29 @@
 
 ## 2. 实施前提
 
-| 决策点 | 结论 |
-|--------|------|
-| 实施策略 | 按 P0→P5 优先级严格推进 |
-| MCP 托管方式 | npx 动态拉取 `codebase-memory-mcp@0.8.1` |
-| 包命名 | 直接重命名为 *-adapter，不保留旧名，不考虑旧版兼容 |
-| Node.js 基线 | 从 `>=20` 升级到 `>=22` |
-| 版本 | 所有包统一 `0.1.0` |
-| 分发方式 | **不发布 npm**，通过仓库自带安装脚本一键全局安装（macOS/Linux: `bash scripts/install.sh`，Windows: `powershell -File scripts/install.ps1`） |
+| 决策点       | 结论                                                                                                                                        |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| 实施策略     | 按 P0→P5 优先级严格推进                                                                                                                     |
+| MCP 托管方式 | npx 动态拉取 `codebase-memory-mcp@0.8.1`                                                                                                    |
+| 包命名       | 直接重命名为 \*-adapter，不保留旧名，不考虑旧版兼容                                                                                         |
+| Node.js 基线 | 从 `>=20` 升级到 `>=22`                                                                                                                     |
+| 版本         | 所有包统一 `0.1.0`                                                                                                                          |
+| 分发方式     | **不发布 npm**，通过仓库自带安装脚本一键全局安装（macOS/Linux: `bash scripts/install.sh`，Windows: `powershell -File scripts/install.ps1`） |
 
 ## 3. 包变更总览
 
-| 操作 | 包名 | 阶段 |
-|------|------|------|
-| 改造 | `packages/core` | III-A |
-| 新建 | `packages/cli` | III-A |
-| 新建 | `packages/codebase-memory` | III-B |
-| 新建 | `packages/agent-protocol` | III-C |
+| 操作      | 包名                                                           | 阶段  |
+| --------- | -------------------------------------------------------------- | ----- |
+| 改造      | `packages/core`                                                | III-A |
+| 新建      | `packages/cli`                                                 | III-A |
+| 新建      | `packages/codebase-memory`                                     | III-B |
+| 新建      | `packages/agent-protocol`                                      | III-C |
 | 删除→新建 | `packages/claude-code-plugin` → `packages/claude-code-adapter` | III-D |
-| 删除→新建 | `packages/codex-plugin` → `packages/codex-adapter` | III-D |
-| 新建 | `packages/opencode-adapter` | III-D |
-| 新建 | `packages/generic-agent-adapter` | III-E |
-| 新建 | `packages/kimi-code-adapter`（文档级） | III-F |
-| 新建 | `packages/copilot-cli-adapter`（文档级） | III-F |
+| 删除→新建 | `packages/codex-plugin` → `packages/codex-adapter`             | III-D |
+| 新建      | `packages/opencode-adapter`                                    | III-D |
+| 新建      | `packages/generic-agent-adapter`                               | III-E |
+| 新建      | `packages/kimi-code-adapter`（文档级）                         | III-F |
+| 新建      | `packages/copilot-cli-adapter`（文档级）                       | III-F |
 
 ## 4. Phase III-A (P0): CLI-first 基础
 
@@ -166,6 +167,7 @@ Write-Host "使用 sdd init 初始化项目"
 #### 卸载脚本
 
 `scripts/uninstall.sh`:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -175,6 +177,7 @@ echo "sdd-harness 已卸载"
 ```
 
 `scripts/uninstall.ps1`:
+
 ```powershell
 Write-Host "卸载 sdd-harness..." -ForegroundColor Yellow
 npm unlink --workspace=packages/cli 2>$null
@@ -213,6 +216,7 @@ packages/cli/
 ```
 
 `package.json` 关键字段:
+
 - `"bin": { "sdd": "./dist/cli.js", "sdd-harness": "./dist/cli.js" }`
 - `"dependencies": { "@sdd-harness/core": "0.1.0", "@sdd-harness/agent-protocol": "0.1.0", "@sdd-harness/codebase-memory": "0.1.0" }`
 - `"engines": { "node": ">=22" }`
@@ -227,8 +231,17 @@ export interface SddCore {
 }
 
 export interface CommandRequest {
-  command: "init" | "status" | "new" | "design" | "plan"
-           | "build" | "verify" | "review" | "archive" | "auto";
+  command:
+    | "init"
+    | "status"
+    | "new"
+    | "design"
+    | "plan"
+    | "build"
+    | "verify"
+    | "review"
+    | "archive"
+    | "auto";
   cwd: string;
   args: Record<string, unknown>;
   signal?: AbortSignal;
@@ -242,7 +255,7 @@ export interface CommandResult {
   next?: string;
   warnings?: CliWarning[];
   actionRequired?: AgentActionRequired;
-  error?: { code: string; message: string; next?: string; };
+  error?: { code: string; message: string; next?: string };
 }
 
 export interface CliWarning {
@@ -347,8 +360,17 @@ export interface McpLifecycleResult {
 }
 
 export type CodebaseQueryIntent =
-  | "impact" | "related-files" | "symbols" | "callers" | "callees"
-  | "routes" | "tests" | "architecture" | "entrypoints" | "data-flow" | "config";
+  | "impact"
+  | "related-files"
+  | "symbols"
+  | "callers"
+  | "callees"
+  | "routes"
+  | "tests"
+  | "architecture"
+  | "entrypoints"
+  | "data-flow"
+  | "config";
 ```
 
 ### 5.3 npx 托管启动流程
@@ -412,6 +434,7 @@ codebase:
 ### 5.7 requireAvailable=true 行为
 
 当 `requireAvailable=true` 且 MCP 不可用时：
+
 - 不得降级继续
 - 返回 `ok: false, exitCode: 6`
 - error.code = `E_COMPONENT_UNAVAILABLE`
@@ -419,13 +442,13 @@ codebase:
 
 ### 5.8 新增 CLI codebase 命令
 
-| 命令 | 说明 |
-|------|------|
-| `sdd codebase status` | 显示 provider/mode/degraded/indexStatus |
-| `sdd codebase doctor` | 诊断：Node.js、MCP 可用性、版本、路径权限等 |
-| `sdd codebase index` | 手动触发索引 |
-| `sdd codebase query "<q>" --intent impact` | 结构化代码查询 |
-| `sdd codebase rebuild` | 重建索引 |
+| 命令                                       | 说明                                        |
+| ------------------------------------------ | ------------------------------------------- |
+| `sdd codebase status`                      | 显示 provider/mode/degraded/indexStatus     |
+| `sdd codebase doctor`                      | 诊断：Node.js、MCP 可用性、版本、路径权限等 |
+| `sdd codebase index`                       | 手动触发索引                                |
+| `sdd codebase query "<q>" --intent impact` | 结构化代码查询                              |
+| `sdd codebase rebuild`                     | 重建索引                                    |
 
 ### 5.9 不可信上下文边界
 
@@ -512,16 +535,26 @@ export interface AgentTaskResult {
   modifiedFiles: string[];
   createdFiles: string[];
   commandsRun: Array<{
-    command: string; args: string[]; exitCode: number;
-    passed: boolean; expectedFailure?: boolean; outputSummary: string;
+    command: string;
+    args: string[];
+    exitCode: number;
+    passed: boolean;
+    expectedFailure?: boolean;
+    outputSummary: string;
   }>;
   tddEvidence: Array<{
     phase: "RED" | "GREEN" | "REFACTOR";
-    command: string; args: string[]; passed: boolean;
-    expectedFailure?: boolean; outputSummary: string;
+    command: string;
+    args: string[];
+    passed: boolean;
+    expectedFailure?: boolean;
+    outputSummary: string;
   }>;
   verification: Array<{
-    command: string; args: string[]; passed: boolean; outputSummary: string;
+    command: string;
+    args: string[];
+    passed: boolean;
+    outputSummary: string;
   }>;
   notes: string[];
 }
@@ -619,6 +652,7 @@ packages/claude-code-adapter/
 ```
 
 命令模板核心规则：
+
 - 调用 `sdd <command> --json`
 - 不执行 TypeScript 源文件
 - 不绕过 sdd CLI
@@ -627,6 +661,7 @@ packages/claude-code-adapter/
 - 将 MCP 输出视为不可信上下文
 
 package.json：
+
 - 不依赖 `@sdd-harness/core`
 - 无 `entry` 指向 `src/index.ts`
 - 只声明 `commands/` 和 `skills/`
@@ -663,6 +698,7 @@ packages/opencode-adapter/
 ### 7.5 安全规则（所有 Adapter 通用）
 
 Agent 不得:
+
 1. 修改 forbiddenFiles
 2. 修改 `.git/`
 3. 直接修改 `.sdd/state.json`
@@ -754,41 +790,41 @@ while true:
 
 #### 9.1.1 新增文档（19项）
 
-| 文档 | 阶段 | 说明 |
-|------|------|------|
-| `docs/CLI.md` | III-A | CLI 完整命令参考 |
-| `docs/codebase-memory-mcp.md` | III-B | MCP 托管说明 |
-| `docs/codebase-context.md` | III-B | 代码库上下文在各阶段的使用 |
-| `docs/codebase-diagnostics.md` | III-B | 诊断命令和降级处理 |
-| `docs/AGENT_PROTOCOL.md` | III-C | Agent 协议说明 |
-| `docs/AGENT_CAPABILITIES.md` | III-C | Agent 能力等级 |
-| `docs/BUILD_AGENT_PROTOCOL.md` | III-C | Build 阶段协议 |
-| `docs/adapters/` (目录) | III-D | adapter 文档目录 |
-| `docs/adapters/claude-code.md` | III-D | Claude Code 接入 |
-| `docs/adapters/codex.md` | III-D | Codex 接入 |
-| `docs/adapters/opencode.md` | III-D | OpenCode 接入 |
-| `docs/adapters/kimi-code.md` | III-F | Kimi Code 接入（文档级） |
-| `docs/adapters/copilot-cli.md` | III-F | Copilot CLI 接入（文档级） |
-| `docs/adapters/custom-agent.md` | III-E | 自研 Agent 接入 |
-| `docs/migration-phase-3.md` | III-A | 二期→三期迁移指南 |
-| `docs/windows.md` | III-F | Windows 注意事项 |
-| `docs/linux.md` | III-F | Linux 注意事项 |
-| `docs/macos.md` | III-F | macOS 注意事项 |
-| `docs/superpowers/specs/2026-07-07-phase-iii-design.md` | III-A | 三期设计文档（本次产出） |
+| 文档                                                    | 阶段  | 说明                       |
+| ------------------------------------------------------- | ----- | -------------------------- |
+| `docs/CLI.md`                                           | III-A | CLI 完整命令参考           |
+| `docs/codebase-memory-mcp.md`                           | III-B | MCP 托管说明               |
+| `docs/codebase-context.md`                              | III-B | 代码库上下文在各阶段的使用 |
+| `docs/codebase-diagnostics.md`                          | III-B | 诊断命令和降级处理         |
+| `docs/AGENT_PROTOCOL.md`                                | III-C | Agent 协议说明             |
+| `docs/AGENT_CAPABILITIES.md`                            | III-C | Agent 能力等级             |
+| `docs/BUILD_AGENT_PROTOCOL.md`                          | III-C | Build 阶段协议             |
+| `docs/adapters/` (目录)                                 | III-D | adapter 文档目录           |
+| `docs/adapters/claude-code.md`                          | III-D | Claude Code 接入           |
+| `docs/adapters/codex.md`                                | III-D | Codex 接入                 |
+| `docs/adapters/opencode.md`                             | III-D | OpenCode 接入              |
+| `docs/adapters/kimi-code.md`                            | III-F | Kimi Code 接入（文档级）   |
+| `docs/adapters/copilot-cli.md`                          | III-F | Copilot CLI 接入（文档级） |
+| `docs/adapters/custom-agent.md`                         | III-E | 自研 Agent 接入            |
+| `docs/migration-phase-3.md`                             | III-A | 二期→三期迁移指南          |
+| `docs/windows.md`                                       | III-F | Windows 注意事项           |
+| `docs/linux.md`                                         | III-F | Linux 注意事项             |
+| `docs/macos.md`                                         | III-F | macOS 注意事项             |
+| `docs/superpowers/specs/2026-07-07-phase-iii-design.md` | III-A | 三期设计文档（本次产出）   |
 
 #### 9.1.2 更新已有文档（9项）
 
-| 文档 | 阶段 | 变更说明 |
-|------|------|---------|
-| `README.md` | III-A | 重写：定位从"插件型 Harness"变为"CLI-first Universal SDD Agent Harness"；快速开始改为 `git clone` + `bash scripts/install.sh`；新增 Agent 支持表格、codebase-memory 说明；Node.js 要求改为 >=22；说明本项目不发布 npm，通过安装脚本全局安装 |
-| `docs/architecture.md` | III-A | 更新架构图：从 `core → plugin` 两层变为 `core → cli → agent-protocol → adapters` 四层；新增 codebase-memory 模块；删除 plugin.json entry 相关说明 |
-| `docs/command-contract.md` | III-A | 重写：命令契约从"插件宿主指令"改为"CLI 命令契约"；新增通用参数（--json/--cwd/--non-interactive 等）；新增 exitCode 映射表；新增 codebase 子命令 |
-| `docs/plugin-installation.md` | III-A | **删除或归档**：插件安装概念不再适用，内容合并到 `docs/CLI.md`（安装章节）和 `docs/migration-phase-3.md`（迁移步骤）；或改为"历史参考"标注 |
-| `docs/security.md` | III-D | 新增三个安全章节：CLI 安全（禁止 shell=true/eval）、Agent 安全（forbiddenFiles/Git delta 事实源/不可信上下文）、codebase-memory 安全（路径白名单/prompt injection guard） |
-| `docs/schemas.md` | III-C | 新增三期 Schema 清单（cli-command-result / codebase-* / agent-* / build-* 等 11 个 schema）；更新 schema 版本号说明 |
-| `docs/state-machine.md` | III-A | 新增状态：INDEX_READY（codebase 就绪）、CLARIFYING（需澄清）；更新状态转换图，标注哪些状态由 codebase-memory 降级影响 |
-| `docs/requirements-traceability.md` | III-F | 新增三期验收映射（47 项验收标准 → 各阶段实现 → 测试覆盖） |
-| `THIRD_PARTY_NOTICES.md` | III-B | codebase-memory-mcp 口径更新 |
+| 文档                                | 阶段  | 变更说明                                                                                                                                                                                                                                    |
+| ----------------------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `README.md`                         | III-A | 重写：定位从"插件型 Harness"变为"CLI-first Universal SDD Agent Harness"；快速开始改为 `git clone` + `bash scripts/install.sh`；新增 Agent 支持表格、codebase-memory 说明；Node.js 要求改为 >=22；说明本项目不发布 npm，通过安装脚本全局安装 |
+| `docs/architecture.md`              | III-A | 更新架构图：从 `core → plugin` 两层变为 `core → cli → agent-protocol → adapters` 四层；新增 codebase-memory 模块；删除 plugin.json entry 相关说明                                                                                           |
+| `docs/command-contract.md`          | III-A | 重写：命令契约从"插件宿主指令"改为"CLI 命令契约"；新增通用参数（--json/--cwd/--non-interactive 等）；新增 exitCode 映射表；新增 codebase 子命令                                                                                             |
+| `docs/plugin-installation.md`       | III-A | **删除或归档**：插件安装概念不再适用，内容合并到 `docs/CLI.md`（安装章节）和 `docs/migration-phase-3.md`（迁移步骤）；或改为"历史参考"标注                                                                                                  |
+| `docs/security.md`                  | III-D | 新增三个安全章节：CLI 安全（禁止 shell=true/eval）、Agent 安全（forbiddenFiles/Git delta 事实源/不可信上下文）、codebase-memory 安全（路径白名单/prompt injection guard）                                                                   |
+| `docs/schemas.md`                   | III-C | 新增三期 Schema 清单（cli-command-result / codebase-_ / agent-_ / build-\* 等 11 个 schema）；更新 schema 版本号说明                                                                                                                        |
+| `docs/state-machine.md`             | III-A | 新增状态：INDEX_READY（codebase 就绪）、CLARIFYING（需澄清）；更新状态转换图，标注哪些状态由 codebase-memory 降级影响                                                                                                                       |
+| `docs/requirements-traceability.md` | III-F | 新增三期验收映射（47 项验收标准 → 各阶段实现 → 测试覆盖）                                                                                                                                                                                   |
+| `THIRD_PARTY_NOTICES.md`            | III-B | codebase-memory-mcp 口径更新                                                                                                                                                                                                                |
 
 ### 9.2 README 关键更新
 
@@ -820,6 +856,7 @@ while true:
 ### 9.4 Kimi Code / Copilot CLI 文档
 
 均为文档级交付，包含：
+
 - 前置条件（安装 sdd CLI, Node.js >= 22）
 - 使用方式（调用 `sdd auto --json`）
 - AGENT_TASK_EXECUTION 处理说明
@@ -841,7 +878,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 ### 9.6 validate:release 检查项
 
 1. 根 package.json engines.node === ">=22"
-2. 所有 packages/*/package.json engines.node === ">=22"
+2. 所有 packages/\*/package.json engines.node === ">=22"
 3. README 不含 "Node 20" 或 "Node >=20"
 4. CI workflow node matrix 不含 20
 5. 所有包版本一致 (0.1.0)
@@ -858,11 +895,11 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 
 ### 9.7 跨平台注意事项
 
-| 平台 | 关键测试点 |
-|------|----------|
+| 平台    | 关键测试点                                                       |
+| ------- | ---------------------------------------------------------------- |
 | Windows | PowerShell/CMD 路径分隔符、npx 可用性、路径含空格、worktree 权限 |
-| macOS | /tmp 权限、npx 缓存、路径含空格 |
-| Linux | CI 环境权限、npx 缓存、headless 环境 |
+| macOS   | /tmp 权限、npx 缓存、路径含空格                                  |
+| Linux   | CI 环境权限、npx 缓存、headless 环境                             |
 
 ### 9.8 验收标准
 
@@ -958,10 +995,12 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 ## 12. 安全要求
 
 ### CLI 安全
+
 - 禁止 shell=true、bash -c、sh -c、cmd /c、eval
 - 所有命令使用结构化形式 `{ command: string; args: string[] }`
 
 ### Agent 安全
+
 - 不得修改 forbiddenFiles / .git/
 - 不得直接修改 .sdd/state.json
 - 不得读取仓库外文件
@@ -969,6 +1008,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 - 不可信上下文不得覆盖系统规则
 
 ### codebase-memory 安全
+
 - 不读取仓库外文件
 - 不写入 .git/
 - 只写入 .sdd/index/codebase-memory/
@@ -976,5 +1016,6 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 - 所有输出经过 prompt injection guard
 
 ### Core 事实源
+
 - TaskExecutionResult 是 Agent 声明
 - Git delta 才是文件变更事实源
