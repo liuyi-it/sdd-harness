@@ -9,21 +9,16 @@ import { PINNED_DEPENDENCIES } from "../packages/core/src/pinned-dependencies.mj
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 
-const pluginSpecs = [
-  {
-    name: "claude-code-plugin",
-    packagePath: "packages/claude-code-plugin/package.json",
-    manifestPath: "packages/claude-code-plugin/.claude-plugin/plugin.json",
-    entryDir: "packages/claude-code-plugin",
-    expectedHost: "claude-code",
-  },
-  {
-    name: "codex-plugin",
-    packagePath: "packages/codex-plugin/package.json",
-    manifestPath: "packages/codex-plugin/.codex-plugin/plugin.json",
-    entryDir: "packages/codex-plugin",
-    expectedHost: "codex",
-  },
+/** 三期必须发布的包（无需 npm，本地 link 安装） */
+const REQUIRED_PACKAGES = [
+  "core",
+  "cli",
+  "agent-protocol",
+  "codebase-memory",
+  "claude-code-adapter",
+  "codex-adapter",
+  "opencode-adapter",
+  "generic-agent-adapter",
 ];
 
 const vendorSpecs = [
@@ -45,71 +40,28 @@ const vendorSpecs = [
 ];
 
 export async function validateReleaseLayout(root = repoRoot) {
-  for (const spec of pluginSpecs) {
-    const manifest = JSON.parse(
-      await readFile(join(root, spec.manifestPath), "utf8"),
-    );
-    const packageJson = JSON.parse(
-      await readFile(join(root, spec.packagePath), "utf8"),
-    );
-
-    assertString(manifest.version, `${spec.name} manifest.version`);
-    assertString(manifest.entry, `${spec.name} manifest.entry`);
-    assertObject(manifest.compatibility, `${spec.name} manifest.compatibility`);
-    assertString(
-      manifest.compatibility.corePackage,
-      `${spec.name} compatibility.corePackage`,
-    );
-    assertString(
-      manifest.compatibility.coreVersion,
-      `${spec.name} compatibility.coreVersion`,
-    );
-    assertArray(
-      manifest.compatibility.hosts,
-      `${spec.name} compatibility.hosts`,
-    );
-    assertArray(manifest.compatibility.os, `${spec.name} compatibility.os`);
-
-    if (manifest.compatibility.corePackage !== "@sdd-harness/core") {
-      throw new Error(
-        `${spec.name} compatibility.corePackage 必须是 @sdd-harness/core`,
-      );
-    }
-    if (
-      manifest.compatibility.coreVersion !==
-      packageJson.dependencies?.["@sdd-harness/core"]
-    ) {
-      throw new Error(
-        `${spec.name} compatibility.coreVersion 必须与 package.json 里的 @sdd-harness/core 依赖一致`,
-      );
-    }
-    if (manifest.version !== packageJson.version) {
-      throw new Error(
-        `${spec.name} manifest.version 必须与 package.json version 一致`,
-      );
-    }
-    if (!manifest.compatibility.hosts.includes(spec.expectedHost)) {
-      throw new Error(
-        `${spec.name} compatibility.hosts 必须包含 ${spec.expectedHost}`,
-      );
-    }
-    const allowedOs = ["macos", "windows"];
-    for (const os of ["macos", "windows"]) {
-      if (!manifest.compatibility.os.includes(os)) {
-        throw new Error(`${spec.name} compatibility.os 必须包含 ${os}`);
-      }
-    }
-    for (const os of manifest.compatibility.os) {
-      if (!allowedOs.includes(os)) {
-        throw new Error(
-          `${spec.name} compatibility.os 只允许声明 macos 和 windows`,
-        );
-      }
-    }
-
-    await ensureReadable(join(root, spec.entryDir, manifest.entry));
+  // 校验根 package.json
+  const rootPkg = JSON.parse(
+    await readFile(join(root, "package.json"), "utf8"),
+  );
+  if (rootPkg.engines?.node !== ">=22") {
+    throw new Error("根 package.json engines.node 必须为 >=22");
   }
 
+  // 校验所有必需包存在且 engines >=22
+  for (const pkgName of REQUIRED_PACKAGES) {
+    const pkgPath = join(root, "packages", pkgName, "package.json");
+    await ensureReadable(pkgPath);
+    const pkg = JSON.parse(await readFile(pkgPath, "utf8"));
+    if (pkg.version !== "0.1.0") {
+      throw new Error(`packages/${pkgName} version 必须为 0.1.0`);
+    }
+    if (pkg.engines?.node !== ">=22") {
+      throw new Error(`packages/${pkgName} engines.node 必须为 >=22`);
+    }
+  }
+
+  // 校验 vendor 快照
   for (const spec of vendorSpecs) {
     await validateVendorSnapshot(root, spec);
   }
@@ -277,24 +229,6 @@ async function listEntries(root) {
   return entries.sort((left, right) =>
     left.path < right.path ? -1 : left.path > right.path ? 1 : 0,
   );
-}
-
-function assertString(value, field) {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`${field} 必须是非空字符串`);
-  }
-}
-
-function assertArray(value, field) {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${field} 必须是非空数组`);
-  }
-}
-
-function assertObject(value, field) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${field} 必须是对象`);
-  }
 }
 
 async function ensureReadable(path) {

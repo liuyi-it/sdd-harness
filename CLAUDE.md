@@ -2,7 +2,7 @@
 
 ## 项目结构与模块划分
 
-本仓库是一个基于 Node.js workspaces 的多包项目。核心流程在 `packages/core/src`，包括状态机、命令实现、安全校验和安装器；对应测试在 `packages/core/test`。宿主适配层分为 `packages/claude-code-plugin` 与 `packages/codex-plugin`，分别提供命令/技能清单与 Adapter。跨宿主契约测试放在 `packages/adapters-test`，端到端流程测试在 `test/e2e`。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目。
+本仓库是一个基于 Node.js workspaces 的多包项目。核心流程在 `packages/core/src`，包括状态机、命令实现、安全校验和安装器；对应测试在 `packages/core/test`。CLI 入口在 `packages/cli`，提供 `sdd` / `sdd-harness` 命令。Agent Adapter 层分为 `packages/claude-code-adapter`、`packages/codex-adapter`、`packages/opencode-adapter`，分别提供命令/技能清单与规则文件。`packages/codebase-memory` 负责内置托管 codebase-memory-mcp 及降级处理。`packages/agent-protocol` 定义 Agent Task Protocol 类型与校验。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目。
 
 ## Karpathy 风格执行规则
 
@@ -29,7 +29,7 @@
 
 ## 测试要求
 
-测试框架为 Vitest。单元测试使用 `*.test.ts` 命名，放在对应包的 `test` 目录或 `test/e2e`。行为变更或缺陷修复必须补测试，优先覆盖 Core 命令契约、插件文案生成和宿主适配一致性。
+测试框架为 Vitest。单元测试使用 `*.test.ts` 命名，放在对应包的 `test` 目录。行为变更或缺陷修复必须补测试，优先覆盖 Core 命令契约、CLI 输出格式和 Adapter 契约一致性。
 
 ## 提交与 PR 规范
 
@@ -37,10 +37,10 @@
 
 ## 额外约束
 
-不要提交密钥、凭据、生成产物或无关依赖变更。涉及插件行为时，同时检查两层入口：仓库初始化生成文件与 `packages/*-plugin` 自带技能/命令模板。
+不要提交密钥、凭据、生成产物或无关依赖变更。涉及 Adapter 行为时，同时检查 CLI 入口和 `packages/*-adapter` 自带命令/技能模板。
 
 ## 其他规则
 
-1. 原始需求文档在 docs/需求文档.md;
+1. 原始需求文档在 docs/三期需求文档.md;
 2. git commit 中的内容，请使用中文说明；
 3. 当前项目是**中文项目**，除给 AI 的 Prompt（skill、commands/\_.md 提示词）和代码中必要的英文（错误码 `E\__`、命令字面量 `sdd xxx`、schema 键、标识符）外，全项目中文化；
