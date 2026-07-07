@@ -25,16 +25,10 @@ git pull
 
 ### 3. 重新安装
 
-macOS / Linux / Windows Git Bash:
+macOS / Linux / Windows（Git Bash）:
 
 ```bash
 bash scripts/install.sh
-```
-
-Windows PowerShell（备选）:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ```
 
 ### 4. 更新 .sdd/config.yml

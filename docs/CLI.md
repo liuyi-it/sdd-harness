@@ -4,16 +4,10 @@
 
 ## 安装
 
-macOS / Linux / Windows Git Bash:
+macOS / Linux / Windows（Git Bash）:
 
 ```bash
 bash scripts/install.sh
-```
-
-Windows PowerShell（备选）:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ```
 
 ## 通用参数

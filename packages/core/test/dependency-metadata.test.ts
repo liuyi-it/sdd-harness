@@ -211,7 +211,7 @@ describe("仓库元数据与安装文档", () => {
     const readme = await readFile(join(process.cwd(), "README.md"), "utf8");
 
     expect(readme).toContain("bash scripts/install.sh");
-    expect(readme).toContain("scripts/install.ps1");
+    expect(readme).toContain("scripts/install.sh");
     expect(readme).toContain("git clone");
     expect(readme).not.toContain("npm install -g");
   });

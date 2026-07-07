@@ -6,6 +6,18 @@
 
 `sdd-harness` 不再是某个 Agent 的插件——CLI 是唯一确定性执行入口，不同 Agent 通过 Adapter 接入同一套 CLI 和协议。
 
+**重要：`sdd-harness` 是 AI Agent 的工程支架，不是独立工具。** CLI 负责状态机、校验、安全边界和审计记录，但需求分析、方案设计、任务拆解和代码实现均需要 AI Coding Agent 参与。脱离 AI Agent，CLI 只能完成 `sdd init` 和 `sdd status`。
+
+```
+CLI（确定性）                    AI Agent（智力）
+──────────────────────────────────────────────
+状态机 / 阶段流转               需求澄清与回答
+Schema 校验                     方案设计与选择
+Git delta 事实源                 任务拆解与粒度判断
+安全边界 / 范围约束              代码实现与测试编写
+审计记录 / 归档追踪              规格 / 设计制品生成
+```
+
 ---
 
 ## 支持的 Agent
@@ -35,11 +47,8 @@
 git clone https://github.com/liuyi-it/sdd-harness.git
 cd sdd-harness
 
-# macOS / Linux / Windows Git Bash
+# macOS / Linux / Windows（Git Bash）
 bash scripts/install.sh
-
-# Windows PowerShell（备选）
-powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ```
 
 > 本项目不发布 npm。安装脚本会在本地构建并通过 `npm link` 全局注册 `sdd` 和 `sdd-harness` 两个命令。
@@ -110,11 +119,8 @@ MCP 不可用时会自动降级为 fallback-file-scan，但系统会明确提示
 ## 卸载
 
 ```bash
-# macOS / Linux
+# macOS / Linux / Windows（Git Bash）
 bash scripts/uninstall.sh
-
-# Windows PowerShell
-powershell -File scripts/uninstall.ps1
 ```
 
 ---
