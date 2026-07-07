@@ -144,6 +144,26 @@ describe("GitIsolationManager", () => {
     ).toBe(first.baselineCommit);
   });
 
+  it("supports worktree paths that contain spaces", async () => {
+    const root = await repoFixture("with space");
+    const manager = new GitIsolationManager(root, {
+      createBranch: true,
+      createWorktree: true,
+      branchPattern: "sdd/<change-id>",
+      worktreeDir: ".sdd/work trees",
+    });
+
+    const workspace = await manager.ensure("add-cancel");
+
+    expect(workspace.worktreePath).toContain(".sdd/work trees/add-cancel");
+    expect(
+      execFileSync("git", ["branch", "--show-current"], {
+        cwd: workspace.businessRoot,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe("sdd/add-cancel");
+  });
+
   it("blocks reuse when the existing worktree HEAD no longer matches the recorded baseline", async () => {
     const root = await repoFixture("baseline");
     const manager = new GitIsolationManager(root, {

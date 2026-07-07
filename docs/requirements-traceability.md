@@ -49,3 +49,43 @@ git diff --check
 ```
 
 Windows 与 macOS 的宿主组合证据由 `.github/workflows/ci.yml` 产生；本地测试结果不能替代远程 Windows runner 结果。
+
+## 二期最终验收逐条核对
+
+说明：`docs/需求文档.md` 第 26 章当前实际列出 21 条验收项，下面按文档原文逐条映射实现与自动化证据。
+
+### 26.1 MVP0
+
+| 条目   | 验收内容                                                | 实现位置                                                     | 自动化证据                                           |
+| ------ | ------------------------------------------------------- | ------------------------------------------------------------ | ---------------------------------------------------- |
+| 26.1-1 | 插件包可安装到 Claude Code 项目                         | `scripts/install-claude.mjs`、`packages/claude-code-plugin/` | `install-scripts.test.ts`、`plugin-manifest.test.ts` |
+| 26.1-2 | 插件包可安装到 Codex 项目                               | `scripts/install-codex.mjs`、`packages/codex-plugin/`        | `install-scripts.test.ts`、`plugin-manifest.test.ts` |
+| 26.1-3 | 两个平台的 init 命令都能生成 `.sdd/`                    | `commands/init.ts`、`state/state-store.ts`                   | `init-status.test.ts`、`acceptance.test.ts`          |
+| 26.1-4 | 两个平台的 init 命令都能生成 `CLAUDE.md` 和 `AGENTS.md` | `install/project-installer.ts`、`packages/*-plugin/skills/`  | `init-status.test.ts`、`acceptance.test.ts`          |
+| 26.1-5 | `codebase-memory-mcp` 不可用时能降级                    | `codebase/codebase-adapter.ts`                               | `codebase-adapter.test.ts`、`acceptance.test.ts`     |
+| 26.1-6 | 两个平台的 status 命令都能输出相同状态                  | `commands/status.ts`、两端 Adapter                           | `adapter-contract.test.ts`、`acceptance.test.ts`     |
+| 26.1-7 | `state.json` 原子写入                                   | `state/state-store.ts`                                       | `state.test.ts`                                      |
+| 26.1-8 | 并发写命令会被 lock 阻断                                | `state/file-lock.ts`、写命令入口                             | `state.test.ts`、`acceptance.test.ts`                |
+| 26.1-9 | schema 校验可运行                                       | `schemas/`、`scripts/validate-schemas.mjs`                   | `schema-golden.test.ts`、`npm run validate:schemas`  |
+
+### 26.2 MVP1
+
+| 条目   | 验收内容                                         | 实现位置                                    | 自动化证据                                                   |
+| ------ | ------------------------------------------------ | ------------------------------------------- | ------------------------------------------------------------ |
+| 26.2-1 | 两个平台的 new 命令都能生成一致的 `spec.md`      | `commands/new.ts`、两端 Adapter             | `new.test.ts`、`acceptance.test.ts`                          |
+| 26.2-2 | BLOCKER 未回答不进入 design                      | `commands/new.ts`、`core.ts`                | `new.test.ts`、`acceptance.test.ts`                          |
+| 26.2-3 | 两个平台的 design 命令都能生成一致的 `design.md` | `commands/design.ts`、两端 Adapter          | `design-plan.test.ts`、`acceptance.test.ts`                  |
+| 26.2-4 | 两个平台的 plan 命令都能生成一致的 `tasks.md`    | `commands/plan.ts`、两端 Adapter            | `design-plan.test.ts`、`acceptance.test.ts`                  |
+| 26.2-5 | 每个 Task 有 Context Pack                        | `build/context-pack.ts`、`commands/plan.ts` | `design-plan.test.ts`、`workflow.test.ts`                    |
+| 26.2-6 | 重复执行不会静默覆盖人工修改                     | `ArtifactWriter`、阶段命令 candidate 逻辑   | `design-plan.test.ts`、`artifact-writing-regression.test.ts` |
+
+### 26.3 MVP2
+
+| 条目   | 验收内容                                      | 实现位置                                                  | 自动化证据                                          |
+| ------ | --------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------- |
+| 26.3-1 | 两个平台的 build 命令都能按任务执行           | `commands/build.ts`、两端 Adapter                         | `build.test.ts`、`acceptance.test.ts`               |
+| 26.3-2 | 两个平台的 verify 命令都能发现未完成需求      | `commands/verify.ts`、`quality/verify-report.ts`          | `quality-commands.test.ts`、`verify-report.test.ts` |
+| 26.3-3 | 两个平台的 review 命令都能发现无关修改        | `commands/review.ts`、`quality/review-report.ts`          | `quality-commands.test.ts`、`review-report.test.ts` |
+| 26.3-4 | 两个平台的 archive 命令都能生成一致的归档报告 | `commands/archive.ts`、`quality/traceability.ts`          | `quality-commands.test.ts`、`acceptance.test.ts`    |
+| 26.3-5 | 两个平台的 auto 命令都能从粗略需求跑完整流程  | `core.ts`、`commands/auto.ts`、`loop/`                    | `auto.test.ts`、`workflow.test.ts`                  |
+| 26.3-6 | ARCHIVED 后只读                               | `commands/archive.ts`、`commands/change-id.ts`、`core.ts` | `quality-commands.test.ts`、`acceptance.test.ts`    |
