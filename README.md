@@ -1,544 +1,135 @@
 # sdd-harness
 
-> 面向 **Claude Code** 和 **Codex** 的插件式 Spec-Driven Development（SDD）工作流框架。
+> CLI-first、Agent-agnostic、codebase-memory-powered、verification-gated 的 **Spec-Driven Development Agent Harness**。
 
-`sdd-harness` 把一句粗略的软件需求，转化为**可执行、可验证、可追踪**的开发流程，帮助 AI 编码工具按照稳定的工程步骤完成开发任务，而不是拿到需求就直接写代码。
+`sdd-harness` 是一个通用 CLI Harness，通过统一 CLI、`.sdd/` 事实源、内置托管的 codebase-memory-mcp、Generic Agent Protocol 和质量门禁，为多种 AI Coding Agent 提供统一的软件需求交付流程。
 
-第一版交付形态是**插件包 + 共享执行核心**，不发布独立 CLI。文档中的 `sdd init`、`sdd build` 等写法表示统一命令契约，在两个宿主中的触发方式不同：
-
-| 宿主        | 触发方式      | 示例                      |
-| ----------- | ------------- | ------------------------- |
-| Claude Code | slash command | `/sdd.init`、`/sdd.build` |
-| Codex       | 项目指令      | `sdd init`、`sdd build`   |
+`sdd-harness` 不再是某个 Agent 的插件——CLI 是唯一确定性执行入口，不同 Agent 通过 Adapter 接入同一套 CLI 和协议。
 
 ---
 
-## 目录
+## 支持的 Agent
 
-- [解决什么问题](#解决什么问题)
-- [核心特性](#核心特性)
-- [工作流程](#工作流程)
-- [安装与导入](#安装与导入)
-  - [方式一：一键安装到 Claude Code](#方式一一键安装到-claude-code)
-  - [方式二：一键安装到 Codex](#方式二一键安装到-codex)
-  - [方式三：手工导入到 Claude Code](#方式三手工导入到-claude-code)
-  - [方式四：手工导入到 Codex](#方式四手工导入到-codex)
-  - [从源码构建后导入](#从源码构建后导入)
-- [快速开始](#快速开始)
-- [配置示例](#配置示例)
-- [命令说明](#命令说明)
-- [生成的制品](#生成的制品)
-- [推荐使用方式](#推荐使用方式)
-- [常见问题](#常见问题)
-- [License](#license)
+| Agent              | 接入方式         | 能力等级   |
+| ------------------ | ---------------- | ---------- |
+| Claude Code        | Adapter (命令)   | Level 4/5  |
+| Codex              | Adapter (Skill)  | Level 4/5  |
+| OpenCode           | Adapter (规则)   | Level 4    |
+| Kimi Code          | 文档级           | Level 3/4  |
+| GitHub Copilot CLI | 文档级           | Level 3/4  |
+| 自研 Coding Agent  | Generic Protocol | 由实现决定 |
 
 ---
 
-## 解决什么问题
+## 快速开始
 
-在日常使用 Claude Code 或 Codex 时，AI 很容易直接根据一句需求开始写代码，导致：
+### 前置要求
 
-- 需求没有澄清清楚
-- 修改范围不可控
-- 缺少设计和任务拆解
-- 测试和验收不完整
-- 代码审查依赖人工兜底
-- 变更过程不可追踪
+- Node.js **22 及以上**版本
+- Git
+- 可选：`codebase-memory-mcp`（CLI 自动通过 npx 托管启动，无需手工安装）
 
-`sdd-harness` 通过强制的阶段化工作流和状态机来约束 AI 的行为，让每一次需求变更都经过澄清、设计、拆解、实现、验证、审查和归档，全过程留痕。
+### 安装
 
-**适用场景**
+```bash
+git clone https://github.com/liuyi-it/sdd-harness.git
+cd sdd-harness
 
-- 使用 Claude Code 或 Codex 开发企业项目，希望编码过程更可控
-- 希望 AI 在写代码前先做需求澄清和方案设计
-- 希望减少无关修改、过度设计和低质量实现
-- 希望每次需求变更都有文档记录，可验证、可审查、可归档
+# macOS / Linux
+bash scripts/install.sh
 
----
-
-## 核心特性
-
-### 1. 代码库感知
-
-初始化项目时建立当前项目的代码库上下文（优先使用 `codebase-memory-mcp`，不可用时自动降级为受限文件扫描），让后续需求分析、方案设计和任务拆解基于真实代码结构进行。
-
-如果当前是空项目，`init` 不会凭空假设目录规范，而是进入 `CLARIFYING`，要求先确认目录结构约定；如果是已有项目，则会扫描并固化当前目录规范，后续任务默认持续遵守。
-
-### 2. 需求澄清
-
-输入粗略需求后不会立即写代码，而是先进行需求分析，并自动提出需要确认的问题。存在未澄清问题时流程会停在 `CLARIFYING` 状态。
-
-完整需求会转换为内置 OpenSpec 语义的结构化制品：Requirement、Scenario、ADDED/MODIFIED/REMOVED delta 及对应 JSON 模型。规格格式、规范性关键字和场景完整性不通过时，流程不会进入设计阶段。
-
-### 3. 阶段化开发
-
-一次需求会被拆成多个清晰阶段，每个阶段都有明确目标和输出：
-
-```text
-new → design → plan → build → verify → review → archive
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 ```
 
-`plan` 会按每个 Requirement 生成严格依赖的 `RED → GREEN → REFACTOR → VERIFY` 原子任务链。`build` 要求宿主返回真实 TDD 证据：RED 至少包含一次观察到的预期失败，后续阶段必须通过，缺失或伪造证据会阻止状态推进。
+> 本项目不发布 npm。安装脚本会在本地构建并通过 `npm link` 全局注册 `sdd` 和 `sdd-harness` 两个命令。
 
-每个 build 任务都会显式注入项目规则快照：包括 `AGENTS.md` / `CLAUDE.md`、项目目录规范画像，以及对应哈希。规则或目录规范在 `plan` 之后发生变化时，Context Pack 会在 `build` 前自动刷新。
+### 使用
 
-### 4. 自动编排
-
-`auto` 命令是带审计记录的有界 Loop：从当前状态顺序推进，每次只调用一个单阶段命令，不绕过任何阶段自身的检查。运行信息会持久化到 `.sdd/loop/`，支持继续当前运行、`resume=<run-id>` 恢复指定运行，以及 `restart=true` 中止旧运行后重开。
-
-### 5. 可追踪制品与安全边界
-
-- 每次需求变更都会生成对应的文档和记录，统一存放在项目的 `.sdd/` 目录。
-- 状态、Loop、任务和质量报告均使用 `schemaVersion: "1.2.0"`；旧状态只通过显式迁移进入新版本。
-- 内置路径穿越防护、文件范围校验、只读 Git / 测试命令白名单；仓库内容与 MCP 输出**只作为数据**，不会被当作指令执行。
-- `verify` 和 `review` 会同时生成 Markdown 与 `*.v1.2.json` 机器可读报告；失败时也会先落盘报告再阻断状态推进。
-- `archive` 会检查 Requirement → Scenario → 四阶段任务 → 修改文件 → 测试命令的完整追踪链；归档前还会重新检查报告摘要、Git 漂移和任务范围。
-- `review` 会扫描 current-run diff、任务结果和待写制品中的敏感信息，命中 GitHub token、私钥、JWT、数据库密码等规则时生成 `SECRET_LEAK` 并阻断归档。
-- OpenSpec `v1.4.1` 与 Superpowers `v6.1.1` 的固定上游快照保存在 `vendor/`，逐文件清单、符号链接、许可证和 commit 均由发布校验检查，不会自动跟随 latest。
-
-### 6. Git 隔离工作区
-
-启用 `workflow.gitIsolation.createWorktree` 后，业务代码会在独立分支和 worktree 中执行，主项目根目录仍是 `.sdd/` 流程制品的唯一事实源。
-
-- `build`、`verify`、`review` 和 `archive` 使用 worktree 作为业务目录。
-- `state.json` 记录 `branchName`、`worktreePath` 和 `baselineCommit`。
-- `archive-report.md` 记录分支、worktree 路径和最终 `HEAD`。
-- 遇到脏 worktree、基线漂移、路径占用或 Git 注册不一致时直接阻断。
-- 工具不会自动 `reset`、`clean`、`merge`、`push` 或删除 worktree，后续清理由用户显式处理。
+```bash
+cd my-project
+sdd init
+sdd auto "实现订单取消功能"
+```
 
 ---
 
 ## 工作流程
 
 ```text
-初始化项目 (init)
-      ↓
-创建 / 澄清需求 (new)
-      ↓
-生成设计方案 (design)
-      ↓
-拆解开发任务 (plan)
-      ↓
-实现代码 (build)
-      ↓
-验证功能 (verify)
-      ↓
-审查代码 (review)
-      ↓
-归档记录 (archive)
+初始化项目 (init) → 创建需求 (new) → 设计方案 (design) → 拆解任务 (plan)
+                  → 实现代码 (build) → 验证 (verify) → 审查 (review) → 归档 (archive)
 ```
 
-对应的状态机主路径：
+状态机主路径：
 
 ```text
 NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
                 → BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
 ```
 
-补充说明：
-
-- 空项目 `init` 可能先进入 `CLARIFYING`，等待确认目录结构约定。
-- `auto` 运行期间会同步维护 `activeLoop`、运行历史和每步审计记录。
-- `build` 会优先使用 Git delta 裁决最终文件变更，再写入运行级任务结果制品。
-- 启用 `workflow.gitIsolation.createWorktree` 后，业务代码在 `.sdd/worktrees/<change-id>` 中执行；`.sdd/` 仍固定写回主项目根目录。
-
----
-
-## 安装与导入
-
-### 前置要求
-
-- Node.js **20 及以上**版本（macOS 或 Windows）
-- Claude Code 或 Codex 宿主环境
-- 可选：`codebase-memory-mcp v0.8.1`（MCP 不可用时自动降级为受限文件扫描）
-
-> sdd-harness 是**插件**而非独立 CLI：所有命令都通过宿主环境（Claude Code / Codex）触发，宿主在加载插件时会创建对应 Adapter 并注入 `TaskExecutor` 与可选的 `McpTransport`。
-
-如果你在自定义宿主或测试环境中直接使用插件包，可以显式创建适配器并注入运行时依赖：
-
-```ts
-import { CodexAdapter } from "@sdd-harness/codex-plugin";
-
-const adapter = new CodexAdapter({
-  taskExecutor,
-  mcpTransport, // 可选
-});
-```
-
-Claude Code 插件包同理：
-
-```ts
-import { ClaudeCodeAdapter } from "@sdd-harness/claude-code-plugin";
-
-const adapter = new ClaudeCodeAdapter({
-  taskExecutor,
-  mcpTransport, // 可选
-});
-```
-
----
-
-### 方式一：一键安装到 Claude Code
-
-在当前仓库根目录执行：
-
-```bash
-node scripts/install-claude.mjs
-```
-
-这个脚本会先检查当前源码仓库是否可安装：
-
-- 两个插件 manifest 是否存在且版本一致
-- `dist/` 构建产物是否存在
-- 根目录 `.claude-plugin/marketplace.json` 是否可用
-
-脚本不会直接写入 Claude Code 的宿主内部安装状态，而是把最后一步宿主内安装/重载命令打印出来。也就是说，它会完成本地准备，但仍需你在 Claude Code 会话中执行：
-
-```text
-/plugin marketplace add /你的/sdd-harness/绝对路径
-/plugin install sdd-harness@sdd-harness
-```
-
-完成最后一步宿主内安装/重载后，可用以下命令验证：
-
-```text
-/sdd.init
-/sdd.status
-```
-
-> 适用范围：仅支持把“当前这份源码版本”安装到 Claude Code，不负责 npm / release 包安装。
-
----
-
-### 方式二：一键安装到 Codex
-
-在当前仓库根目录执行：
-
-```bash
-node scripts/install-codex.mjs
-```
-
-这个脚本会自动完成以下动作：
-
-- 校验当前仓库的 Codex 插件布局与构建产物
-- 把 `packages/codex-plugin` 复制到 `~/.codex/plugins/sdd-harness`
-- 创建或更新 `~/.agents/plugins/marketplace.json`
-- 幂等覆盖已有的 `sdd-harness` 本地 marketplace 条目
-
-安装完成后，重启 Codex，并在目标项目根目录验证：
-
-```text
-sdd init
-sdd status
-```
-
-> 说明：该脚本会修改用户目录下的 `~/.codex/plugins/sdd-harness` 和 `~/.agents/plugins/marketplace.json`。如果你更新了当前仓库代码，重新执行一次脚本即可覆盖本地安装内容。
-
----
-
-### 方式三：手工导入到 Claude Code
-
-Claude Code 通过 **plugin marketplace** 机制加载插件。本仓库根目录已提供 `.claude-plugin/marketplace.json`，指向 `packages/claude-code-plugin`。
-
-**1. 添加 marketplace**
-
-在 Claude Code 会话中执行（任选其一）：
-
-```text
-# 从 GitHub 仓库添加
-/plugin marketplace add liuyi-it/sdd-harness
-
-# 或从本地克隆的目录添加
-/plugin marketplace add /path/to/sdd-harness
-```
-
-**2. 安装插件**
-
-```text
-/plugin install sdd-harness@sdd-harness
-```
-
-或直接打开交互式面板选择安装：
-
-```text
-/plugin
-```
-
-**3. 验证**
-
-安装后重启 / 重载会话，输入 `/sdd.` 应能看到补全出的 slash command：
-
-```text
-/sdd.init  /sdd.new  /sdd.design  /sdd.plan  /sdd.build
-/sdd.verify  /sdd.review  /sdd.archive  /sdd.auto  /sdd.status
-```
-
-在目标项目根目录执行 `/sdd.init` 即可开始。
-
-> 说明：插件命令定义在 `packages/claude-code-plugin/commands/sdd.*.md`，技能约束在 `packages/claude-code-plugin/skills/sdd-harness/SKILL.md`。
-
----
-
-### 方式四：手工导入到 Codex
-
-Codex 通过 **plugin marketplace** 加载插件。当前仓库里的 Codex 插件目录是 `packages/codex-plugin`，清单文件是 `packages/codex-plugin/.codex-plugin/plugin.json`。
-
-推荐使用 **personal marketplace**，这样不会改动目标项目仓库本身。
-
-**1. 准备本地插件目录**
-
-```bash
-git clone https://github.com/liuyi-it/sdd-harness.git
-```
-
-把 `packages/codex-plugin` 复制到 Codex 的本地插件目录，例如：
-
-macOS:
-
-```bash
-mkdir -p ~/.codex/plugins
-cp -R /path/to/sdd-harness/packages/codex-plugin ~/.codex/plugins/sdd-harness
-```
-
-Windows PowerShell:
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME/.codex/plugins" | Out-Null
-Copy-Item -Recurse "C:/path/to/sdd-harness/packages/codex-plugin" "$HOME/.codex/plugins/sdd-harness"
-```
-
-**2. 注册 marketplace**
-
-在 `~/.agents/plugins/marketplace.json` 增加一个本地插件入口，`source.path` 指向刚才复制后的目录。
-
-示例：
-
-```json
-{
-  "name": "local-personal",
-  "plugins": [
-    {
-      "name": "sdd-harness",
-      "source": {
-        "source": "local",
-        "path": "./.codex/plugins/sdd-harness"
-      },
-      "policy": {
-        "installation": "AVAILABLE",
-        "authentication": "ON_INSTALL"
-      },
-      "category": "Productivity"
-    }
-  ]
-}
-```
-
-> `source.path` 必须以 `./` 开头，并且相对 `~/.agents/plugins/marketplace.json` 所在目录解析。
-
-**3. 验证**
-
-重启 Codex 后，插件应出现在本地 marketplace 中。进入目标项目根目录执行：
-
-```text
-sdd init
-sdd status
-```
-
-能返回项目状态即表示导入成功。
-
-如果只是修改了插件内容，需要重新复制 `packages/codex-plugin` 到 `~/.codex/plugins/sdd-harness`，然后重启 Codex 让本地安装重新加载。
-
----
-
-### 从源码构建后导入
-
-若需要本地开发或改动 Core 后再导入，先在仓库根目录构建产物：
-
-```bash
-# 安装依赖（npm workspaces，需 Node ≥ 20）
-npm install
-
-# 编译所有包（生成各插件包的 dist/）
-npm run build
-
-# 可选：跑测试确认核心行为
-npm test
-```
-
-构建完成后：
-
-- **Claude Code**：按[方式一](#方式一一键安装到-claude-code)用本地路径 `/plugin marketplace add /path/to/sdd-harness` 添加。
-- **Codex**：按[方式二](#方式二一键安装到-codex)把 `packages/codex-plugin` 复制到本地插件目录，并更新 `~/.agents/plugins/marketplace.json`。
-
-> 卸载（当前 MVP 为手工方式）分两层：
->
-> 1. 清理项目内集成文件：`.sdd/`、`.claude/commands/sdd.*`、`.claude/skills/sdd-harness/`、`.codex/skills/sdd-harness/`；
-> 2. 清理宿主侧插件安装：删除 Claude marketplace 安装项，或删除 Codex 本地插件目录 `~/.codex/plugins/sdd-harness` 及其 `~/.agents/plugins/marketplace.json` 条目。  
->    重复执行 `init` 会保留用户手改过的文件，仅补回缺失的生成文件。
-
----
-
-## 快速开始
-
-### 1. 初始化项目
-
-在目标项目根目录执行，会建立代码库上下文并生成 SDD 工作目录：
-
-```text
-Claude Code: /sdd.init
-Codex:       sdd init
-```
-
-### 2. 自动执行需求
-
-一条命令跑完整流程（需求澄清 → 规格 → 设计 → 拆解 → 实现 → 验证 → 审查 → 归档）：
-
-```text
-Claude Code: /sdd.auto "实现订单取消功能"
-Codex:       sdd auto "实现订单取消功能"
-```
-
-遇到阻塞（如需求需要澄清）时会暂停，并提示下一步操作。
-
-### 3. 查看当前状态
-
-```text
-Claude Code: /sdd.status
-Codex:       sdd status
-```
-
-示例输出：
-
-```text
-Project: order-service
-Current Change: add-order-cancel
-Current Phase: PLAN_READY
-Index Status: READY
-
-Next:
-sdd build
-```
-
-### 手动控制每个阶段
-
-不想全自动时，可逐阶段执行：
-
-```text
-Claude Code                       Codex
-/sdd.new "实现订单取消功能"        sdd new "实现订单取消功能"
-/sdd.design                       sdd design
-/sdd.plan                         sdd plan
-/sdd.build                        sdd build
-/sdd.verify                       sdd verify
-/sdd.review                       sdd review
-/sdd.archive                      sdd archive
-```
-
----
-
-## 配置示例
-
-`sdd init` 会安装 `.sdd/config.yml`。常用配置如下：
-
-```yaml
-schemaVersion: "1.2.0"
-
-workflow:
-  gitIsolation:
-    createBranch: false
-    createWorktree: false
-    branchPattern: sdd/<change-id>
-    worktreeDir: .sdd/worktrees
-
-security:
-  blockOutsideRepo: true
-  blockSymlinksOutsideRepo: true
-  redactSecretsInLogs: true
-```
-
-如果要让业务修改进入隔离 worktree，将 `workflow.gitIsolation.createWorktree` 设为 `true` 即可；系统会自动启用 `createBranch`。
-
 ---
 
 ## 命令说明
 
-| 命令      | 作用                                     | Claude Code        | Codex             |
-| --------- | ---------------------------------------- | ------------------ | ----------------- |
-| `init`    | 初始化项目并建立代码库上下文             | `/sdd.init`        | `sdd init`        |
-| `auto`    | 自动执行完整 SDD 流程                    | `/sdd.auto "需求"` | `sdd auto "需求"` |
-| `new`     | 创建需求变更，做需求分析、澄清与规格生成 | `/sdd.new "需求"`  | `sdd new "需求"`  |
-| `design`  | 基于规格生成设计方案                     | `/sdd.design`      | `sdd design`      |
-| `plan`    | 基于设计拆解开发任务                     | `/sdd.plan`        | `sdd plan`        |
-| `build`   | 根据任务计划实现代码                     | `/sdd.build`       | `sdd build`       |
-| `verify`  | 验证任务完成度与功能边界                 | `/sdd.verify`      | `sdd verify`      |
-| `review`  | 审查代码质量、修改范围与实现合理性       | `/sdd.review`      | `sdd review`      |
-| `archive` | 归档当前需求变更                         | `/sdd.archive`     | `sdd archive`     |
-| `status`  | 查看当前 SDD 状态与下一步建议            | `/sdd.status`      | `sdd status`      |
+| 命令      | 作用                             |
+| --------- | -------------------------------- |
+| `init`    | 初始化项目，建立代码库上下文     |
+| `auto`    | 自动执行完整 SDD 流程            |
+| `new`     | 创建需求变更，需求分析与规格生成 |
+| `design`  | 基于规格生成设计方案             |
+| `plan`    | 基于设计拆解开发任务             |
+| `build`   | 根据任务计划实现代码             |
+| `verify`  | 验证任务完成度与功能边界         |
+| `review`  | 审查代码质量与实现合理性         |
+| `archive` | 归档当前需求变更                 |
+| `status`  | 查看当前 SDD 状态与下一步建议    |
 
-**通用参数**：`--json`、`--non-interactive`、`--force`、`--timeout <seconds>`、`--change <id>`、`--verbose`、`--help`。`new` / `auto` 允许第一个非选项参数直接作为自然语言需求。
+**通用参数**：`--json`、`--cwd <path>`、`--change <id>`、`--timeout <s>`、`--non-interactive`、`--force`、`--verbose`、`--help`、`--version`
+
+### codebase 命令
+
+| 命令                     | 作用                          |
+| ------------------------ | ----------------------------- |
+| `sdd codebase status`    | 显示 codebase 提供者与状态    |
+| `sdd codebase doctor`    | 诊断 codebase-memory-mcp 健康 |
+| `sdd codebase index`     | 手动触发代码库索引            |
+| `sdd codebase query <q>` | 结构化代码库查询              |
+| `sdd codebase rebuild`   | 重建代码库索引                |
+
+---
+
+## 内置 codebase-memory-mcp
+
+默认情况下，用户无需手工安装 MCP。`sdd init` 会自动通过 `npx` 启动托管的 `codebase-memory-mcp`。
+
+MCP 不可用时会自动降级为 fallback-file-scan，但系统会明确提示用户执行 `sdd codebase doctor` 诊断。**绝不静默降级。**
+
+---
+
+## 卸载
+
+```bash
+# macOS / Linux
+bash scripts/uninstall.sh
+
+# Windows PowerShell
+powershell -File scripts/uninstall.ps1
+```
 
 ---
 
 ## 生成的制品
 
-`sdd-harness` 会为每次需求变更生成对应记录，统一存放在项目的 `.sdd/` 目录：
+所有 SDD 制品统一存放在项目的 `.sdd/` 目录：
 
 - 需求说明与澄清问题
-- OpenSpec delta、需求规格和 `spec.model.json`
-- 设计方案
-- 任务拆解、测试计划和每个任务的 Context Pack
+- OpenSpec delta、需求规格
+- 设计方案与任务拆解
+- 每个任务的 Context Pack
 - 运行级任务结果与 TDD 证据
-- `verify-report.md` / `verify-report.v1.2.json`
-- `review-report.md` / `review-report.v1.2.json`
-- `traceability.md` 与 `archive-report.md`
-- `.sdd/loop/runs/*.json` 自动编排审计记录
-- 可选的 `workspace` 元数据：分支、worktree 路径和基线提交
-
-每个 Markdown 制品都配 `*.meta.json` 记录输入摘要与 SHA-256；重复运行相同输入会写 `*.candidate.md` 而非直接覆盖。
-
----
-
-## 推荐使用方式
-
-**首次接入项目**
-
-```text
-sdd init
-```
-
-**日常开发需求**
-
-```text
-sdd auto "你的需求描述"
-```
-
-**复杂需求或高风险变更**（逐阶段把控）
-
-```text
-sdd new "你的需求描述"
-sdd design
-sdd plan
-sdd build
-sdd verify
-sdd review
-sdd archive
-```
-
----
-
-## 常见问题
-
-**Q：安装后 `/sdd.*` 命令不出现？**
-确认已 `/plugin install sdd-harness@sdd-harness` 并重载会话；本地路径添加 marketplace 时需指向仓库根目录（含 `.claude-plugin/marketplace.json`）。
-
-**Q：没有 `codebase-memory-mcp` 能用吗？**
-可以。MCP 不可用时会自动降级为受限文件扫描（跳过 `.git`、`node_modules`、`dist` 等目录），功能可用但代码库上下文精度略低。
-
-**Q：流程卡在 `CLARIFYING` / `PAUSED` / `FAILED`？**
-这是设计行为——存在未澄清问题、被中断或阶段校验失败时会停下。执行 `sdd status` 查看 Core 给出的恢复命令。
-
-**Q：启用 worktree 后会自动合并或清理分支吗？**
-不会。`sdd-harness` 只创建或安全复用隔离工作区，并在归档报告中记录最终状态；合并、推送和清理都需要用户显式执行。
+- verify / review / archive 报告
+- Loop 自动编排审计记录
 
 ---
 
