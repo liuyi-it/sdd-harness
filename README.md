@@ -25,6 +25,7 @@
   - [方式四：手工导入到 Codex](#方式四手工导入到-codex)
   - [从源码构建后导入](#从源码构建后导入)
 - [快速开始](#快速开始)
+- [配置示例](#配置示例)
 - [命令说明](#命令说明)
 - [生成的制品](#生成的制品)
 - [推荐使用方式](#推荐使用方式)
@@ -88,10 +89,22 @@ new → design → plan → build → verify → review → archive
 ### 5. 可追踪制品与安全边界
 
 - 每次需求变更都会生成对应的文档和记录，统一存放在项目的 `.sdd/` 目录。
-- 状态文件采用原子写入 + 备份恢复，绝不猜测状态。
+- 状态、Loop、任务和质量报告均使用 `schemaVersion: "1.2.0"`；旧状态只通过显式迁移进入新版本。
 - 内置路径穿越防护、文件范围校验、只读 Git / 测试命令白名单；仓库内容与 MCP 输出**只作为数据**，不会被当作指令执行。
-- `verify` 和 `archive` 会检查 Requirement → Scenario → 四阶段任务 → 修改文件 → 测试命令的完整追踪链；归档前还会重新检查报告摘要、Git 漂移和任务范围。
+- `verify` 和 `review` 会同时生成 Markdown 与 `*.v1.2.json` 机器可读报告；失败时也会先落盘报告再阻断状态推进。
+- `archive` 会检查 Requirement → Scenario → 四阶段任务 → 修改文件 → 测试命令的完整追踪链；归档前还会重新检查报告摘要、Git 漂移和任务范围。
+- `review` 会扫描 current-run diff、任务结果和待写制品中的敏感信息，命中 GitHub token、私钥、JWT、数据库密码等规则时生成 `SECRET_LEAK` 并阻断归档。
 - OpenSpec `v1.4.1` 与 Superpowers `v6.1.1` 的固定上游快照保存在 `vendor/`，逐文件清单、符号链接、许可证和 commit 均由发布校验检查，不会自动跟随 latest。
+
+### 6. Git 隔离工作区
+
+启用 `workflow.gitIsolation.createWorktree` 后，业务代码会在独立分支和 worktree 中执行，主项目根目录仍是 `.sdd/` 流程制品的唯一事实源。
+
+- `build`、`verify`、`review` 和 `archive` 使用 worktree 作为业务目录。
+- `state.json` 记录 `branchName`、`worktreePath` 和 `baselineCommit`。
+- `archive-report.md` 记录分支、worktree 路径和最终 `HEAD`。
+- 遇到脏 worktree、基线漂移、路径占用或 Git 注册不一致时直接阻断。
+- 工具不会自动 `reset`、`clean`、`merge`、`push` 或删除 worktree，后续清理由用户显式处理。
 
 ---
 
@@ -354,8 +367,8 @@ npm test
 
 构建完成后：
 
-- **Claude Code**：按[方式一](#方式一在-claude-code-中导入推荐)用本地路径 `/plugin marketplace add /path/to/sdd-harness` 添加。
-- **Codex**：按[方式二](#方式二在-codex-中导入)把 `packages/codex-plugin` 复制到本地插件目录，并更新 `~/.agents/plugins/marketplace.json`。
+- **Claude Code**：按[方式一](#方式一一键安装到-claude-code)用本地路径 `/plugin marketplace add /path/to/sdd-harness` 添加。
+- **Codex**：按[方式二](#方式二一键安装到-codex)把 `packages/codex-plugin` 复制到本地插件目录，并更新 `~/.agents/plugins/marketplace.json`。
 
 > 卸载（当前 MVP 为手工方式）分两层：
 >
@@ -423,6 +436,30 @@ Claude Code                       Codex
 
 ---
 
+## 配置示例
+
+`sdd init` 会安装 `.sdd/config.yml`。常用配置如下：
+
+```yaml
+schemaVersion: "1.2.0"
+
+workflow:
+  gitIsolation:
+    createBranch: false
+    createWorktree: false
+    branchPattern: sdd/<change-id>
+    worktreeDir: .sdd/worktrees
+
+security:
+  blockOutsideRepo: true
+  blockSymlinksOutsideRepo: true
+  redactSecretsInLogs: true
+```
+
+如果要让业务修改进入隔离 worktree，将 `workflow.gitIsolation.createWorktree` 设为 `true` 即可；系统会自动启用 `createBranch`。
+
+---
+
 ## 命令说明
 
 | 命令      | 作用                                     | Claude Code        | Codex             |
@@ -447,12 +484,15 @@ Claude Code                       Codex
 `sdd-harness` 会为每次需求变更生成对应记录，统一存放在项目的 `.sdd/` 目录：
 
 - 需求说明与澄清问题
-- 需求规格
+- OpenSpec delta、需求规格和 `spec.model.json`
 - 设计方案
-- 任务拆解与测试计划
-- 验证报告
-- 审查报告
-- 归档报告
+- 任务拆解、测试计划和每个任务的 Context Pack
+- 运行级任务结果与 TDD 证据
+- `verify-report.md` / `verify-report.v1.2.json`
+- `review-report.md` / `review-report.v1.2.json`
+- `traceability.md` 与 `archive-report.md`
+- `.sdd/loop/runs/*.json` 自动编排审计记录
+- 可选的 `workspace` 元数据：分支、worktree 路径和基线提交
 
 每个 Markdown 制品都配 `*.meta.json` 记录输入摘要与 SHA-256；重复运行相同输入会写 `*.candidate.md` 而非直接覆盖。
 
@@ -496,6 +536,9 @@ sdd archive
 
 **Q：流程卡在 `CLARIFYING` / `PAUSED` / `FAILED`？**
 这是设计行为——存在未澄清问题、被中断或阶段校验失败时会停下。执行 `sdd status` 查看 Core 给出的恢复命令。
+
+**Q：启用 worktree 后会自动合并或清理分支吗？**
+不会。`sdd-harness` 只创建或安全复用隔离工作区，并在归档报告中记录最终状态；合并、推送和清理都需要用户显式执行。
 
 ---
 
