@@ -1,7 +1,14 @@
 #!/usr/bin/env node
-// sdd / sdd-harness CLI 入口
+// sdd / sdd-harness CLI 入口 — 参数解析、命令路由、输出格式化
 import { parseArgs } from "node:util";
+import { Core, type CommandResult } from "@sdd-harness/core";
 import { ExitCode } from "./exit-codes.js";
+import { outputJson, outputText } from "./json-output.js";
+import { runInit } from "./commands/init.js";
+import { runStatus } from "./commands/status.js";
+import { runNew } from "./commands/new.js";
+import { runDesign } from "./commands/design.js";
+import { runPlan } from "./commands/plan.js";
 
 const PKG_VERSION = "0.1.0";
 
@@ -82,9 +89,46 @@ async function main(): Promise<void> {
     process.exit(ExitCode.INVALID_ARGS);
   }
 
-  // 后续阶段实现实际命令分发
-  console.log(`Command: ${command} (not yet implemented)`);
-  process.exit(ExitCode.SUCCESS);
+  const core = new Core();
+  const cwd = values.cwd ?? process.cwd();
+  const json = values.json ?? false;
+  const extraArgs: Record<string, unknown> = {};
+  if (values.change) extraArgs.change = values.change;
+  if (values.timeout) extraArgs.timeout = values.timeout;
+  if (values["non-interactive"]) extraArgs["non-interactive"] = true;
+  if (values.force) extraArgs.force = true;
+  if (values.verbose) extraArgs.verbose = true;
+
+  let result: CommandResult;
+
+  switch (command) {
+    case "init":
+      result = await runInit(core, cwd, extraArgs, undefined);
+      break;
+    case "status":
+      result = await runStatus(core, cwd, undefined);
+      break;
+    case "new": {
+      const requirement = positionals.slice(1).join(" ") || "";
+      result = await runNew(core, cwd, requirement, extraArgs, undefined);
+      break;
+    }
+    case "design":
+      result = await runDesign(core, cwd, extraArgs, undefined);
+      break;
+    case "plan":
+      result = await runPlan(core, cwd, extraArgs, undefined);
+      break;
+    default:
+      // build / verify / review / archive / auto — 后续阶段实现
+      console.log(`Command: ${command} (not yet implemented)`);
+      process.exit(ExitCode.SUCCESS);
+  }
+
+  if (json) outputJson(result);
+  else outputText(result);
+
+  process.exit(result.exitCode);
 }
 
 main().catch((err) => {

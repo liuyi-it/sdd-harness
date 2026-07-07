@@ -43,8 +43,8 @@ describe("sdd CLI", () => {
     expect(() => sdd("unknown-command")).toThrow();
   });
 
-  it("已知命令返回成功退出码（骨架未实现）", () => {
+  it("status 命令返回 Structured 状态", () => {
     const out = sdd("status");
-    expect(out).toContain("not yet implemented");
+    expect(out).toContain("State:");
   });
 });
