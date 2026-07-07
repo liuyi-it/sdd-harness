@@ -621,11 +621,14 @@ while true:
 
 ## 9. Phase III-F (P5): 文档适配 + 跨平台完善
 
-### 9.1 文档清单
+### 9.1 文档变更总览
+
+三期文档工作分为**新增**和**更新**两类，总计 26 项。
+
+#### 9.1.1 新增文档（19项）
 
 | 文档 | 阶段 | 说明 |
 |------|------|------|
-| `README.md` | III-A | CLI-first Universal SDD Agent Harness |
 | `docs/CLI.md` | III-A | CLI 完整命令参考 |
 | `docs/codebase-memory-mcp.md` | III-B | MCP 托管说明 |
 | `docs/codebase-context.md` | III-B | 代码库上下文在各阶段的使用 |
@@ -633,6 +636,7 @@ while true:
 | `docs/AGENT_PROTOCOL.md` | III-C | Agent 协议说明 |
 | `docs/AGENT_CAPABILITIES.md` | III-C | Agent 能力等级 |
 | `docs/BUILD_AGENT_PROTOCOL.md` | III-C | Build 阶段协议 |
+| `docs/adapters/` (目录) | III-D | adapter 文档目录 |
 | `docs/adapters/claude-code.md` | III-D | Claude Code 接入 |
 | `docs/adapters/codex.md` | III-D | Codex 接入 |
 | `docs/adapters/opencode.md` | III-D | OpenCode 接入 |
@@ -642,6 +646,21 @@ while true:
 | `docs/migration-phase-3.md` | III-A | 二期→三期迁移指南 |
 | `docs/windows.md` | III-F | Windows 注意事项 |
 | `docs/linux.md` | III-F | Linux 注意事项 |
+| `docs/macos.md` | III-F | macOS 注意事项 |
+| `docs/superpowers/specs/2026-07-07-phase-iii-design.md` | III-A | 三期设计文档（本次产出） |
+
+#### 9.1.2 更新已有文档（7项）
+
+| 文档 | 阶段 | 变更说明 |
+|------|------|---------|
+| `README.md` | III-A | 重写：定位从"插件型 Harness"变为"CLI-first Universal SDD Agent Harness"；快速开始改为 `npm install -g @sdd-harness/cli`；新增 Agent 支持表格、codebase-memory 说明；Node.js 要求改为 >=22 |
+| `docs/architecture.md` | III-A | 更新架构图：从 `core → plugin` 两层变为 `core → cli → agent-protocol → adapters` 四层；新增 codebase-memory 模块；删除 plugin.json entry 相关说明 |
+| `docs/command-contract.md` | III-A | 重写：命令契约从"插件宿主指令"改为"CLI 命令契约"；新增通用参数（--json/--cwd/--non-interactive 等）；新增 exitCode 映射表；新增 codebase 子命令 |
+| `docs/plugin-installation.md` | III-A | **删除或归档**：插件安装概念不再适用，内容合并到 `docs/CLI.md`（安装章节）和 `docs/migration-phase-3.md`（迁移步骤）；或改为"历史参考"标注 |
+| `docs/security.md` | III-D | 新增三个安全章节：CLI 安全（禁止 shell=true/eval）、Agent 安全（forbiddenFiles/Git delta 事实源/不可信上下文）、codebase-memory 安全（路径白名单/prompt injection guard） |
+| `docs/schemas.md` | III-C | 新增三期 Schema 清单（cli-command-result / codebase-* / agent-* / build-* 等 11 个 schema）；更新 schema 版本号说明 |
+| `docs/state-machine.md` | III-A | 新增状态：INDEX_READY（codebase 就绪）、CLARIFYING（需澄清）；更新状态转换图，标注哪些状态由 codebase-memory 降级影响 |
+| `docs/requirements-traceability.md` | III-F | 新增三期验收映射（36 项验收标准 → 各阶段实现 → 测试覆盖） |
 | `docs/macos.md` | III-F | macOS 注意事项 |
 | `THIRD_PARTY_NOTICES.md` | III-B | codebase-memory-mcp 口径更新 |
 
@@ -709,14 +728,22 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 
 ### 9.8 验收标准
 
-1. 所有必选文档存在且内容正确
-2. README 定位更新
-3. migration-phase-3.md 包含完整迁移步骤
-4. CI 矩阵覆盖三平台 + Node 22
-5. validate:release 覆盖全部 13 项
-6. THIRD_PARTY_NOTICES.md 更新
-7. 全仓库不含 "Node 20" 支持表述
-8. Kimi Code / Copilot CLI 文档完整
+1. 19 项新增文档全部存在且内容正确
+2. 7 项已有文档全部更新，无残留二期口径
+3. `README.md` 定位更新为 CLI-first Universal SDD Agent Harness
+4. `docs/architecture.md` 架构图反映新的四层结构
+5. `docs/command-contract.md` 改为 CLI 命令契约
+6. `docs/plugin-installation.md` 已删除或标注为历史参考
+7. `docs/security.md` 包含 CLI/Agent/MCP 三个新安全章节
+8. `docs/schemas.md` 列出全部三期新增 schema
+9. `docs/state-machine.md` 包含 INDEX_READY 等新状态
+10. `docs/requirements-traceability.md` 包含三期验收映射
+11. `migration-phase-3.md` 包含完整迁移步骤
+12. CI 矩阵覆盖三平台 + Node 22
+13. validate:release 覆盖全部 13 项
+14. THIRD_PARTY_NOTICES.md 更新 codebase-memory-mcp 口径
+15. 全仓库不含 "Node 20" 支持表述
+16. Kimi Code / Copilot CLI 文档完整（文档级交付）
 
 ---
 
@@ -758,6 +785,15 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 34. 插件不再依赖执行 src/index.ts
 35. README 定位更新为 CLI-first Universal SDD Agent Harness
 36. THIRD_PARTY_NOTICES.md 更新 codebase-memory-mcp 内置托管口径
+37. docs/architecture.md 架构更新为 core → cli → agent-protocol → adapters 四层
+38. docs/command-contract.md 改为 CLI 命令契约
+39. docs/plugin-installation.md 已删除或归档为历史参考
+40. docs/security.md 新增 CLI/Agent/MCP 安全章节
+41. docs/schemas.md 列出全部三期新增 Schema
+42. docs/state-machine.md 包含 INDEX_READY 等新状态
+43. docs/requirements-traceability.md 包含三期验收映射
+44. docs/migration-phase-3.md 包含完整迁移步骤
+45. 19 项新增文档 + 7 项已有文档更新全部完成
 
 ---
 
