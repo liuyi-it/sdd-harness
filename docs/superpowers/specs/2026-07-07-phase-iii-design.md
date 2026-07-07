@@ -32,6 +32,7 @@
 | 包命名 | 直接重命名为 *-adapter，不保留旧名，不考虑旧版兼容 |
 | Node.js 基线 | 从 `>=20` 升级到 `>=22` |
 | 版本 | 所有包统一 `0.1.0` |
+| 分发方式 | **不发布 npm**，通过仓库自带一键安装脚本 `scripts/install.sh` 全局安装 |
 
 ## 3. 包变更总览
 
@@ -56,8 +57,70 @@
 - `packages/core/package.json`: 同上
 - 所有新建包: `engines.node` 设为 `">=22"`
 - `tsconfig.json`: 新增 references 指向 cli、agent-protocol、codebase-memory 及各 adapter
+- 新增 `scripts/install.sh`：一键全局安装脚本
+- 新增 `scripts/uninstall.sh`：一键卸载脚本
 
-### 4.2 packages/cli 结构
+### 4.2 一键安装脚本
+
+`scripts/install.sh`:
+
+```bash
+#!/usr/bin/env bash
+# sdd-harness 一键全局安装脚本
+# 用法: bash scripts/install.sh
+set -euo pipefail
+
+echo "=== sdd-harness 安装 ==="
+
+# 检查 Node.js 版本
+NODE_VERSION=$(node -v | cut -d'v' -f2 | cut -d'.' -f1)
+if [ "$NODE_VERSION" -lt 22 ]; then
+  echo "错误: sdd-harness 要求 Node.js >= 22，当前版本: $(node -v)"
+  echo "请升级 Node.js 后重试。"
+  exit 1
+fi
+
+# 进入项目根目录
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+cd "$PROJECT_ROOT"
+
+# 安装依赖
+echo "安装依赖..."
+npm install
+
+# 构建所有包
+echo "构建..."
+npm run build
+
+# 全局 link CLI 包
+echo "全局安装 sdd CLI..."
+npm link --workspace=packages/cli
+
+# 验证安装
+echo "验证安装..."
+sdd --version
+sdd-harness --version
+
+echo ""
+echo "=== 安装完成 ==="
+echo "可用命令: sdd, sdd-harness"
+echo "使用 sdd init 初始化项目"
+```
+
+`scripts/uninstall.sh`:
+
+```bash
+#!/usr/bin/env bash
+# sdd-harness 卸载脚本
+set -euo pipefail
+
+echo "卸载 sdd-harness..."
+npm unlink --workspace=packages/cli 2>/dev/null || npm uninstall -g @sdd-harness/cli 2>/dev/null || true
+echo "sdd-harness 已卸载"
+```
+
+### 4.3 packages/cli 结构
 
 ```
 packages/cli/
@@ -155,15 +218,18 @@ export interface CliWarning {
 
 CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
-### 4.7 验收标准
+### 4.11 验收标准
 
 1. `npm install && npm run build` 成功
 2. `node packages/cli/dist/cli.js --version` 输出 `0.1.0`
-3. `sdd init --json` 返回 `{ok: true, state: "INDEX_READY", exitCode: 0}`
-4. `sdd status --json` 返回结构化状态
-5. 所有命令 `--help` 输出正确
-6. exitCode 与 `CommandResult.exitCode` 一致
-7. 旧 plugin 包 (`claude-code-plugin`, `codex-plugin`) 已删除
+3. `bash scripts/install.sh` 一键安装成功
+4. `sdd --version` 和 `sdd-harness --version` 均可执行
+5. `sdd init --json` 返回 `{ok: true, state: "INDEX_READY", exitCode: 0}`
+6. `sdd status --json` 返回结构化状态
+7. 所有命令 `--help` 输出正确
+8. exitCode 与 `CommandResult.exitCode` 一致
+9. 旧 plugin 包 (`claude-code-plugin`, `codex-plugin`) 已删除
+10. `bash scripts/uninstall.sh` 可正常卸载
 
 ---
 
@@ -653,7 +719,7 @@ while true:
 
 | 文档 | 阶段 | 变更说明 |
 |------|------|---------|
-| `README.md` | III-A | 重写：定位从"插件型 Harness"变为"CLI-first Universal SDD Agent Harness"；快速开始改为 `npm install -g @sdd-harness/cli`；新增 Agent 支持表格、codebase-memory 说明；Node.js 要求改为 >=22 |
+| `README.md` | III-A | 重写：定位从"插件型 Harness"变为"CLI-first Universal SDD Agent Harness"；快速开始改为 `git clone` + `bash scripts/install.sh`；新增 Agent 支持表格、codebase-memory 说明；Node.js 要求改为 >=22；说明本项目不发布 npm，通过安装脚本全局安装 |
 | `docs/architecture.md` | III-A | 更新架构图：从 `core → plugin` 两层变为 `core → cli → agent-protocol → adapters` 四层；新增 codebase-memory 模块；删除 plugin.json entry 相关说明 |
 | `docs/command-contract.md` | III-A | 重写：命令契约从"插件宿主指令"改为"CLI 命令契约"；新增通用参数（--json/--cwd/--non-interactive 等）；新增 exitCode 映射表；新增 codebase 子命令 |
 | `docs/plugin-installation.md` | III-A | **删除或归档**：插件安装概念不再适用，内容合并到 `docs/CLI.md`（安装章节）和 `docs/migration-phase-3.md`（迁移步骤）；或改为"历史参考"标注 |
@@ -667,16 +733,24 @@ while true:
 ### 9.2 README 关键更新
 
 - 定位: CLI-first、Agent-agnostic、codebase-memory-powered、verification-gated
-- 快速开始: `npm install -g @sdd-harness/cli` → `sdd init` → `sdd auto`
+- 快速开始:
+  ```bash
+  git clone <repo-url> && cd sdd-harness
+  bash scripts/install.sh
+  cd my-project
+  sdd init
+  sdd auto "实现订单取消功能"
+  ```
 - 支持的 Agent 表格
 - 内置 codebase-memory-mcp 说明
 - 要求 Node.js >= 22
+- 不发布 npm，通过仓库自带安装脚本全局安装
 
 ### 9.3 migration-phase-3.md 关键内容
 
 1. 升级 Node.js 到 >= 22
-2. 安装新 CLI: `npm install -g @sdd-harness/cli@0.1.0`
-3. 更新 Claude Code 插件（指向新 adapter）
+2. 拉取最新代码: `git pull`
+3. 重新安装: `bash scripts/install.sh`
 4. 更新 .sdd/config.yml（添加 codebase 配置段）
 5. 重新 `sdd init`
 6. 兼容性说明：已有 .sdd/ 制品应兼容读取
@@ -709,14 +783,16 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 3. README 不含 "Node 20" 或 "Node >=20"
 4. CI workflow node matrix 不含 20
 5. 所有包版本一致 (0.1.0)
-6. sdd --version 输出正确
-7. npm pack 后可安装
-8. npx @sdd-harness/cli --version 可运行
-9. 所有 JSON Schema 通过验证
-10. 所有 adapter 文档存在
-11. Generic Protocol E2E 通过
-12. THIRD_PARTY_NOTICES.md 口径正确
-13. 文档统一口径 "Node.js 22 及以上版本"
+6. `sdd --version` 输出正确
+7. `scripts/install.sh` 一键安装成功
+8. 安装后 `sdd` / `sdd-harness` 两个命令均可用
+9. `scripts/uninstall.sh` 卸载成功
+10. 所有 JSON Schema 通过验证
+11. 所有 adapter 文档存在
+12. Generic Protocol E2E 通过
+13. THIRD_PARTY_NOTICES.md 口径正确
+14. 文档统一口径 "Node.js 22 及以上版本"
+15. README 安装说明使用 `git clone` + `scripts/install.sh`
 
 ### 9.7 跨平台注意事项
 
@@ -749,14 +825,14 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 
 ## 10. 总体验收标准（三期完成）
 
-1. 可以 `npm install -g @sdd-harness/cli`
-2. Node.js 22 环境下可以 `npm install / build / test / pack`
-3. 可以执行 `sdd --version`
+1. 可以 `git clone` 仓库后 `bash scripts/install.sh` 一键安装
+2. Node.js 22 环境下可以 `npm install / build / test`
+3. 安装后可以执行 `sdd --version` 和 `sdd-harness --version`
 4. 可以执行 `sdd init`
 5. 可以执行 `sdd status --json`
 6. 可以执行 `sdd auto "需求" --json`
 7. CLI 进程退出码等于 CommandResult.exitCode
-8. 用户安装 sdd CLI 后无需单独配置 codebase-memory-mcp
+8. 用户安装后无需单独配置 codebase-memory-mcp
 9. `sdd init` 自动启动或连接 managed codebase-memory-mcp
 10. `sdd init` 自动生成 codebase-summary.md
 11. `sdd codebase status --json` 可显示 provider/mode/degraded/indexStatus
@@ -794,6 +870,8 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 43. docs/requirements-traceability.md 包含三期验收映射
 44. docs/migration-phase-3.md 包含完整迁移步骤
 45. 19 项新增文档 + 7 项已有文档更新全部完成
+46. `scripts/install.sh` / `scripts/uninstall.sh` 可用
+47. 不发布 npm，无 npm registry 依赖
 
 ---
 
@@ -811,6 +889,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 10. 不静默降级 codebase-memory-mcp
 11. 不 fork codebase-memory-mcp 源码
 12. 不支持 Node.js 20 / 21
+13. **不发布 npm**，通过仓库 `scripts/install.sh` 本地全局安装
 
 ---
 
