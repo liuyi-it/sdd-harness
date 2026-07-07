@@ -43,12 +43,7 @@ export interface McpCapabilities {
 export interface McpLifecycleResult {
   provider: "codebase-memory-mcp" | "fallback-file-scan";
   mode: "managed" | "external" | "fallback";
-  status:
-    | "STARTED"
-    | "ALREADY_RUNNING"
-    | "STOPPED"
-    | "UNAVAILABLE"
-    | "FAILED";
+  status: "STARTED" | "ALREADY_RUNNING" | "STOPPED" | "UNAVAILABLE" | "FAILED";
   pid?: number;
   endpoint?: string;
   message?: string;

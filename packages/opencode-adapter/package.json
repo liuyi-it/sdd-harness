@@ -1,0 +1,14 @@
+{
+  "name": "@sdd-harness/opencode-adapter",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CLI-first SDD Harness adapter for OpenCode",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "rules/",
+    "docs/",
+    "AGENT_PROTOCOL.md"
+  ]
+}

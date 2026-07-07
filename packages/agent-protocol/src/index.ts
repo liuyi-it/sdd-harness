@@ -5,5 +5,8 @@ export type {
   AgentTddEvidence,
   AgentVerification,
 } from "./types/task-result.js";
-export { AgentCapabilityLevel, AGENT_CAPABILITY_MAP } from "./types/agent-capability.js";
+export {
+  AgentCapabilityLevel,
+  AGENT_CAPABILITY_MAP,
+} from "./types/agent-capability.js";
 export { validateTaskResult } from "./validate.js";

@@ -1,0 +1,13 @@
+{
+  "name": "@sdd-harness/codex-adapter",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CLI-first SDD Harness adapter for Codex",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "skills/",
+    "rules/"
+  ]
+}

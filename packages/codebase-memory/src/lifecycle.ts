@@ -13,10 +13,7 @@ export function startManagedMcp(
   return new Promise((resolve) => {
     let settled = false;
 
-    const finish = (
-      status: McpLifecycleResult["status"],
-      message?: string,
-    ) => {
+    const finish = (status: McpLifecycleResult["status"], message?: string) => {
       if (settled) return;
       settled = true;
       const result: McpLifecycleResult = {
@@ -54,10 +51,7 @@ export function startManagedMcp(
     child.on("exit", (code) => {
       clearTimeout(timeout);
       if (!settled) {
-        finish(
-          "FAILED",
-          `MCP 进程意外退出，退出码: ${code ?? "null"}`,
-        );
+        finish("FAILED", `MCP 进程意外退出，退出码: ${code ?? "null"}`);
       }
     });
 

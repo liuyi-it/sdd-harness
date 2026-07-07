@@ -1,6 +1,10 @@
 import type { CliWarning } from "@sdd-harness/core";
 import { startManagedMcp, stopManagedMcp } from "./lifecycle.js";
-import { createDiagnostics, createDiagError, writeDiagnostics } from "./diagnostics.js";
+import {
+  createDiagnostics,
+  createDiagError,
+  writeDiagnostics,
+} from "./diagnostics.js";
 import { fallbackQuery } from "./fallback-bridge.js";
 import { degradedWarning } from "./warnings.js";
 import type {
@@ -102,11 +106,7 @@ export class CodebaseMemoryManager {
         "start",
       );
     } catch (err) {
-      return this.handleUnavailable(
-        root,
-        (err as Error).message,
-        "start",
-      );
+      return this.handleUnavailable(root, (err as Error).message, "start");
     }
   }
 
@@ -130,9 +130,10 @@ export class CodebaseMemoryManager {
   async getCapabilities(): Promise<McpCapabilities> {
     return {
       schemaVersion: "1.0.0",
-      provider: this.config.mode === "fallback"
-        ? "fallback-file-scan"
-        : "codebase-memory-mcp",
+      provider:
+        this.config.mode === "fallback"
+          ? "fallback-file-scan"
+          : "codebase-memory-mcp",
       supportedIntents: ["impact", "related-files", "symbols", "tests"],
       supportsIndex: this.config.mode !== "fallback",
       supportsGraphQuery: this.config.mode !== "fallback",

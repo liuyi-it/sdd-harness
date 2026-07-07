@@ -1,0 +1,14 @@
+{
+  "name": "@sdd-harness/claude-code-adapter",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "CLI-first SDD Harness adapter for Claude Code",
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "commands/",
+    "skills/",
+    "AGENTS.md"
+  ]
+}

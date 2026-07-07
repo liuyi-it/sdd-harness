@@ -1,4 +1,9 @@
 {
   "files": [],
-  "references": [{ "path": "packages/core" }, { "path": "packages/cli" }, { "path": "packages/codebase-memory" }, { "path": "packages/agent-protocol" }]
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/cli" },
+    { "path": "packages/codebase-memory" },
+    { "path": "packages/agent-protocol" }
+  ]
 }
