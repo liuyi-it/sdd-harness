@@ -32,7 +32,7 @@
 | 包命名 | 直接重命名为 *-adapter，不保留旧名，不考虑旧版兼容 |
 | Node.js 基线 | 从 `>=20` 升级到 `>=22` |
 | 版本 | 所有包统一 `0.1.0` |
-| 分发方式 | **不发布 npm**，通过仓库自带一键安装脚本 `scripts/install.sh` 全局安装 |
+| 分发方式 | **不发布 npm**，通过仓库自带安装脚本一键全局安装（macOS/Linux: `bash scripts/install.sh`，Windows: `powershell -File scripts/install.ps1`） |
 
 ## 3. 包变更总览
 
@@ -217,7 +217,7 @@ packages/cli/
 - `"dependencies": { "@sdd-harness/core": "0.1.0", "@sdd-harness/agent-protocol": "0.1.0", "@sdd-harness/codebase-memory": "0.1.0" }`
 - `"engines": { "node": ">=22" }`
 
-### 4.3 Core 改造
+### 4.4 Core 改造
 
 新增统一契约类型 `packages/core/src/contracts.ts`:
 
@@ -253,18 +253,18 @@ export interface CliWarning {
 }
 ```
 
-### 4.4 CLI 命令路由
+### 4.5 CLI 命令路由
 
 - `sdd init` → `command="init"`
 - `sdd build next` → `command="build"`, `args.subcommand="next"`
 - `sdd build complete --task TASK-xxx --result result.json` → `command="build"`, `args.subcommand="complete"`
 - 其余命令直接映射
 
-### 4.5 通用参数
+### 4.6 通用参数
 
 所有命令支持: `--json`, `--cwd <path>`, `--change <id>`, `--timeout <s>`, `--non-interactive`, `--force`, `--verbose`, `--help`, `--version`
 
-### 4.6 退出码映射
+### 4.7 退出码映射
 
 ```
 0: SUCCESS
@@ -279,7 +279,7 @@ export interface CliWarning {
 
 CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
-### 4.11 验收标准
+### 4.8 验收标准
 
 1. `npm install && npm run build` 成功
 2. `node packages/cli/dist/cli.js --version` 输出 `0.1.0`
@@ -750,7 +750,7 @@ while true:
 
 ### 9.1 文档变更总览
 
-三期文档工作分为**新增**和**更新**两类，总计 26 项。
+三期文档工作分为**新增**和**更新**两类，总计 28 项。
 
 #### 9.1.1 新增文档（19项）
 
@@ -776,7 +776,7 @@ while true:
 | `docs/macos.md` | III-F | macOS 注意事项 |
 | `docs/superpowers/specs/2026-07-07-phase-iii-design.md` | III-A | 三期设计文档（本次产出） |
 
-#### 9.1.2 更新已有文档（7项）
+#### 9.1.2 更新已有文档（9项）
 
 | 文档 | 阶段 | 变更说明 |
 |------|------|---------|
@@ -787,8 +787,7 @@ while true:
 | `docs/security.md` | III-D | 新增三个安全章节：CLI 安全（禁止 shell=true/eval）、Agent 安全（forbiddenFiles/Git delta 事实源/不可信上下文）、codebase-memory 安全（路径白名单/prompt injection guard） |
 | `docs/schemas.md` | III-C | 新增三期 Schema 清单（cli-command-result / codebase-* / agent-* / build-* 等 11 个 schema）；更新 schema 版本号说明 |
 | `docs/state-machine.md` | III-A | 新增状态：INDEX_READY（codebase 就绪）、CLARIFYING（需澄清）；更新状态转换图，标注哪些状态由 codebase-memory 降级影响 |
-| `docs/requirements-traceability.md` | III-F | 新增三期验收映射（36 项验收标准 → 各阶段实现 → 测试覆盖） |
-| `docs/macos.md` | III-F | macOS 注意事项 |
+| `docs/requirements-traceability.md` | III-F | 新增三期验收映射（47 项验收标准 → 各阶段实现 → 测试覆盖） |
 | `THIRD_PARTY_NOTICES.md` | III-B | codebase-memory-mcp 口径更新 |
 
 ### 9.2 README 关键更新
@@ -868,7 +867,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 ### 9.8 验收标准
 
 1. 19 项新增文档全部存在且内容正确
-2. 7 项已有文档全部更新，无残留二期口径
+2. 9 项已有文档全部更新，无残留二期口径
 3. `README.md` 定位更新为 CLI-first Universal SDD Agent Harness
 4. `docs/architecture.md` 架构图反映新的四层结构
 5. `docs/command-contract.md` 改为 CLI 命令契约
@@ -879,7 +878,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 10. `docs/requirements-traceability.md` 包含三期验收映射
 11. `migration-phase-3.md` 包含完整迁移步骤
 12. CI 矩阵覆盖三平台 + Node 22
-13. validate:release 覆盖全部 13 项
+13. validate:release 覆盖全部 15 项
 14. THIRD_PARTY_NOTICES.md 更新 codebase-memory-mcp 口径
 15. 全仓库不含 "Node 20" 支持表述
 16. Kimi Code / Copilot CLI 文档完整（文档级交付）
@@ -932,7 +931,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 42. docs/state-machine.md 包含 INDEX_READY 等新状态
 43. docs/requirements-traceability.md 包含三期验收映射
 44. docs/migration-phase-3.md 包含完整迁移步骤
-45. 19 项新增文档 + 7 项已有文档更新全部完成
+45. 19 项新增文档 + 9 项已有文档更新全部完成
 46. `scripts/install.sh`、`scripts/install.ps1`、`scripts/uninstall.sh`、`scripts/uninstall.ps1` 四个脚本均可用
 47. 不发布 npm，无 npm registry 依赖
 
@@ -952,7 +951,7 @@ CI 覆盖: build, format:check, lint, typecheck, test, CLI 集成测试, adapter
 10. 不静默降级 codebase-memory-mcp
 11. 不 fork codebase-memory-mcp 源码
 12. 不支持 Node.js 20 / 21
-13. **不发布 npm**，通过仓库 `scripts/install.sh` 本地全局安装
+13. **不发布 npm**，通过仓库安装脚本（`scripts/install.sh` / `scripts/install.ps1`）本地全局安装
 
 ---
 
