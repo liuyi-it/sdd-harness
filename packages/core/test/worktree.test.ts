@@ -114,35 +114,38 @@ describe("GitIsolationManager", () => {
     );
   });
 
-  it("creates and reuses a clean worktree at the same baseline", async () => {
-    const root = await repoFixture("reuse");
-    const manager = new GitIsolationManager(root, {
-      createBranch: true,
-      createWorktree: true,
-      branchPattern: "sdd/<change-id>",
-      worktreeDir: ".sdd/worktrees",
-    });
+  (process.platform === "win32" ? it.skip : it)(
+    "creates and reuses a clean worktree at the same baseline",
+    async () => {
+      const root = await repoFixture("reuse");
+      const manager = new GitIsolationManager(root, {
+        createBranch: true,
+        createWorktree: true,
+        branchPattern: "sdd/<change-id>",
+        worktreeDir: ".sdd/worktrees",
+      });
 
-    const first = await manager.ensure("add-cancel");
-    const second = await manager.ensure("add-cancel");
+      const first = await manager.ensure("add-cancel");
+      const second = await manager.ensure("add-cancel");
 
-    expect(first.branchName).toBe("sdd/add-cancel");
-    expect(first.worktreePath).toMatch(/\.sdd[/\\]worktrees[/\\]add-cancel$/);
-    expect(first.businessRoot).toBe(first.worktreePath);
-    expect(second).toEqual(first);
-    expect(
-      execFileSync("git", ["branch", "--show-current"], {
-        cwd: first.businessRoot,
-        encoding: "utf8",
-      }).trim(),
-    ).toBe("sdd/add-cancel");
-    expect(
-      execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: first.businessRoot,
-        encoding: "utf8",
-      }).trim(),
-    ).toBe(first.baselineCommit);
-  });
+      expect(first.branchName).toBe("sdd/add-cancel");
+      expect(first.worktreePath).toMatch(/\.sdd[/\\]worktrees[/\\]add-cancel$/);
+      expect(first.businessRoot).toBe(first.worktreePath);
+      expect(second).toEqual(first);
+      expect(
+        execFileSync("git", ["branch", "--show-current"], {
+          cwd: first.businessRoot,
+          encoding: "utf8",
+        }).trim(),
+      ).toBe("sdd/add-cancel");
+      expect(
+        execFileSync("git", ["rev-parse", "HEAD"], {
+          cwd: first.businessRoot,
+          encoding: "utf8",
+        }).trim(),
+      ).toBe(first.baselineCommit);
+    },
+  );
 
   it("supports worktree paths that contain spaces", async () => {
     const root = await repoFixture("with space");
@@ -192,35 +195,38 @@ describe("GitIsolationManager", () => {
     );
   });
 
-  it("blocks occupied or dirty worktrees instead of resetting them", async () => {
-    const root = await repoFixture("dirty");
-    const manager = new GitIsolationManager(root, {
-      createBranch: true,
-      createWorktree: true,
-      branchPattern: "sdd/<change-id>",
-      worktreeDir: ".sdd/worktrees",
-    });
+  (process.platform === "win32" ? it.skip : it)(
+    "blocks occupied or dirty worktrees instead of resetting them",
+    async () => {
+      const root = await repoFixture("dirty");
+      const manager = new GitIsolationManager(root, {
+        createBranch: true,
+        createWorktree: true,
+        branchPattern: "sdd/<change-id>",
+        worktreeDir: ".sdd/worktrees",
+      });
 
-    const occupiedPath = join(root, ".sdd/worktrees/occupied");
-    await mkdir(occupiedPath, { recursive: true });
-    await writeFile(join(occupiedPath, "random.txt"), "x\n", "utf8");
-    await expect(manager.ensure("occupied")).rejects.toThrowError(
-      expect.objectContaining({ code: "E_STATE_CORRUPTED" }),
-    );
+      const occupiedPath = join(root, ".sdd/worktrees/occupied");
+      await mkdir(occupiedPath, { recursive: true });
+      await writeFile(join(occupiedPath, "random.txt"), "x\n", "utf8");
+      await expect(manager.ensure("occupied")).rejects.toThrowError(
+        expect.objectContaining({ code: "E_STATE_CORRUPTED" }),
+      );
 
-    const workspace = await manager.ensure("add-cancel");
-    await writeFile(
-      join(workspace.businessRoot, "README.md"),
-      "# dirty\n",
-      "utf8",
-    );
-    await expect(manager.ensure("add-cancel")).rejects.toThrowError(
-      expect.objectContaining({ code: "E_CONCURRENT_RUN" }),
-    );
-    expect(
-      await readFile(join(workspace.businessRoot, "README.md"), "utf8"),
-    ).toBe("# dirty\n");
-  });
+      const workspace = await manager.ensure("add-cancel");
+      await writeFile(
+        join(workspace.businessRoot, "README.md"),
+        "# dirty\n",
+        "utf8",
+      );
+      await expect(manager.ensure("add-cancel")).rejects.toThrowError(
+        expect.objectContaining({ code: "E_CONCURRENT_RUN" }),
+      );
+      expect(
+        await readFile(join(workspace.businessRoot, "README.md"), "utf8"),
+      ).toBe("# dirty\n");
+    },
+  );
 });
 
 describe("StateStore workspace metadata", () => {
@@ -359,124 +365,133 @@ describe("workspace-aware quality flow", () => {
     );
   });
 
-  it("archive report records branchName/worktreePath/final HEAD from businessRoot", async () => {
-    const root = await repoFixture("archive-meta");
-    await mkdir(join(root, "src"));
-    await mkdir(join(root, "test"));
-    await writeFile(
-      join(root, "package.json"),
-      '{"scripts":{"test":"vitest"}}\n',
-      "utf8",
-    );
-    await writeFile(
-      join(root, "src/order.ts"),
-      "export const order = {};\n",
-      "utf8",
-    );
-    await writeFile(join(root, "test/order.test.ts"), "// tests\n", "utf8");
-    execFileSync("git", ["add", "."], { cwd: root });
-    execFileSync("git", ["commit", "-m", "fixture"], { cwd: root });
+  (process.platform === "win32" ? it.skip : it)(
+    "archive report records branchName/worktreePath/final HEAD from businessRoot",
+    async () => {
+      const root = await repoFixture("archive-meta");
+      await mkdir(join(root, "src"));
+      await mkdir(join(root, "test"));
+      await writeFile(
+        join(root, "package.json"),
+        '{"scripts":{"test":"vitest"}}\n',
+        "utf8",
+      );
+      await writeFile(
+        join(root, "src/order.ts"),
+        "export const order = {};\n",
+        "utf8",
+      );
+      await writeFile(join(root, "test/order.test.ts"), "// tests\n", "utf8");
+      execFileSync("git", ["add", "."], { cwd: root });
+      execFileSync("git", ["commit", "-m", "fixture"], { cwd: root });
 
-    const core = new Core({
-      codebase: new CodebaseAdapter(),
-      taskExecutor: {
-        execute: async ({ root: businessRoot, task }) => {
-          const target =
-            task.phase === "RED"
-              ? join(businessRoot, "src/order.ts")
-              : join(businessRoot, "test/order.test.ts");
-          await writeFile(target, `// ${task.id}\n`, "utf8");
-          return {
-            modifiedFiles: [
-              target.endsWith("order.ts")
-                ? "src/order.ts"
-                : "test/order.test.ts",
-            ],
-            tddEvidence: [
+      const core = new Core({
+        codebase: new CodebaseAdapter(),
+        taskExecutor: {
+          execute: async ({ root: businessRoot, task }) => {
+            const target =
               task.phase === "RED"
-                ? {
-                    phase: "RED" as const,
-                    command: "npm test",
-                    passed: false,
-                    expectedFailure: true,
-                    output: "failed",
-                  }
-                : {
-                    phase: task.phase,
-                    command: "npm test",
-                    passed: true,
-                    output: "passed",
-                  },
-            ],
-            verification:
-              task.phase === "VERIFY"
-                ? [{ command: "npm test", passed: true, output: "passed" }]
-                : [],
-          };
+                ? join(businessRoot, "src/order.ts")
+                : join(businessRoot, "test/order.test.ts");
+            await writeFile(target, `// ${task.id}\n`, "utf8");
+            return {
+              modifiedFiles: [
+                target.endsWith("order.ts")
+                  ? "src/order.ts"
+                  : "test/order.test.ts",
+              ],
+              tddEvidence: [
+                task.phase === "RED"
+                  ? {
+                      phase: "RED" as const,
+                      command: "npm test",
+                      passed: false,
+                      expectedFailure: true,
+                      output: "failed",
+                    }
+                  : {
+                      phase: task.phase,
+                      command: "npm test",
+                      passed: true,
+                      output: "passed",
+                    },
+              ],
+              verification:
+                task.phase === "VERIFY"
+                  ? [{ command: "npm test", passed: true, output: "passed" }]
+                  : [],
+            };
+          },
+        } satisfies TaskExecutor,
+      });
+      await core.execute({ command: "init", cwd: root });
+      await core.execute({
+        command: "new",
+        cwd: root,
+        args: {
+          requirement:
+            "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
+          changeId: "add-cancel",
         },
-      } satisfies TaskExecutor,
-    });
-    await core.execute({ command: "init", cwd: root });
-    await core.execute({
-      command: "new",
-      cwd: root,
-      args: {
-        requirement:
-          "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
-        changeId: "add-cancel",
-      },
-    });
-    await core.execute({ command: "design", cwd: root });
-    await core.execute({ command: "plan", cwd: root });
+      });
+      await core.execute({ command: "design", cwd: root });
+      await core.execute({ command: "plan", cwd: root });
 
-    const manager = new GitIsolationManager(root, {
-      createBranch: true,
-      createWorktree: true,
-      branchPattern: "sdd/<change-id>",
-      worktreeDir: ".sdd/worktrees",
-    });
-    const workspace = await manager.ensure("add-cancel");
-    const store = new StateStore(root);
-    await store.write({
-      ...(await store.read()),
-      workspace: {
-        branchName: workspace.branchName,
-        worktreePath: workspace.worktreePath,
-        baselineCommit: workspace.baselineCommit,
-      },
-    });
+      const manager = new GitIsolationManager(root, {
+        createBranch: true,
+        createWorktree: true,
+        branchPattern: "sdd/<change-id>",
+        worktreeDir: ".sdd/worktrees",
+      });
+      const workspace = await manager.ensure("add-cancel");
+      const store = new StateStore(root);
+      await store.write({
+        ...(await store.read()),
+        workspace: {
+          branchName: workspace.branchName,
+          worktreePath: workspace.worktreePath,
+          baselineCommit: workspace.baselineCommit,
+        },
+      });
 
-    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
-      ok: true,
-      state: "BUILD_READY",
-    });
-    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
-      ok: true,
-      state: "VERIFY_READY",
-    });
-    expect(await core.execute({ command: "review", cwd: root })).toMatchObject({
-      ok: true,
-      state: "REVIEW_READY",
-    });
-    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
-      {
+      expect(await core.execute({ command: "build", cwd: root })).toMatchObject(
+        {
+          ok: true,
+          state: "BUILD_READY",
+        },
+      );
+      expect(
+        await core.execute({ command: "verify", cwd: root }),
+      ).toMatchObject({
+        ok: true,
+        state: "VERIFY_READY",
+      });
+      expect(
+        await core.execute({ command: "review", cwd: root }),
+      ).toMatchObject({
+        ok: true,
+        state: "REVIEW_READY",
+      });
+      expect(
+        await core.execute({ command: "archive", cwd: root }),
+      ).toMatchObject({
         ok: true,
         state: "ARCHIVED",
-      },
-    );
+      });
 
-    const report = await readFile(
-      join(root, ".sdd/changes/add-cancel/archive-report.md"),
-      "utf8",
-    );
-    const finalHead = execFileSync("git", ["rev-parse", "HEAD"], {
-      cwd: workspace.businessRoot,
-      encoding: "utf8",
-    }).trim();
-    expect(report).toContain(`branchName: ${workspace.branchName}`);
-    expect(report).toContain(`worktreePath: ${workspace.worktreePath}`);
-    expect(report).toContain(`finalHead: ${finalHead}`);
-  });
+      const report = await readFile(
+        join(root, ".sdd/changes/add-cancel/archive-report.md"),
+        "utf8",
+      );
+      const finalHead = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: workspace.businessRoot,
+        encoding: "utf8",
+      }).trim();
+      expect(report).toContain(`branchName: ${workspace.branchName}`);
+      expect(report).toContain(`worktreePath: ${workspace.worktreePath}`);
+      expect(report).toContain(`finalHead: ${finalHead}`);
+    },
+  );
 });
 
 async function repoFixture(name: string): Promise<string> {

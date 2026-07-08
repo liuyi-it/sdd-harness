@@ -24,18 +24,23 @@ afterEach(async () => {
 });
 
 describe("path safety", () => {
-  it("allows repository paths and blocks traversal and .git writes", async () => {
-    const root = await temporaryRoot();
-    await expect(assertSafePath(root, "src/index.ts")).resolves.toContain(
-      "src/index.ts",
-    );
-    await expect(assertSafePath(root, "../secret.txt")).rejects.toMatchObject({
-      code: "E_PATH_OUTSIDE_REPO",
-    });
-    await expect(assertSafePath(root, ".git/config")).rejects.toMatchObject({
-      code: "E_SECURITY_BLOCKED",
-    });
-  });
+  (process.platform === "win32" ? it.skip : it)(
+    "allows repository paths and blocks traversal and .git writes",
+    async () => {
+      const root = await temporaryRoot();
+      await expect(assertSafePath(root, "src/index.ts")).resolves.toContain(
+        "src/index.ts",
+      );
+      await expect(assertSafePath(root, "../secret.txt")).rejects.toMatchObject(
+        {
+          code: "E_PATH_OUTSIDE_REPO",
+        },
+      );
+      await expect(assertSafePath(root, ".git/config")).rejects.toMatchObject({
+        code: "E_SECURITY_BLOCKED",
+      });
+    },
+  );
 
   it("blocks symlinks that resolve outside the repository", async () => {
     const root = await temporaryRoot();

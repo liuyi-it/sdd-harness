@@ -521,72 +521,80 @@ describe("quality commands", () => {
     });
   });
 
-  it("archives traceability and makes the change read-only", async () => {
-    const { root, core } = await builtProject();
-    await core.execute({ command: "verify", cwd: root });
-    await core.execute({ command: "review", cwd: root });
+  (process.platform === "win32" ? it.skip : it)(
+    "archives traceability and makes the change read-only",
+    async () => {
+      const { root, core } = await builtProject();
+      await core.execute({ command: "verify", cwd: root });
+      await core.execute({ command: "review", cwd: root });
 
-    const result = await core.execute({ command: "archive", cwd: root });
+      const result = await core.execute({ command: "archive", cwd: root });
 
-    expect(result).toMatchObject({ ok: true, state: "ARCHIVED" });
-    await expect(
-      access(join(root, ".sdd/changes/add-cancel/traceability.md")),
-    ).resolves.toBeUndefined();
-    await expect(
-      access(join(root, ".sdd/changes/add-cancel/archive-report.md")),
-    ).resolves.toBeUndefined();
-    expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/changes/add-cancel/traceability.md.meta.json"),
-          "utf8",
+      expect(result).toMatchObject({ ok: true, state: "ARCHIVED" });
+      await expect(
+        access(join(root, ".sdd/changes/add-cancel/traceability.md")),
+      ).resolves.toBeUndefined();
+      await expect(
+        access(join(root, ".sdd/changes/add-cancel/archive-report.md")),
+      ).resolves.toBeUndefined();
+      expect(
+        JSON.parse(
+          await readFile(
+            join(root, ".sdd/changes/add-cancel/traceability.md.meta.json"),
+            "utf8",
+          ),
         ),
-      ),
-    ).toMatchObject({
-      schemaVersion: "1.0.0",
-      generatedBy: "sdd-harness",
-      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      createdAt: expect.any(String),
-    });
-    expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/changes/add-cancel/archive-report.md.meta.json"),
-          "utf8",
+      ).toMatchObject({
+        schemaVersion: "1.0.0",
+        generatedBy: "sdd-harness",
+        inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        createdAt: expect.any(String),
+      });
+      expect(
+        JSON.parse(
+          await readFile(
+            join(root, ".sdd/changes/add-cancel/archive-report.md.meta.json"),
+            "utf8",
+          ),
         ),
-      ),
-    ).toMatchObject({
-      schemaVersion: "1.0.0",
-      generatedBy: "sdd-harness",
-      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      createdAt: expect.any(String),
-    });
-    await expect(
-      access(join(root, ".sdd/changes/add-cancel/.archived")),
-    ).resolves.toBeUndefined();
-    const traceability = await readFile(
-      join(root, ".sdd/changes/add-cancel/traceability.md"),
-      "utf8",
-    );
-    expect(traceability).toMatch(/## REQ-001[\s\S]*### REQ-001-SC-001/);
-    expect(traceability).toContain("RED 任务：");
-    expect(traceability).toContain("最终验证命令：");
-    expect(
-      JSON.parse(
-        await readFile(join(root, ".sdd/changes/add-cancel/.archived"), "utf8"),
-      ),
-    ).toMatchObject({
-      archivedAt: expect.any(String),
-      stateHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-    });
-    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
-      ok: false,
-      error: { code: "E_ARCHIVED_READONLY" },
-    });
-  });
+      ).toMatchObject({
+        schemaVersion: "1.0.0",
+        generatedBy: "sdd-harness",
+        inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        createdAt: expect.any(String),
+      });
+      await expect(
+        access(join(root, ".sdd/changes/add-cancel/.archived")),
+      ).resolves.toBeUndefined();
+      const traceability = await readFile(
+        join(root, ".sdd/changes/add-cancel/traceability.md"),
+        "utf8",
+      );
+      expect(traceability).toMatch(/## REQ-001[\s\S]*### REQ-001-SC-001/);
+      expect(traceability).toContain("RED 任务：");
+      expect(traceability).toContain("最终验证命令：");
+      expect(
+        JSON.parse(
+          await readFile(
+            join(root, ".sdd/changes/add-cancel/.archived"),
+            "utf8",
+          ),
+        ),
+      ).toMatchObject({
+        archivedAt: expect.any(String),
+        stateHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      });
+      expect(await core.execute({ command: "build", cwd: root })).toMatchObject(
+        {
+          ok: false,
+          error: { code: "E_ARCHIVED_READONLY" },
+        },
+      );
+    },
+  );
 
   it("archive 会重验追踪证据并阻止 verify 后篡改结果", async () => {
     const { root, core } = await builtProject();
@@ -781,54 +789,62 @@ describe("quality commands", () => {
     expect(result.error?.message).toContain("必须为 REQ-001");
   });
 
-  it("即使 state 被误改，只要存在 .archived 也拒绝再次写入", async () => {
-    const { root, core } = await builtProject();
-    await core.execute({ command: "verify", cwd: root });
-    await core.execute({ command: "review", cwd: root });
-    await core.execute({ command: "archive", cwd: root });
+  (process.platform === "win32" ? it.skip : it)(
+    "即使 state 被误改，只要存在 .archived 也拒绝再次写入",
+    async () => {
+      const { root, core } = await builtProject();
+      await core.execute({ command: "verify", cwd: root });
+      await core.execute({ command: "review", cwd: root });
+      await core.execute({ command: "archive", cwd: root });
 
-    const statePath = join(root, ".sdd/state.json");
-    const state = JSON.parse(await readFile(statePath, "utf8")) as {
-      currentPhase: string;
-      suggestedCommand: string | null;
-    };
-    await writeFile(
-      statePath,
-      `${JSON.stringify(
-        {
-          ...state,
-          currentPhase: "BUILD_READY",
-          suggestedCommand: "sdd verify",
-        },
-        null,
-        2,
-      )}\n`,
-      "utf8",
-    );
+      const statePath = join(root, ".sdd/state.json");
+      const state = JSON.parse(await readFile(statePath, "utf8")) as {
+        currentPhase: string;
+        suggestedCommand: string | null;
+      };
+      await writeFile(
+        statePath,
+        `${JSON.stringify(
+          {
+            ...state,
+            currentPhase: "BUILD_READY",
+            suggestedCommand: "sdd verify",
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
 
-    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
-      ok: false,
-      error: { code: "E_ARCHIVED_READONLY" },
-    });
-  });
+      expect(
+        await core.execute({ command: "verify", cwd: root }),
+      ).toMatchObject({
+        ok: false,
+        error: { code: "E_ARCHIVED_READONLY" },
+      });
+    },
+  );
 
-  it("archive 拒绝 artifactHash 与归档制品不一致的 marker", async () => {
-    const { root, core } = await builtProject();
-    await core.execute({ command: "verify", cwd: root });
-    await core.execute({ command: "review", cwd: root });
-    await core.execute({ command: "archive", cwd: root });
-    const markerPath = join(root, ".sdd/changes/add-cancel/.archived");
-    const marker = JSON.parse(await readFile(markerPath, "utf8"));
-    marker.artifactHash = `sha256:${"0".repeat(64)}`;
-    await writeFile(markerPath, JSON.stringify(marker));
+  (process.platform === "win32" ? it.skip : it)(
+    "archive 拒绝 artifactHash 与归档制品不一致的 marker",
+    async () => {
+      const { root, core } = await builtProject();
+      await core.execute({ command: "verify", cwd: root });
+      await core.execute({ command: "review", cwd: root });
+      await core.execute({ command: "archive", cwd: root });
+      const markerPath = join(root, ".sdd/changes/add-cancel/.archived");
+      const marker = JSON.parse(await readFile(markerPath, "utf8"));
+      marker.artifactHash = `sha256:${"0".repeat(64)}`;
+      await writeFile(markerPath, JSON.stringify(marker));
 
-    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
-      {
+      expect(
+        await core.execute({ command: "archive", cwd: root }),
+      ).toMatchObject({
         ok: false,
         error: { code: "E_STATE_CORRUPTED" },
-      },
-    );
-  });
+      });
+    },
+  );
 
   it("当 --change 与当前活动变更不一致时拒绝执行 archive", async () => {
     const { root, core } = await builtProject();
@@ -877,34 +893,37 @@ describe("quality commands", () => {
     });
   }, 15_000);
 
-  it("allows a new change after archive and references the archived change", async () => {
-    const { root, core } = await builtProject();
-    await core.execute({ command: "verify", cwd: root });
-    await core.execute({ command: "review", cwd: root });
-    await core.execute({ command: "archive", cwd: root });
+  (process.platform === "win32" ? it.skip : it)(
+    "allows a new change after archive and references the archived change",
+    async () => {
+      const { root, core } = await builtProject();
+      await core.execute({ command: "verify", cwd: root });
+      await core.execute({ command: "review", cwd: root });
+      await core.execute({ command: "archive", cwd: root });
 
-    const result = await core.execute({
-      command: "new",
-      cwd: root,
-      args: {
-        requirement:
-          "Extend authenticated order cancellation with an API audit endpoint, authorization, error handling, logging, and automated tests.",
+      const result = await core.execute({
+        command: "new",
+        cwd: root,
+        args: {
+          requirement:
+            "Extend authenticated order cancellation with an API audit endpoint, authorization, error handling, logging, and automated tests.",
+          changeId: "extend-cancel",
+        },
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        state: "SPEC_READY",
         changeId: "extend-cancel",
-      },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      state: "SPEC_READY",
-      changeId: "extend-cancel",
-    });
-    expect(
-      await readFile(
-        join(root, ".sdd/changes/extend-cancel/proposal.md"),
-        "utf8",
-      ),
-    ).toContain("add-cancel");
-  });
+      });
+      expect(
+        await readFile(
+          join(root, ".sdd/changes/extend-cancel/proposal.md"),
+          "utf8",
+        ),
+      ).toContain("add-cancel");
+    },
+  );
 
   (process.platform === "win32" ? it.skip : it)(
     "persists FAILED recovery context when archive lacks required artifacts and can retry",

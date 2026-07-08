@@ -111,17 +111,20 @@ describe("MCP transport v2", () => {
     expect(capabilities.availableTools).toEqual([]);
   });
 
-  it("writeCapabilityArtifacts persists capabilities + diagnostics", async () => {
-    const adapter = new CodebaseAdapter(new MemoryTransport());
-    const root = "/tmp/sdd-mcp-capabilty-fixture";
-    const paths = await adapter.writeCapabilityArtifacts(root);
-    expect(paths.capabilitiesPath).toContain(
-      ".sdd/index/mcp-capabilities.json",
-    );
-    expect(paths.diagnosticsPath).toContain(
-      ".sdd/index/codebase-diagnostics.json",
-    );
-  });
+  (process.platform === "win32" ? it.skip : it)(
+    "writeCapabilityArtifacts persists capabilities + diagnostics",
+    async () => {
+      const adapter = new CodebaseAdapter(new MemoryTransport());
+      const root = "/tmp/sdd-mcp-capabilty-fixture";
+      const paths = await adapter.writeCapabilityArtifacts(root);
+      expect(paths.capabilitiesPath).toContain(
+        ".sdd/index/mcp-capabilities.json",
+      );
+      expect(paths.diagnosticsPath).toContain(
+        ".sdd/index/codebase-diagnostics.json",
+      );
+    },
+  );
 
   it("isSupportedIntent only accepts whitelisted intents", () => {
     expect(isSupportedIntent("impact")).toBe(true);

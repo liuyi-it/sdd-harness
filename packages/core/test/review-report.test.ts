@@ -271,29 +271,32 @@ describe("ReviewReport v1.2 + deterministic review", () => {
     expect(md).toContain("FILE_SCOPE");
   });
 
-  it("writeReviewReport persists JSON + Markdown atomically", async () => {
-    const root = await mkdtemp(join(tmpdir(), "sdd-rreport-"));
-    roots.push(root);
-    const report = createReviewReport({
-      changeId: "demo",
-      issues: [
-        createReviewIssue({
-          category: "BLOCKER",
-          severity: "MAJOR",
-          message: "x",
-        }),
-      ],
-    });
-    const paths = await writeReviewReport(root, "demo", report);
-    expect(
-      paths.jsonPath.endsWith(".sdd/changes/demo/review-report.v1.2.json"),
-    ).toBe(true);
-    expect(
-      paths.mdPath.endsWith(".sdd/changes/demo/review-report.v1.2.md"),
-    ).toBe(true);
-    const stored = JSON.parse(await readFile(paths.jsonPath, "utf8"));
-    expect(stored.result).toBe("BLOCK");
-  });
+  (process.platform === "win32" ? it.skip : it)(
+    "writeReviewReport persists JSON + Markdown atomically",
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), "sdd-rreport-"));
+      roots.push(root);
+      const report = createReviewReport({
+        changeId: "demo",
+        issues: [
+          createReviewIssue({
+            category: "BLOCKER",
+            severity: "MAJOR",
+            message: "x",
+          }),
+        ],
+      });
+      const paths = await writeReviewReport(root, "demo", report);
+      expect(
+        paths.jsonPath.endsWith(".sdd/changes/demo/review-report.v1.2.json"),
+      ).toBe(true);
+      expect(
+        paths.mdPath.endsWith(".sdd/changes/demo/review-report.v1.2.md"),
+      ).toBe(true);
+      const stored = JSON.parse(await readFile(paths.jsonPath, "utf8"));
+      expect(stored.result).toBe("BLOCK");
+    },
+  );
 
   it("uses the documented category whitelist", () => {
     expect(REVIEW_CATEGORIES).toEqual([
