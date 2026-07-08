@@ -349,10 +349,10 @@ describe("init and status", () => {
       ".opencode/skills/sdd-harness/SKILL.md",
     ]) {
       const content = await readFile(join(root, path), "utf8");
-      expect(content).toContain("先思考再编码");
-      expect(content).toContain("简单优先");
-      expect(content).toContain("手术式修改");
-      expect(content).toContain("目标驱动执行");
+      expect(content).toContain("Think Before Coding");
+      expect(content).toContain("Simplicity First");
+      expect(content).toContain("Surgical Changes");
+      expect(content).toContain("Goal-Driven Execution");
     }
   });
 

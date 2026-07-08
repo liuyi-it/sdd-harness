@@ -25,11 +25,11 @@ function builtinClaudeManifest(): AdapterManifest {
       "使用 /sdd.auto 或阶段命令推进仓库变更。.sdd/ 是唯一工作流事实源。" +
       "build 阶段必须读取任务 Context Pack，并严格限制在 Allowed Files 内。" +
       "verify 或 review 失败后必须停止。\n\n" +
-      "Karpathy 风格执行规则：\n" +
-      "1. 先思考再编码 —— 先说明假设、边界、歧义与取舍，不靠猜测推进。\n" +
-      "2. 简单优先 —— 只写解决当前问题所需的最小代码，不提前抽象。\n" +
-      "3. 手术式修改 —— 只改当前任务需要的文件和代码行，不顺手重构无关内容。\n" +
-      "4. 目标驱动执行 —— 先定义验证动作，优先用检查和测试证明结果，再声明完成。",
+      "Karpathy-inspired operating rules:\n" +
+      "1. Think Before Coding — state assumptions, surface ambiguity and tradeoffs, ask instead of guessing.\n" +
+      "2. Simplicity First — write the minimum code that solves the requested problem; avoid speculative abstractions.\n" +
+      "3. Surgical Changes — touch only files and lines required by the task; do not refactor unrelated code.\n" +
+      "4. Goal-Driven Execution — define concrete verification steps, prefer tests or checks first, and do not claim success before verification.",
     commandsDir: ".claude/commands",
     commandTemplate:
       "---\ndescription: 通过 sdd-harness 执行 sdd {command}\n---\n\n" +
@@ -66,11 +66,11 @@ function builtinCodexManifest(): AdapterManifest {
       "使用 sdd auto 或阶段命令推进仓库变更。.sdd/ 是唯一工作流事实源。" +
       "build 阶段必须读取任务 Context Pack，并严格限制在 Allowed Files 内。" +
       "verify 或 review 失败后必须停止。\n\n" +
-      "Karpathy 风格执行规则：\n" +
-      "1. 先思考再编码 —— 先说明假设、边界、歧义与取舍，不靠猜测推进。\n" +
-      "2. 简单优先 —— 只写解决当前问题所需的最小代码，不提前抽象。\n" +
-      "3. 手术式修改 —— 只改当前任务需要的文件和代码行，不顺手重构无关内容。\n" +
-      "4. 目标驱动执行 —— 先定义验证动作，优先用检查和测试证明结果，再声明完成。",
+      "Karpathy-inspired operating rules:\n" +
+      "1. Think Before Coding — state assumptions, surface ambiguity and tradeoffs, ask instead of guessing.\n" +
+      "2. Simplicity First — write the minimum code that solves the requested problem; avoid speculative abstractions.\n" +
+      "3. Surgical Changes — touch only files and lines required by the task; do not refactor unrelated code.\n" +
+      "4. Goal-Driven Execution — define concrete verification steps, prefer tests or checks first, and do not claim success before verification.",
     commandsDir: ".codex/commands",
     commandTemplate:
       "---\ndescription: 通过 sdd-harness 执行 sdd {command}\n---\n\n" +
@@ -107,11 +107,11 @@ function builtinOpenCodeManifest(): AdapterManifest {
       "使用 sdd auto 或阶段命令推进仓库变更。.sdd/ 是唯一工作流事实源。" +
       "build 阶段必须读取任务 Context Pack，并严格限制在 Allowed Files 内。" +
       "verify 或 review 失败后必须停止。\n\n" +
-      "Karpathy 风格执行规则：\n" +
-      "1. 先思考再编码 —— 先说明假设、边界、歧义与取舍，不靠猜测推进。\n" +
-      "2. 简单优先 —— 只写解决当前问题所需的最小代码，不提前抽象。\n" +
-      "3. 手术式修改 —— 只改当前任务需要的文件和代码行，不顺手重构无关内容。\n" +
-      "4. 目标驱动执行 —— 先定义验证动作，优先用检查和测试证明结果，再声明完成。",
+      "Karpathy-inspired operating rules:\n" +
+      "1. Think Before Coding — state assumptions, surface ambiguity and tradeoffs, ask instead of guessing.\n" +
+      "2. Simplicity First — write the minimum code that solves the requested problem; avoid speculative abstractions.\n" +
+      "3. Surgical Changes — touch only files and lines required by the task; do not refactor unrelated code.\n" +
+      "4. Goal-Driven Execution — define concrete verification steps, prefer tests or checks first, and do not claim success before verification.",
     commandsDir: ".opencode/commands",
     commandTemplate:
       "---\ndescription: 通过 sdd-harness 执行 sdd {command}\n---\n\n" +
