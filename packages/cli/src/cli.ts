@@ -81,6 +81,7 @@ async function main(): Promise<void> {
       task: { type: "string" },
       result: { type: "string" },
       intent: { type: "string" },
+      agent: { type: "string" },
       structurePolicy: { type: "string" },
       host: { type: "string" },
       answers: { type: "string" },
@@ -121,6 +122,7 @@ async function main(): Promise<void> {
   if (values["non-interactive"]) extraArgs.nonInteractive = true;
   if (values.force) extraArgs.force = true;
   if (values.verbose) extraArgs.verbose = true;
+  if (values.agent) extraArgs.agent = values.agent;
   if (values.structurePolicy)
     extraArgs.structurePolicy = values.structurePolicy;
   if (values.host) extraArgs.host = values.host;
