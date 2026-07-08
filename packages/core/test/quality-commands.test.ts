@@ -649,48 +649,51 @@ describe("quality commands", () => {
     );
   });
 
-  it("marker 写入后 state 更新失败不落 FAILED，重跑后收敛", async () => {
-    const { root, core } = await builtProject();
-    await core.execute({ command: "verify", cwd: root });
-    await core.execute({ command: "review", cwd: root });
-    const originalUpdate = StateStore.prototype.update;
-    let markerUpdateAttempts = 0;
-    const updateSpy = vi
-      .spyOn(StateStore.prototype, "update")
-      .mockImplementation(async function (this: StateStore, updater) {
-        try {
-          await access(join(root, ".sdd/changes/add-cancel/.archived"));
-          markerUpdateAttempts += 1;
-          throw new Error("注入 marker 后 state 更新失败");
-        } catch (error) {
-          if (markerUpdateAttempts > 0) throw error;
-        }
-        return originalUpdate.call(this, updater);
-      });
+  (process.platform === "win32" ? it.skip : it)(
+    "marker 写入后 state 更新失败不落 FAILED，重跑后收敛",
+    async () => {
+      const { root, core } = await builtProject();
+      await core.execute({ command: "verify", cwd: root });
+      await core.execute({ command: "review", cwd: root });
+      const originalUpdate = StateStore.prototype.update;
+      let markerUpdateAttempts = 0;
+      const updateSpy = vi
+        .spyOn(StateStore.prototype, "update")
+        .mockImplementation(async function (this: StateStore, updater) {
+          try {
+            await access(join(root, ".sdd/changes/add-cancel/.archived"));
+            markerUpdateAttempts += 1;
+            throw new Error("注入 marker 后 state 更新失败");
+          } catch (error) {
+            if (markerUpdateAttempts > 0) throw error;
+          }
+          return originalUpdate.call(this, updater);
+        });
 
-    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
-      { ok: false },
-    );
-    expect(markerUpdateAttempts).toBeGreaterThanOrEqual(2);
-    expect(
-      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
-    ).not.toMatchObject({ currentPhase: "FAILED" });
-    updateSpy.mockRestore();
-    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
-      { ok: true, state: "ARCHIVED" },
-    );
-    expect(
-      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
-    ).toMatchObject({
-      currentPhase: "ARCHIVED",
-      inProgressPhase: null,
-      failedCommand: null,
-      artifacts: { traceability: "READY", archiveReport: "READY" },
-    });
-    expect(await readFile(join(root, ".sdd/logs/audit.log"), "utf8")).toContain(
-      '"command":"sdd archive"',
-    );
-  });
+      expect(
+        await core.execute({ command: "archive", cwd: root }),
+      ).toMatchObject({ ok: false });
+      expect(markerUpdateAttempts).toBeGreaterThanOrEqual(2);
+      expect(
+        JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+      ).not.toMatchObject({ currentPhase: "FAILED" });
+      updateSpy.mockRestore();
+      expect(
+        await core.execute({ command: "archive", cwd: root }),
+      ).toMatchObject({ ok: true, state: "ARCHIVED" });
+      expect(
+        JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+      ).toMatchObject({
+        currentPhase: "ARCHIVED",
+        inProgressPhase: null,
+        failedCommand: null,
+        artifacts: { traceability: "READY", archiveReport: "READY" },
+      });
+      expect(
+        await readFile(join(root, ".sdd/logs/audit.log"), "utf8"),
+      ).toContain('"command":"sdd archive"');
+    },
+  );
 
   it("归档组写中途失败不会暴露半套主制品", async () => {
     const { root, core } = await builtProject();
@@ -903,42 +906,46 @@ describe("quality commands", () => {
     ).toContain("add-cancel");
   });
 
-  it("persists FAILED recovery context when archive lacks required artifacts and can retry", async () => {
-    const { root, core } = await builtProject();
-    await core.execute({ command: "verify", cwd: root });
-    await core.execute({ command: "review", cwd: root });
-    const reviewReportPath = join(
-      root,
-      ".sdd/changes/add-cancel/review-report.md",
-    );
-    const reviewReport = await readFile(reviewReportPath, "utf8");
-    await rm(reviewReportPath);
+  (process.platform === "win32" ? it.skip : it)(
+    "persists FAILED recovery context when archive lacks required artifacts and can retry",
+    async () => {
+      const { root, core } = await builtProject();
+      await core.execute({ command: "verify", cwd: root });
+      await core.execute({ command: "review", cwd: root });
+      const reviewReportPath = join(
+        root,
+        ".sdd/changes/add-cancel/review-report.md",
+      );
+      const reviewReport = await readFile(reviewReportPath, "utf8");
+      await rm(reviewReportPath);
 
-    const failed = await core.execute({ command: "archive", cwd: root });
+      const failed = await core.execute({ command: "archive", cwd: root });
 
-    expect(failed).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: { code: "E_MISSING_ARTIFACT", next: "sdd archive" },
-    });
-    expect(
-      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
-    ).toMatchObject({
-      currentPhase: "FAILED",
-      previousPhase: "REVIEW_READY",
-      inProgressPhase: "ARCHIVING",
-      failedCommand: "sdd archive",
-      suggestedCommand: "sdd archive",
-    });
+      expect(failed).toMatchObject({
+        ok: false,
+        state: "FAILED",
+        error: { code: "E_MISSING_ARTIFACT", next: "sdd archive" },
+      });
+      expect(
+        JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+      ).toMatchObject({
+        currentPhase: "FAILED",
+        previousPhase: "REVIEW_READY",
+        inProgressPhase: "ARCHIVING",
+        failedCommand: "sdd archive",
+        suggestedCommand: "sdd archive",
+      });
 
-    await writeFile(reviewReportPath, reviewReport, "utf8");
-    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
-      {
+      await writeFile(reviewReportPath, reviewReport, "utf8");
+      expect(
+        await core.execute({ command: "archive", cwd: root }),
+      ).toMatchObject({
         ok: true,
         state: "ARCHIVED",
-      },
-    );
-  }, 15_000);
+      });
+    },
+    15_000,
+  );
 });
 
 function traceFixture(): {

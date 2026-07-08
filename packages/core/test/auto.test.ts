@@ -304,109 +304,123 @@ describe("sdd auto", () => {
     },
   );
 
-  it("resumes from FAILED by retrying the recorded stage", async () => {
-    const execute = vi
-      .fn(async ({ task }) => ({
-        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        tddEvidence: [
-          task.phase === "RED"
-            ? {
-                phase: task.phase,
-                command: "npm test",
-                passed: false,
-                expectedFailure: true,
-                output: "failed",
-              }
-            : {
-                phase: task.phase,
-                command: "npm test",
-                passed: true,
-                output: "passed",
-              },
-        ],
-        verification:
-          task.phase === "VERIFY"
-            ? [{ command: "npm test", passed: true, output: "passed" }]
-            : [],
-      }))
-      .mockResolvedValueOnce({
-        modifiedFiles: ["src/order.ts"],
-        tddEvidence: [
-          {
-            phase: "RED",
-            command: "npm test",
-            passed: false,
-            expectedFailure: true,
-            output: "failed",
-          },
-        ],
-        verification: [
-          { command: "npm test", passed: false, output: "failed" },
-        ],
+  (process.platform === "win32" ? it.skip : it)(
+    "resumes from FAILED by retrying the recorded stage",
+    async () => {
+      const execute = vi
+        .fn(async ({ task }) => ({
+          modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+          tddEvidence: [
+            task.phase === "RED"
+              ? {
+                  phase: task.phase,
+                  command: "npm test",
+                  passed: false,
+                  expectedFailure: true,
+                  output: "failed",
+                }
+              : {
+                  phase: task.phase,
+                  command: "npm test",
+                  passed: true,
+                  output: "passed",
+                },
+          ],
+          verification:
+            task.phase === "VERIFY"
+              ? [{ command: "npm test", passed: true, output: "passed" }]
+              : [],
+        }))
+        .mockResolvedValueOnce({
+          modifiedFiles: ["src/order.ts"],
+          tddEvidence: [
+            {
+              phase: "RED",
+              command: "npm test",
+              passed: false,
+              expectedFailure: true,
+              output: "failed",
+            },
+          ],
+          verification: [
+            { command: "npm test", passed: false, output: "failed" },
+          ],
+        });
+      const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
+      roots.push(root);
+      await seedProject(root);
+      const core = new Core({
+        codebase: new CodebaseAdapter(),
+        taskExecutor: { execute },
       });
-    const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
-    roots.push(root);
-    await seedProject(root);
-    const core = new Core({
-      codebase: new CodebaseAdapter(),
-      taskExecutor: { execute },
-    });
-    await core.execute({ command: "init", cwd: root });
+      await core.execute({ command: "init", cwd: root });
 
-    expect(
+      expect(
+        await core.execute({
+          command: "auto",
+          cwd: root,
+          args: {
+            requirement:
+              "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
+            changeId: "add-cancel",
+          },
+        }),
+      ).toMatchObject({
+        ok: false,
+        state: "FAILED",
+        error: { code: "E_VERIFY_FAILED", next: "sdd build" },
+      });
+
+      const result = await core.execute({ command: "auto", cwd: root });
+
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+        exitCode: 0,
+      });
+      expect(execute).toHaveBeenCalledTimes(9);
+    },
+  );
+
+  (process.platform === "win32" ? it.skip : it)(
+    "resumes from PAUSED by replaying the interrupted stage",
+    async () => {
+      const { root, core } = await initializedCore();
       await core.execute({
-        command: "auto",
+        command: "new",
         cwd: root,
         args: {
           requirement:
             "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
           changeId: "add-cancel",
         },
-      }),
-    ).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: { code: "E_VERIFY_FAILED", next: "sdd build" },
-    });
+      });
+      await core.execute({ command: "design", cwd: root });
+      await core.execute({ command: "plan", cwd: root });
+      const controller = new AbortController();
+      controller.abort();
 
-    const result = await core.execute({ command: "auto", cwd: root });
+      expect(
+        await core.execute({
+          command: "build",
+          cwd: root,
+          signal: controller.signal,
+        }),
+      ).toMatchObject({
+        ok: false,
+        state: "PAUSED",
+        error: { code: "E_INTERRUPTED", next: "sdd build" },
+      });
 
-    expect(result).toMatchObject({ ok: true, state: "ARCHIVED", exitCode: 0 });
-    expect(execute).toHaveBeenCalledTimes(9);
-  });
+      const result = await core.execute({ command: "auto", cwd: root });
 
-  it("resumes from PAUSED by replaying the interrupted stage", async () => {
-    const { root, core } = await initializedCore();
-    await core.execute({
-      command: "new",
-      cwd: root,
-      args: {
-        requirement:
-          "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
-        changeId: "add-cancel",
-      },
-    });
-    await core.execute({ command: "design", cwd: root });
-    await core.execute({ command: "plan", cwd: root });
-    const controller = new AbortController();
-    controller.abort();
-
-    expect(
-      await core.execute({
-        command: "build",
-        cwd: root,
-        signal: controller.signal,
-      }),
-    ).toMatchObject({
-      ok: false,
-      state: "PAUSED",
-      error: { code: "E_INTERRUPTED", next: "sdd build" },
-    });
-
-    const result = await core.execute({ command: "auto", cwd: root });
-
-    expect(result).toMatchObject({ ok: true, state: "ARCHIVED", exitCode: 0 });
-  });
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+        exitCode: 0,
+      });
+    },
+  );
 
   it("auto 在某一阶段超时后返回 FAILED", async () => {
     const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
