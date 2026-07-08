@@ -1,7 +1,7 @@
 import type { CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import type { CommandResult } from "../contracts.js";
 
-/** codebase 子命令分发：status / doctor / query */
+/** codebase 子命令分发：status / doctor / index / query / rebuild */
 export async function runCodebaseCommand(
   root: string,
   codebase: CodebaseAdapter,
@@ -12,6 +12,13 @@ export async function runCodebaseCommand(
     (args?.codebaseSubcommand as string) ??
     "status";
 
+  const handleResult = (initResult: { provider: string; degraded: boolean }) => {
+    const state = initResult.degraded
+      ? { ok: true, state: "INDEX_READY" as const, exitCode: 0 }
+      : { ok: true, state: "INDEX_READY" as const, exitCode: 0 };
+    return state;
+  };
+
   switch (subcommand) {
     case "status": {
       const initResult = await codebase.initialize(root);
@@ -19,9 +26,7 @@ export async function runCodebaseCommand(
         ? await codebase.capabilities()
         : [];
       return {
-        ok: true,
-        state: "INDEX_READY",
-        exitCode: 0,
+        ...handleResult(initResult),
         data: {
           provider: initResult.provider,
           degraded: initResult.degraded,
@@ -61,6 +66,32 @@ export async function runCodebaseCommand(
         ];
       }
       return result;
+    }
+    case "index": {
+      const initResult = await codebase.initialize(root);
+      return {
+        ok: true,
+        state: "INDEX_READY",
+        exitCode: 0,
+        data: {
+          provider: initResult.provider,
+          degraded: initResult.degraded,
+          diagnostics: initResult.diagnostics,
+        },
+      };
+    }
+    case "rebuild": {
+      const initResult = await codebase.initialize(root);
+      return {
+        ok: true,
+        state: "INDEX_READY",
+        exitCode: 0,
+        data: {
+          provider: initResult.provider,
+          degraded: initResult.degraded,
+          diagnostics: initResult.diagnostics,
+        },
+      };
     }
     case "query": {
       const query = (args?.query as string) || "";

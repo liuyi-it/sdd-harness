@@ -183,8 +183,17 @@ async function main(): Promise<void> {
     }
     case "codebase": {
       const codebasePositionals = positionals.slice(1);
-      const subcommand = codebasePositionals[0];
-      result = await runCodebase(core, cwd, subcommand, extraArgs, undefined);
+      const [subcommand, ...queryParts] = codebasePositionals;
+      const query = queryParts.join(" ");
+      if (query) extraArgs.query = query;
+      if (!extraArgs.intent && values.intent) extraArgs.intent = values.intent;
+      result = await runCodebase(
+        core,
+        cwd,
+        subcommand,
+        extraArgs,
+        undefined,
+      );
       break;
     }
     default:

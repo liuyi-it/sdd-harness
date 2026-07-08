@@ -208,10 +208,15 @@ export class Core implements SddCore {
         return status;
       }
       const startedAt = new Date().toISOString();
+      // PLAN_READY → build next（不走传统 build，避免 MissingTaskExecutor）
+      const effectiveArgs =
+        command === "build"
+          ? { ...request.args, subcommand: "next" }
+          : request.args;
       const result = await this.execute({
         command,
         cwd: request.cwd,
-        ...(request.args === undefined ? {} : { args: request.args }),
+        ...(effectiveArgs === undefined ? {} : { args: effectiveArgs }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
       await recordAutoStep(request.cwd, loop.runId, {

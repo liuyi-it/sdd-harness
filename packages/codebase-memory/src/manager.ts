@@ -126,17 +126,21 @@ export class CodebaseMemoryManager {
     return fallbackQuery(input);
   }
 
-  /** 获取当前能力描述 */
+  /** 获取当前能力描述，基于真实 MCP 状态而非配置 */
   async getCapabilities(): Promise<McpCapabilities> {
+    const mcpAlive =
+      this.lifecycleResult !== null &&
+      (this.lifecycleResult.status === "STARTED" ||
+        this.lifecycleResult.status === "ALREADY_RUNNING");
+    const degraded = this.config.mode === "fallback" || !mcpAlive;
     return {
       schemaVersion: "1.0.0",
-      provider:
-        this.config.mode === "fallback"
-          ? "fallback-file-scan"
-          : "codebase-memory-mcp",
-      supportedIntents: ["impact", "related-files", "symbols", "tests"],
-      supportsIndex: this.config.mode !== "fallback",
-      supportsGraphQuery: this.config.mode !== "fallback",
+      provider: degraded ? "fallback-file-scan" : "codebase-memory-mcp",
+      supportedIntents: degraded
+        ? ["impact", "related-files"]
+        : ["impact", "related-files", "symbols", "callers", "callees", "routes", "tests", "architecture"],
+      supportsIndex: !degraded,
+      supportsGraphQuery: !degraded,
     };
   }
 
