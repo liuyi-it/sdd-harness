@@ -74,6 +74,14 @@ async function plannedCore(): Promise<{
       requirement:
         "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
       changeId: "add-cancel",
+      answers: {
+        "Q-ACTOR": "admin",
+        "Q-AUTHORIZATION": "JWT",
+        "Q-INTERFACE": "POST /api",
+        "Q-PRECONDITION": "pending",
+        "Q-RESULT": "success",
+        "Q-TEST": "tests",
+      },
     },
   });
   await core.execute({ command: "design", cwd: root });
@@ -117,22 +125,6 @@ describe("sdd auto", () => {
     "resumes the specified loop run when resume=<run-id> is provided",
     async () => {
       const { root, core, store, loops } = await plannedCore();
-      // 准备 tasks.json（plan 可能因 CLARIFYING 未执行成功）
-      await mkdir(join(root, ".sdd/changes/add-cancel"), { recursive: true });
-      await writeFile(
-        join(root, ".sdd/changes/add-cancel/tasks.json"),
-        JSON.stringify([
-          {
-            id: "TASK-001-RED",
-            phase: "RED",
-            dependsOn: [],
-            allowedFiles: ["src/order.ts"],
-            expectedNewFiles: ["test/order.test.ts"],
-            forbiddenFiles: [],
-            verification: ["npm test"],
-          },
-        ]),
-      );
       await store.write({
         ...createInitialState(),
         initialized: true,
@@ -146,7 +138,6 @@ describe("sdd auto", () => {
           status: "PAUSED",
         },
         suggestedCommand: "sdd build",
-        tasks: {},
       });
       await loops.writeRun({
         schemaVersion: "1.2.0",
@@ -171,10 +162,9 @@ describe("sdd auto", () => {
         args: { resume: "run-2" },
       });
 
-      // 没有 tasks.json，build next 会返回错误，auto 停在 FAILED
       expect(result).toMatchObject({
-        ok: false,
-        state: "FAILED",
+        ok: true,
+        state: "ARCHIVED",
       });
       expect(
         JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
@@ -203,7 +193,6 @@ describe("sdd auto", () => {
           status: "RUNNING",
         },
         suggestedCommand: "sdd build",
-        tasks: {},
       });
       await loops.writeRun({
         schemaVersion: "1.2.0",
@@ -221,8 +210,8 @@ describe("sdd auto", () => {
       });
 
       expect(result).toMatchObject({
-        ok: false,
-        state: "FAILED",
+        ok: true,
+        state: "ARCHIVED",
       });
       expect(
         await readFile(join(root, ".sdd/loop/runs/run-1.json"), "utf8"),
@@ -234,24 +223,27 @@ describe("sdd auto", () => {
     },
   );
 
-  it.skip("runs the complete workflow from a detailed requirement", async () => {
-    const { root, core } = await initializedCore();
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: {
-        requirement:
-          "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
-        changeId: "add-cancel",
-      },
-    });
-    // new 进入 CLARIFYING（有 blocker），auto 正确停止
-    expect(result).toMatchObject({
-      ok: true,
-      state: "CLARIFYING",
-      next: "sdd new",
-    });
-  });
+  (process.platform === "win32" ? it.skip : it)(
+    "runs the complete workflow from a detailed requirement",
+    async () => {
+      const { root, core } = await initializedCore();
+      const result = await core.execute({
+        command: "auto",
+        cwd: root,
+        args: {
+          requirement:
+            "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
+          changeId: "add-cancel",
+        },
+      });
+      // new 进入 CLARIFYING（无 answers），auto 正确停止
+      expect(result).toMatchObject({
+        ok: true,
+        state: "CLARIFYING",
+        next: "sdd new",
+      });
+    },
+  );
 
   it("stops at CLARIFYING rather than entering build", async () => {
     const { root, core } = await initializedCore();
@@ -267,174 +259,163 @@ describe("sdd auto", () => {
     });
   });
 
-  it.skip("continues from CLARIFYING after blocker answers are supplied", async () => {
-    const { root, core } = await initializedCore();
+  (process.platform === "win32" ? it.skip : it)(
+    "continues from CLARIFYING after blocker answers are supplied",
+    async () => {
+      const { root, core } = await initializedCore();
 
-    expect(
-      await core.execute({
+      expect(
+        await core.execute({
+          command: "auto",
+          cwd: root,
+          args: { requirement: "增加取消", changeId: "add-cancel" },
+        }),
+      ).toMatchObject({
+        ok: true,
+        state: "CLARIFYING",
+        next: "sdd new",
+      });
+
+      const result = await core.execute({
         command: "auto",
         cwd: root,
-        args: { requirement: "增加取消", changeId: "add-cancel" },
-      }),
-    ).toMatchObject({
-      ok: true,
-      state: "CLARIFYING",
-      next: "sdd new",
-    });
-
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: {
-        answers: {
-          "Q-001":
-            "仅允许创建者取消未完成订单，并提供 API、鉴权、日志与自动化测试",
-        },
-      },
-    });
-
-    expect(result).toMatchObject({
-      ok: true,
-      state: "BUILDING",
-      exitCode: 0,
-    });
-    expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
-  });
-
-  it.skip("resumes from FAILED by retrying the recorded stage", async () => {
-    const execute = vi
-      .fn(async ({ task }) => ({
-        modifiedFiles: ["src/order.ts", "test/order.test.ts"],
-        tddEvidence: [
-          task.phase === "RED"
-            ? {
-                phase: task.phase,
-                command: "npm test",
-                passed: false,
-                expectedFailure: true,
-                output: "failed",
-              }
-            : {
-                phase: task.phase,
-                command: "npm test",
-                passed: true,
-                output: "passed",
-              },
-        ],
-        verification:
-          task.phase === "VERIFY"
-            ? [{ command: "npm test", passed: true, output: "passed" }]
-            : [],
-      }))
-      .mockResolvedValueOnce({
-        modifiedFiles: ["src/order.ts"],
-        tddEvidence: [
-          {
-            phase: "RED",
-            command: "npm test",
-            passed: false,
-            expectedFailure: true,
-            output: "failed",
+        args: {
+          answers: {
+            "Q-001":
+              "仅允许创建者取消未完成订单，并提供 API、鉴权、日志与自动化测试",
           },
-        ],
-        verification: [
-          { command: "npm test", passed: false, output: "failed" },
-        ],
+        },
       });
-    const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
-    roots.push(root);
-    await seedProject(root);
-    const core = new Core({
-      codebase: new CodebaseAdapter(),
-      taskExecutor: { execute },
-    });
-    await core.execute({ command: "init", cwd: root });
 
-    // auto 推进到 build 阶段（绕过 CLARIFYING 需要 answers）
-    expect(
+      // answers 后 new → design → plan → build next → 需要 tasks.json（plannedCore 未生成）
+      expect(result).toMatchObject({
+        ok: true,
+        state: "BUILDING",
+        exitCode: 0,
+      });
+      expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
+    },
+  );
+
+  (process.platform === "win32" ? it.skip : it)(
+    "resumes from FAILED by retrying the recorded stage",
+    async () => {
+      const execute = vi
+        .fn(async ({ task }) => ({
+          modifiedFiles: ["src/order.ts", "test/order.test.ts"],
+          tddEvidence: [
+            task.phase === "RED"
+              ? {
+                  phase: task.phase,
+                  command: "npm test",
+                  passed: false,
+                  expectedFailure: true,
+                  output: "failed",
+                }
+              : {
+                  phase: task.phase,
+                  command: "npm test",
+                  passed: true,
+                  output: "passed",
+                },
+          ],
+          verification:
+            task.phase === "VERIFY"
+              ? [{ command: "npm test", passed: true, output: "passed" }]
+              : [],
+        }))
+        .mockResolvedValueOnce({
+          modifiedFiles: ["src/order.ts"],
+          tddEvidence: [
+            {
+              phase: "RED",
+              command: "npm test",
+              passed: false,
+              expectedFailure: true,
+              output: "failed",
+            },
+          ],
+          verification: [
+            { command: "npm test", passed: false, output: "failed" },
+          ],
+        });
+      const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
+      roots.push(root);
+      await seedProject(root);
+      const core = new Core({
+        codebase: new CodebaseAdapter(),
+        taskExecutor: { execute },
+      });
+      await core.execute({ command: "init", cwd: root });
+
+      expect(
+        await core.execute({
+          command: "auto",
+          cwd: root,
+          args: {
+            requirement:
+              "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
+            changeId: "add-cancel",
+          },
+        }),
+      ).toMatchObject({
+        ok: false,
+        state: "FAILED",
+        error: { code: "E_VERIFY_FAILED", next: "sdd build" },
+      });
+
+      const result = await core.execute({ command: "auto", cwd: root });
+
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+        exitCode: 0,
+      });
+      expect(execute).toHaveBeenCalledTimes(9);
+    },
+  );
+
+  (process.platform === "win32" ? it.skip : it)(
+    "resumes from PAUSED by replaying the interrupted stage",
+    async () => {
+      const { root, core } = await initializedCore();
       await core.execute({
-        command: "auto",
+        command: "new",
         cwd: root,
         args: {
           requirement:
             "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
           changeId: "add-cancel",
         },
-      }),
-    ).toMatchObject({
-      ok: true,
-      state: "CLARIFYING",
-      next: "sdd new",
-    });
+      });
+      await core.execute({ command: "design", cwd: root });
+      await core.execute({ command: "plan", cwd: root });
+      const controller = new AbortController();
+      controller.abort();
 
-    // 提供 answers 继续推进 → 到 build 阶段后 executor 第一次返回 verify 失败 → FAILED
-    const result = await core.execute({
-      command: "auto",
-      cwd: root,
-      args: {
-        answers: {
-          "Q-001":
-            "仅允许创建者取消未完成订单，并提供 API、鉴权、日志与自动化测试",
-        },
-      },
-    });
+      expect(
+        await core.execute({
+          command: "build",
+          cwd: root,
+          signal: controller.signal,
+        }),
+      ).toMatchObject({
+        ok: false,
+        state: "PAUSED",
+        error: { code: "E_INTERRUPTED", next: "sdd build" },
+      });
 
-    expect(result).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: { code: "E_VERIFY_FAILED", next: "sdd build" },
-    });
+      const result = await core.execute({ command: "auto", cwd: root });
 
-    const result2 = await core.execute({ command: "auto", cwd: root });
+      expect(result).toMatchObject({
+        ok: true,
+        state: "ARCHIVED",
+        exitCode: 0,
+      });
+    },
+  );
 
-    expect(result2).toMatchObject({
-      ok: true,
-      state: "BUILDING",
-      exitCode: 0,
-    });
-    expect(result2.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
-    expect(execute).toHaveBeenCalledTimes(9);
-  });
-
-  it.skip("resumes from PAUSED by replaying the interrupted stage", async () => {
-    const { root, core } = await initializedCore();
-    await core.execute({
-      command: "new",
-      cwd: root,
-      args: {
-        requirement:
-          "Implement authenticated order cancellation through an API endpoint with authorization, errors, logging, and automated tests.",
-        changeId: "add-cancel",
-      },
-    });
-    await core.execute({ command: "design", cwd: root });
-    await core.execute({ command: "plan", cwd: root });
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), 50);
-
-    expect(
-      await core.execute({
-        command: "auto",
-        cwd: root,
-        signal: controller.signal,
-      }),
-    ).toMatchObject({
-      ok: false,
-      state: "PAUSED",
-      error: { code: "E_INTERRUPTED", next: "sdd build" },
-    });
-
-    const result = await core.execute({ command: "auto", cwd: root });
-
-    expect(result).toMatchObject({
-      ok: true,
-      state: "BUILDING",
-      exitCode: 0,
-    });
-    expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
-  });
-
-  it.skip("auto 在某一阶段超时后返回 FAILED", async () => {
+  it("auto 在某一阶段超时后返回 FAILED", async () => {
     const root = await mkdtemp(join(tmpdir(), "sdd-auto-"));
     roots.push(root);
     await seedProject(root);
@@ -468,7 +449,8 @@ describe("sdd auto", () => {
     expect(result).toMatchObject({
       ok: false,
       state: "FAILED",
-      error: { code: "E_TIMEOUT" },
+      exitCode: 124,
+      error: { code: "E_TIMEOUT", next: "sdd build" },
     });
   });
 });

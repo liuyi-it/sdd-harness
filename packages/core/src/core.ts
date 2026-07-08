@@ -11,7 +11,7 @@ import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
 import { runCodebaseCommand } from "./commands/codebase.js";
-import { StateStore } from "./state/state-store.js";
+import type { TaskExecutionResult } from "./build/task-executor.js";
 import {
   finalizeAutoLoop,
   prepareAutoLoop,
@@ -27,7 +27,7 @@ import {
 } from "./contracts.js";
 import { SddError } from "./errors.js";
 import { SpecEngine } from "./engines/spec/spec-engine.js";
-import { TddEngine } from "./engines/tdd/tdd-engine.js";
+import { TddEngine, type TaskDefinition } from "./engines/tdd/tdd-engine.js";
 import {
   MissingTaskExecutor,
   type TaskExecutor,
@@ -240,14 +240,15 @@ export class Core implements SddCore {
         ) {
           const action = buildResult.actionRequired;
           const taskId = action.taskId;
-          const stateNow = await new StateStore(request.cwd).read();
+          // 通过 action.changeId 获取目录路径，避免调用 StateStore.read()
+          // 因 read() 会触发 normalizeTransientState 将 BUILDING→FAILED
           const changeDir = join(
             request.cwd,
             ".sdd",
             "changes",
-            stateNow.currentChangeId!,
+            action.changeId,
           );
-          let taskDef;
+          let taskDef: Record<string, unknown> | undefined;
           try {
             const raw = JSON.parse(
               await readFile(join(changeDir, "tasks.json"), "utf8"),
@@ -260,46 +261,38 @@ export class Core implements SddCore {
             break;
           }
           if (!taskDef) break;
-          const runDir = join(
-            request.cwd,
-            ".sdd",
-            "runs",
-            stateNow.currentRunId ?? "auto",
-            "tasks",
-          );
-          await mkdir(runDir, { recursive: true });
+          await mkdir(join(request.cwd, action.resultFile, ".."), {
+            recursive: true,
+          });
           const execResult = await this.taskExecutor.execute({
             schemaVersion: "1.2.0",
             root: request.cwd,
-            changeId: stateNow.currentChangeId ?? "",
-            runId: stateNow.currentRunId ?? "auto",
-            task: taskDef,
+            changeId: action.changeId,
+            runId: "auto",
+            task: taskDef as unknown as TaskDefinition,
             contextPack: "",
             gitBaseline: null,
             constraints: {
-              allowedFiles: [...taskDef.allowedFiles],
-              allowedCommands: [...taskDef.verification],
-              expectedNewFiles: [...taskDef.expectedNewFiles],
-              forbiddenFiles: [...taskDef.forbiddenFiles],
+              allowedFiles: [...((taskDef.allowedFiles as string[]) ?? [])],
+              allowedCommands: [...((taskDef.verification as string[]) ?? [])],
+              expectedNewFiles: [
+                ...((taskDef.expectedNewFiles as string[]) ?? []),
+              ],
+              forbiddenFiles: [...((taskDef.forbiddenFiles as string[]) ?? [])],
               maxExecutionMs: 0,
             },
             mode: "main-agent",
           });
-          const resultJson = {
+          const execRes = execResult as TaskExecutionResult;
+          const resultJson: Record<string, unknown> = {
             schemaVersion: "1.2.0",
             taskId,
             status: "SUCCEEDED",
-            modifiedFiles: (execResult as any).modifiedFiles ?? [], // eslint-disable-line
+            modifiedFiles: execRes.modifiedFiles,
             createdFiles: [],
-            commandsRun:
-              (execResult as any).commandsRun ?? // eslint-disable-line
-              (execResult as any).commandEvidence ?? // eslint-disable-line
-              [],
-            tddEvidence: (execResult as any).tddEvidence ?? [], // eslint-disable-line
-            verification:
-              (execResult as any).verification ?? // eslint-disable-line
-              (execResult as any).commandEvidence ?? // eslint-disable-line
-              [],
+            commandsRun: [],
+            tddEvidence: execRes.tddEvidence,
+            verification: execRes.verification,
             notes: [],
           };
           await writeFile(

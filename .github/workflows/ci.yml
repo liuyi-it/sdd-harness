@@ -23,4 +23,4 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
-      # validate:schemas 依赖 auto 全流程，待 Agent build loop 稳定后恢复
+      - run: npm run validate:schemas
