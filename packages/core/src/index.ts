@@ -21,6 +21,7 @@ export * from "./adapters/host-adapter.js";
 export * from "./install/project-installer.js";
 export * from "./git/git-inspector.js";
 export * from "./codebase/codebase-adapter.js";
+export type { McpQueryInput, McpQueryIntent } from "./codebase/mcp-query.js";
 export * from "./dependencies.js";
 export * from "./dependency-integrity.js";
 export * from "./errors.js";

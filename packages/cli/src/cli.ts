@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // sdd / sdd-harness CLI 入口 — 参数解析、命令路由、输出格式化
 import { parseArgs } from "node:util";
-import { Core, type CommandResult } from "@sdd-harness/core";
+import { CodebaseAdapter, Core, type CommandResult } from "@sdd-harness/core";
+import {
+  CodebaseMemoryManager,
+  CodebaseMemoryTransport,
+} from "@sdd-harness/codebase-memory";
 import { ExitCode } from "./exit-codes.js";
 import { outputJson, outputText } from "./json-output.js";
 import { runInit } from "./commands/init.js";
@@ -100,7 +104,12 @@ async function main(): Promise<void> {
     process.exit(ExitCode.INVALID_ARGS);
   }
 
-  const core = new Core();
+  // 构造 MCP transport → CodebaseAdapter → Core 的完整依赖链
+  const codebaseManager = new CodebaseMemoryManager();
+  const codebaseTransport = new CodebaseMemoryTransport(codebaseManager);
+  const core = new Core({
+    codebase: new CodebaseAdapter(codebaseTransport),
+  });
   const cwd = values.cwd ?? process.cwd();
   const json = values.json ?? false;
   const extraArgs: Record<string, unknown> = {};

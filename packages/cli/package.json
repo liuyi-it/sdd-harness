@@ -18,7 +18,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@sdd-harness/core": "0.1.0"
+    "@sdd-harness/core": "0.1.0",
+    "@sdd-harness/codebase-memory": "0.1.0"
   },
   "engines": {
     "node": ">=22"

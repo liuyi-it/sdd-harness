@@ -6,7 +6,6 @@ export async function runCodebaseCommand(
   root: string,
   codebase: CodebaseAdapter,
   args: Record<string, unknown> | undefined,
-  _signal?: AbortSignal,
 ): Promise<CommandResult> {
   const subcommand =
     (args?.subcommand as string) ??

@@ -18,7 +18,7 @@ import {
   type TaskExecutor,
 } from "../build/task-executor.js";
 import { assertRecoverableCommandState, canResumeCommand } from "./recovery.js";
-import { type CommandResult } from "../contracts.js";
+import { type AgentActionRequired, type CommandResult } from "../contracts.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { GitInspector } from "../git/git-inspector.js";
@@ -57,6 +57,19 @@ export async function runBuild(
   signal?: AbortSignal,
   rawArgs?: Record<string, unknown>,
 ): Promise<CommandResult> {
+  const subcommand = rawArgs?.subcommand as string | undefined;
+
+  // build next：返回下一个待执行任务的 AGENT_TASK_EXECUTION
+  if (subcommand === "next") {
+    return buildNextTask(root, rawArgs);
+  }
+
+  // build complete：验收 Agent 提交的 TaskExecutionResult
+  if (subcommand === "complete") {
+    return buildCompleteTask(root, rawArgs);
+  }
+
+  // 无子命令：完整 build 流程（传统模式）
   const lock = new FileLock(root);
   await lock.acquire("sdd build", undefined, lockOptions(rawArgs));
   const store = new StateStore(root);
@@ -632,4 +645,247 @@ async function readProjectConventionsHash(root: string): Promise<string> {
   } catch {
     return artifactInputHash("missing-project-conventions");
   }
+}
+
+// ── build next / build complete ────────────────────────────────────────────
+
+/**
+ * build next：返回下一个待执行任务的 AgentActionRequired。
+ *
+ * Agent 调用 sdd build next --json 获取 AGENT_TASK_EXECUTION，
+ * 按 Context Pack 修改代码、写 TaskExecutionResult 后
+ * 调用 sdd build complete 提交。
+ */
+async function buildNextTask(
+  root: string,
+  rawArgs?: Record<string, unknown>,
+): Promise<CommandResult> {
+  const state = await new StateStore(root).read();
+  if (
+    state.currentPhase !== "PLAN_READY" &&
+    state.currentPhase !== "BUILDING"
+  ) {
+    return {
+      ok: false,
+      state: state.currentPhase,
+      exitCode: 3,
+      error: {
+        code: "E_INVALID_PHASE_COMMAND",
+        message: `无法在 ${state.currentPhase} 状态下获取构建任务`,
+        next: state.suggestedCommand ?? "sdd plan",
+      },
+    };
+  }
+  const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
+  const change = join(root, ".sdd", "changes", changeId);
+  const tasks = JSON.parse(
+    await readFile(join(change, "tasks.json"), "utf8"),
+  ) as TaskDefinition[];
+
+  // 查找第一个未完成任务
+  const doneTasks = Object.entries(state.tasks)
+    .filter(([, status]) => status === "DONE")
+    .map(([id]) => id);
+  const nextTask = tasks.find(
+    (t) =>
+      !doneTasks.includes(t.id) &&
+      t.dependsOn.every((d) => doneTasks.includes(d)),
+  );
+
+  if (!nextTask) {
+    return {
+      ok: true,
+      state: "BUILD_READY",
+      exitCode: 0,
+      next: "sdd verify",
+      data: { allTasksDone: true },
+    };
+  }
+
+  // 准备 Context Pack
+  const runId = state.currentRunId ?? `run-${Date.now()}`;
+  const contextPackPath = `.sdd/context-packs/${changeId}/${nextTask.id}.md`;
+  await mkdir(join(root, ".sdd", "context-packs", changeId), {
+    recursive: true,
+  });
+  await writeFile(
+    join(root, contextPackPath),
+    `# Task: ${nextTask.id}\n\nPhase: ${nextTask.phase}\n\n## Allowed Files\n${(nextTask.allowedFiles ?? []).map((f) => `- ${f}`).join("\n")}\n\n## Description\n${nextTask.title ?? "实施此任务"}\n`,
+    "utf8",
+  );
+
+  const resultFile = `.sdd/runs/${runId}/tasks/${nextTask.id}.result.json`;
+  await mkdir(join(root, ".sdd", "runs", runId, "tasks"), { recursive: true });
+
+  // 记录 RUNNING 状态
+  await new StateStore(root).update((current) => ({
+    ...current,
+    currentPhase: "BUILDING",
+    inProgressPhase: "BUILDING",
+    lastCommand: "sdd build next",
+    lastError: null,
+    suggestedCommand: "sdd build next",
+  }));
+
+  const actionRequired: AgentActionRequired = {
+    type: "AGENT_TASK_EXECUTION",
+    taskId: nextTask.id,
+    changeId,
+    contextPack: contextPackPath,
+    allowedFiles: nextTask.allowedFiles ?? [],
+    expectedNewFiles: nextTask.expectedNewFiles ?? [],
+    forbiddenFiles: nextTask.forbiddenFiles ?? [],
+    verification:
+      nextTask.verification?.map((cmd: string) => {
+        const [command, ...rest] = cmd.split(/\s+/);
+        return { command: command!, args: rest };
+      }) ?? [],
+    resultFile,
+    codebase: {
+      provider: "fallback-file-scan",
+      degraded: true,
+    },
+  };
+
+  return {
+    ok: true,
+    state: "BUILDING",
+    exitCode: 0,
+    actionRequired,
+    next: "sdd build complete",
+  };
+}
+
+const VALID_TASK_STATUSES = [
+  "SUCCEEDED",
+  "FAILED",
+  "BLOCKED",
+  "SKIPPED",
+  "DEGRADED",
+];
+
+/**
+ * build complete：验收 Agent 提交的 TaskExecutionResult。
+ *
+ * 校验 schema、Git delta、TDD evidence，更新任务状态。
+ */
+async function buildCompleteTask(
+  root: string,
+  rawArgs?: Record<string, unknown>,
+): Promise<CommandResult> {
+  const taskId = rawArgs?.taskId as string | undefined;
+  const resultJson = rawArgs?.result as Record<string, unknown> | undefined;
+
+  if (!taskId || !resultJson) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 2,
+      error: {
+        code: "E_INVALID_PHASE_COMMAND",
+        message: "build complete 需要 --task 和 --result 参数",
+      },
+    };
+  }
+
+  // Schema 校验
+  if (
+    !resultJson.schemaVersion ||
+    !resultJson.taskId ||
+    !VALID_TASK_STATUSES.includes(resultJson.status as string)
+  ) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: {
+        code: "E_MISSING_ARTIFACT",
+        message: "TaskExecutionResult 结构不合法",
+      },
+    };
+  }
+
+  const state = await new StateStore(root).read();
+  const changeId = state.currentChangeId;
+  if (!changeId) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 3,
+      error: { code: "E_MISSING_CHANGE", message: "缺少当前变更 ID" },
+    };
+  }
+
+  // 校验文件范围
+  const tasks = JSON.parse(
+    await readFile(
+      join(root, ".sdd", "changes", changeId, "tasks.json"),
+      "utf8",
+    ),
+  ) as TaskDefinition[];
+  const task = tasks.find((t) => t.id === taskId);
+  if (!task) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: { code: "E_MISSING_ARTIFACT", message: `任务 ${taskId} 不存在` },
+    };
+  }
+
+  const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
+  const allowedFiles = task.allowedFiles ?? [];
+  const outOfScope = modifiedFiles.filter((f) => !allowedFiles.includes(f));
+  if (outOfScope.length > 0) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 5,
+      error: {
+        code: "E_SECURITY_BLOCKED",
+        message: `修改了不允许的文件: ${outOfScope.join(", ")}`,
+      },
+    };
+  }
+
+  // TDD evidence 校验
+  const tddEvidence = resultJson.tddEvidence as
+    | Array<{ phase: string; passed: boolean }>
+    | undefined;
+  const expectedPhases =
+    task.phase !== "REFACTOR" ? ["RED", "GREEN", "REFACTOR"] : ["RED"];
+  const hasPhases = new Set((tddEvidence ?? []).map((e) => e.phase));
+  const missingPhases = expectedPhases.filter((p) => !hasPhases.has(p));
+  if (missingPhases.length > 0 && tddEvidence && tddEvidence.length > 0) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 7,
+      error: {
+        code: "E_TDD_EVIDENCE_REQUIRED",
+        message: `缺少 TDD 阶段证据: ${missingPhases.join(", ")}`,
+      },
+    };
+  }
+
+  // 更新任务状态
+  const taskStatus = resultJson.status as string;
+  const status =
+    taskStatus === "SUCCEEDED" || taskStatus === "DONE" ? "DONE" : "FAILED";
+
+  await new StateStore(root).update((current) => ({
+    ...current,
+    tasks: { ...current.tasks, [taskId]: status as "DONE" | "FAILED" },
+  }));
+
+  // 检查是否所有任务完成
+  const updatedState = await new StateStore(root).read();
+  const allDone = tasks.every((t) => updatedState.tasks[t.id] === "DONE");
+
+  return {
+    ok: true,
+    state: allDone ? "BUILD_READY" : "BUILDING",
+    exitCode: 0,
+    next: allDone ? "sdd verify" : "sdd build next",
+  };
 }

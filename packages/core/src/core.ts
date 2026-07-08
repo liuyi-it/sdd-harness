@@ -65,7 +65,6 @@ export class Core implements SddCore {
             request.cwd,
             this.codebase,
             request.args,
-            request.signal,
           ),
           request,
         );

@@ -13,3 +13,4 @@ export {
   startFailedWarning,
   WARNING_CODES,
 } from "./warnings.js";
+export { CodebaseMemoryTransport } from "./transport.js";
