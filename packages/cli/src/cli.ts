@@ -74,6 +74,9 @@ async function main(): Promise<void> {
       verbose: { type: "boolean", default: false },
       help: { type: "boolean", default: false },
       version: { type: "boolean", default: false },
+      task: { type: "string" },
+      result: { type: "string" },
+      intent: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -101,9 +104,9 @@ async function main(): Promise<void> {
   const cwd = values.cwd ?? process.cwd();
   const json = values.json ?? false;
   const extraArgs: Record<string, unknown> = {};
-  if (values.change) extraArgs.change = values.change;
+  if (values.change) extraArgs.changeId = values.change;
   if (values.timeout) extraArgs.timeout = Number(values.timeout);
-  if (values["non-interactive"]) extraArgs["non-interactive"] = true;
+  if (values["non-interactive"]) extraArgs.nonInteractive = true;
   if (values.force) extraArgs.force = true;
   if (values.verbose) extraArgs.verbose = true;
 
@@ -129,18 +132,13 @@ async function main(): Promise<void> {
       break;
     case "build": {
       const buildPositionals = positionals.slice(1);
-      const subcommand = buildPositionals[0]; // "next" | "complete" | undefined
-      const taskIdx = buildPositionals.indexOf("--task");
-      const resultIdx = buildPositionals.indexOf("--result");
-      const taskId = taskIdx >= 0 ? buildPositionals[taskIdx + 1] : undefined;
-      const resultPath =
-        resultIdx >= 0 ? buildPositionals[resultIdx + 1] : undefined;
+      const subcommand = buildPositionals[0];
       result = await runBuild(
         core,
         cwd,
         subcommand,
-        taskId,
-        resultPath,
+        values.task,
+        values.result,
         extraArgs,
         undefined,
       );

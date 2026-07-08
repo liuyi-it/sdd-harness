@@ -38,7 +38,15 @@ export async function runNew(
   codebase?: CodebaseAdapter,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
-  const args = parseArgs(rawArgs);
+  // 兼容 CLI 传入的 "non-interactive" 和 Core 预期的 nonInteractive
+  const resolvedRawArgs: Record<string, unknown> = { ...rawArgs };
+  if (
+    resolvedRawArgs["non-interactive"] !== undefined &&
+    resolvedRawArgs.nonInteractive === undefined
+  ) {
+    resolvedRawArgs.nonInteractive = resolvedRawArgs["non-interactive"];
+  }
+  const args = parseArgs(resolvedRawArgs);
   const lock = new FileLock(root);
   await lock.acquire("sdd new", args.changeId, lockOptions(rawArgs));
   const store = new StateStore(root);
@@ -83,10 +91,9 @@ export async function runNew(
       state.currentPhase === "CLARIFYING" || repeating || retrying;
     const parentChangeId =
       state.currentPhase === "ARCHIVED" ? state.currentChangeId : null;
-    const changeId = continuing ? state.currentChangeId : args.changeId;
-    if (changeId === null || changeId === undefined) {
-      throw new SddError("E_MISSING_CHANGE", "缺少必需的变更 id");
-    }
+    const changeId: string = continuing
+      ? (state.currentChangeId ?? `change-${Date.now()}`)
+      : (args.changeId as string) || `change-${Date.now()}`;
     const runId = continuing ? state.currentRunId : `run-${Date.now()}`;
     if (runId === null)
       throw new SddError("E_STATE_CORRUPTED", "处于澄清状态的变更缺少 run id");
