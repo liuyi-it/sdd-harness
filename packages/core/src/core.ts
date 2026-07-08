@@ -1,6 +1,3 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import { CodebaseAdapter } from "./codebase/codebase-adapter.js";
 import { runInit } from "./commands/init.js";
 import { runNew } from "./commands/new.js";
@@ -11,7 +8,6 @@ import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
 import { runCodebaseCommand } from "./commands/codebase.js";
-import type { TaskExecutionResult } from "./build/task-executor.js";
 import {
   finalizeAutoLoop,
   prepareAutoLoop,
@@ -27,7 +23,7 @@ import {
 } from "./contracts.js";
 import { SddError } from "./errors.js";
 import { SpecEngine } from "./engines/spec/spec-engine.js";
-import { TddEngine, type TaskDefinition } from "./engines/tdd/tdd-engine.js";
+import { TddEngine } from "./engines/tdd/tdd-engine.js";
 import {
   MissingTaskExecutor,
   type TaskExecutor,
@@ -197,9 +193,9 @@ export class Core implements SddCore {
         REVIEW_READY: "archive",
       };
     // auto 只是阶段编排器，不会绕过任何单阶段命令自身的安全检查。
+    let result: CommandResult | undefined;
     for (let step = 0; step < loop.maxSteps; step += 1) {
-      // 每次迭代重新读取状态，确保阶段推进
-      status = await runStatus(request.cwd);
+      // step>0 时 status 已由上轮 loop 底部的 `status = result` 更新，无需 runStatus（避免 normalizeTransientState）
       if (status.state === "ARCHIVED") {
         await finalizeAutoLoop(request.cwd, loop.runId, "ARCHIVED");
         return status;
@@ -219,101 +215,14 @@ export class Core implements SddCore {
         command === "build"
           ? { ...request.args, subcommand: "next" }
           : request.args;
-      let result = await this.execute({
+      result = await this.execute({
         command,
         cwd: request.cwd,
         ...(effectiveArgs === undefined ? {} : { args: effectiveArgs }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
 
-      // build 阶段 Agent 循环：执行完所有任务后再继续
-      if (
-        command === "build" &&
-        result.ok &&
-        result.state === "BUILDING" &&
-        result.actionRequired?.type === "AGENT_TASK_EXECUTION"
-      ) {
-        let buildResult = result;
-        while (
-          buildResult.ok &&
-          buildResult.actionRequired?.type === "AGENT_TASK_EXECUTION"
-        ) {
-          const action = buildResult.actionRequired;
-          const taskId = action.taskId;
-          // 通过 action.changeId 获取目录路径，避免调用 StateStore.read()
-          // 因 read() 会触发 normalizeTransientState 将 BUILDING→FAILED
-          const changeDir = join(
-            request.cwd,
-            ".sdd",
-            "changes",
-            action.changeId,
-          );
-          let taskDef: Record<string, unknown> | undefined;
-          try {
-            const raw = JSON.parse(
-              await readFile(join(changeDir, "tasks.json"), "utf8"),
-            );
-            if (Array.isArray(raw))
-              taskDef = raw.find(
-                (t: Record<string, unknown>) => t.id === taskId,
-              );
-          } catch {
-            break;
-          }
-          if (!taskDef) break;
-          await mkdir(join(request.cwd, action.resultFile, ".."), {
-            recursive: true,
-          });
-          const execResult = await this.taskExecutor.execute({
-            schemaVersion: "1.2.0",
-            root: request.cwd,
-            changeId: action.changeId,
-            runId: "auto",
-            task: taskDef as unknown as TaskDefinition,
-            contextPack: "",
-            gitBaseline: null,
-            constraints: {
-              allowedFiles: [...((taskDef.allowedFiles as string[]) ?? [])],
-              allowedCommands: [...((taskDef.verification as string[]) ?? [])],
-              expectedNewFiles: [
-                ...((taskDef.expectedNewFiles as string[]) ?? []),
-              ],
-              forbiddenFiles: [...((taskDef.forbiddenFiles as string[]) ?? [])],
-              maxExecutionMs: 0,
-            },
-            mode: "main-agent",
-          });
-          const execRes = execResult as TaskExecutionResult;
-          const resultJson: Record<string, unknown> = {
-            schemaVersion: "1.2.0",
-            taskId,
-            status: "SUCCEEDED",
-            modifiedFiles: execRes.modifiedFiles,
-            createdFiles: [],
-            commandsRun: [],
-            tddEvidence: execRes.tddEvidence,
-            verification: execRes.verification,
-            notes: [],
-          };
-          await writeFile(
-            join(request.cwd, action.resultFile),
-            JSON.stringify(resultJson, null, 2),
-            "utf8",
-          );
-          buildResult = await this.execute({
-            command: "build",
-            cwd: request.cwd,
-            args: { subcommand: "complete", taskId, result: resultJson },
-          });
-          if (buildResult.state !== "BUILDING") break;
-          buildResult = await this.execute({
-            command: "build",
-            cwd: request.cwd,
-            args: { ...request.args, subcommand: "next" },
-          });
-        }
-        result = buildResult;
-      }
+      // auto 到 build 阶段返回 AGENT_TASK_EXECUTION，由外部 Agent 执行任务后调 build complete 继续
 
       await recordAutoStep(request.cwd, loop.runId, {
         command,
