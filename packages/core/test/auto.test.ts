@@ -238,10 +238,15 @@ describe("sdd auto", () => {
   it("stops at CLARIFYING rather than entering build", async () => {
     const { root, core } = await initializedCore();
     const result = await core.execute({
-      command: "auto", cwd: root,
+      command: "auto",
+      cwd: root,
       args: { requirement: "增加取消", changeId: "add-cancel" },
     });
-    expect(result).toMatchObject({ ok: true, state: "CLARIFYING", next: "sdd new" });
+    expect(result).toMatchObject({
+      ok: true,
+      state: "CLARIFYING",
+      next: "sdd new",
+    });
   });
 
   // 有 answers → 绕过 CLARIFYING → 推进到 BUILDING
