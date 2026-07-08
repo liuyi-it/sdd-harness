@@ -27,6 +27,7 @@ export * from "./dependency-integrity.js";
 export * from "./errors.js";
 export * from "./audit/audit-logger.js";
 export type { AdapterManifest } from "./adapters/types.js";
+export { getAvailableAdapters } from "./adapters/registry.js";
 export * from "./security/path-safety.js";
 export * from "./state/file-lock.js";
 export * from "./state/state-store.js";
