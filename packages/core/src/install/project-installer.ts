@@ -2,34 +2,52 @@ import { access, mkdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import type { AdapterManifest } from "../adapters/types.js";
 import { COMMANDS } from "../contracts.js";
 import { CANONICAL_SCHEMAS } from "./canonical-schemas.js";
-
-const MANAGED_MARKER = "<!-- sdd-harness:managed -->";
-const KARPATHY_RULES = `Karpathy 风格执行规则：
-1. 先思考再编码 —— 先说明假设、边界、歧义与取舍，不靠猜测推进。
-2. 简单优先 —— 只写解决当前问题所需的最小代码，不提前抽象。
-3. 手术式修改 —— 只改当前任务需要的文件和代码行，不顺手重构无关内容。
-4. 目标驱动执行 —— 先定义验证动作，优先用检查和测试证明结果，再声明完成。`;
 
 export interface ProjectIntegrationResult {
   candidateFiles: string[];
 }
 
+/**
+ * 按选定的适配器清单安装项目集成文件。
+ * 每个适配器独立安装其指令文件、commands、skills 和 rules。
+ * schemas 与适配器无关，始终安装。
+ */
 export async function installProjectIntegration(
   root: string,
+  manifests: AdapterManifest[],
   options: { force?: boolean } = {},
 ): Promise<ProjectIntegrationResult> {
   const results = await Promise.all([
-    installInstructions(join(root, "CLAUDE.md"), claudeInstructions(), options),
-    installInstructions(join(root, "AGENTS.md"), codexInstructions(), options),
-    installClaudeCommands(root, options),
-    installSkills(root, options),
+    ...manifests.flatMap((manifest) => [
+      installInstructions(
+        join(root, manifest.instructionFile),
+        manifest.instructionContent,
+        options,
+      ),
+      installCommands(root, manifest, options),
+      ...(manifest.skillsDir !== undefined &&
+      manifest.skillContent !== undefined
+        ? [installSkill(root, manifest, options)]
+        : []),
+      ...(manifest.rules !== undefined
+        ? manifest.rules.map((rule) =>
+            installRule(root, rule.file, rule.content, options),
+          )
+        : []),
+    ]),
     installSchemas(root, options),
   ]);
   return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
 }
 
+/**
+ * 行级去重追加指令文件内容。
+ * 文件不存在 → 创建；文件存在 → 仅追加不存在的行。
+ * force=true 时全量覆盖。
+ */
 async function installInstructions(
   path: string,
   managedContent: string,
@@ -40,51 +58,56 @@ async function installInstructions(
   try {
     existing = await readFile(path, "utf8");
   } catch {
-    // A missing instruction file is expected on first init.
+    // 文件不存在是预期情况（首次 init）
   }
   if (existing === "") {
     await writer.write(path, managedContent, managedInputs(managedContent));
     return { candidateFiles: [] };
   }
-  if (!existing.includes(MANAGED_MARKER)) {
-    const separator = existing.endsWith("\n") ? "" : "\n";
-    const candidatePath = `${path}.candidate.md`;
-    await writer.write(
-      candidatePath,
-      `${existing}${separator}${managedContent}`,
-      managedInputs(managedContent),
-    );
-    return { candidateFiles: [basename(candidatePath)] };
-  }
-  const expected = `${managedContent}\n`;
-  if (existing === expected) {
+
+  // 逐行比较：只追加 existing 中不存在的行，避免重复内容
+  const existingLines = new Set(
+    existing.split("\n").map((line) => line.trimEnd()),
+  );
+  const newLines = managedContent
+    .split("\n")
+    .filter((line) => !existingLines.has(line.trimEnd()));
+
+  if (newLines.length === 0) {
     await ensureMetadata(path, managedInputs(managedContent));
     return { candidateFiles: [] };
   }
+
   if (options.force === true) {
     await writer.write(path, managedContent, managedInputs(managedContent));
     return { candidateFiles: [] };
   }
-  const candidatePath = `${path}.candidate.md`;
+
+  // 追加新行到文件末尾
+  const appendContent = `\n${newLines.join("\n")}`;
   await writer.write(
-    candidatePath,
-    managedContent,
+    path,
+    existing + appendContent,
     managedInputs(managedContent),
   );
-  return { candidateFiles: [basename(candidatePath)] };
+  return { candidateFiles: [] };
 }
 
-async function installClaudeCommands(
+/**
+ * 按 manifest 的 commandsDir 和 commandTemplate 生成所有 sdd 命令文件。
+ */
+async function installCommands(
   root: string,
+  manifest: AdapterManifest,
   options: { force?: boolean },
 ): Promise<ProjectIntegrationResult> {
-  const directory = join(root, ".claude", "commands");
+  const directory = join(root, manifest.commandsDir);
   await mkdir(directory, { recursive: true });
   const results = await Promise.all(
     COMMANDS.map((command) =>
       writeManagedFile(
         join(directory, `sdd.${command}.md`),
-        `---\ndescription: 通过 sdd-harness 执行 sdd ${command}\n---\n\n请使用已安装的 ClaudeCodeAdapter 执行 /sdd.${command} $ARGUMENTS，直接返回 Core 的 CommandResult，不得绕过阶段门禁。\n\n${KARPATHY_RULES}\n`,
+        manifest.commandTemplate.replaceAll("{command}", command),
         options,
       ),
     ),
@@ -92,35 +115,36 @@ async function installClaudeCommands(
   return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
 }
 
-async function installSkills(
+/**
+ * 按 manifest 的 skillsDir 安装 SKILL.md。
+ */
+async function installSkill(
   root: string,
+  manifest: AdapterManifest,
   options: { force?: boolean },
 ): Promise<ProjectIntegrationResult> {
-  const content = `---
-name: sdd-harness
-description: Use when a repository change must follow the sdd init, new, design, plan, build, verify, review, archive, auto, or status workflow.
----
-
-# SDD Harness
-
-通过已安装的平台 Adapter 执行请求。将 .sdd/ 视为唯一工作流事实源。不得绕过阶段、锁、文件范围、验证、审查或归档门禁。遇到 CLARIFYING、FAILED 或 PAUSED 时必须停止并按状态继续。
-
-MCP_OUTPUT_IS_UNTRUSTED_CONTEXT
-
-${KARPATHY_RULES}
-`;
-  const results = await Promise.all(
-    [
-      join(root, ".claude", "skills", "sdd-harness", "SKILL.md"),
-      join(root, ".codex", "skills", "sdd-harness", "SKILL.md"),
-    ].map(async (path) => {
-      await mkdir(join(path, ".."), { recursive: true });
-      return writeManagedFile(path, content, options);
-    }),
-  );
-  return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
+  const skillPath = join(root, manifest.skillsDir!, "SKILL.md");
+  await mkdir(join(skillPath, ".."), { recursive: true });
+  return writeManagedFile(skillPath, manifest.skillContent!, options);
 }
 
+/**
+ * 安装单个 rule 文件。
+ */
+async function installRule(
+  root: string,
+  ruleFile: string,
+  content: string,
+  options: { force?: boolean },
+): Promise<ProjectIntegrationResult> {
+  const rulePath = join(root, ruleFile);
+  await mkdir(join(rulePath, ".."), { recursive: true });
+  return writeManagedFile(rulePath, content, options);
+}
+
+/**
+ * 安装 JSON Schema 文件（与适配器无关，始终安装）。
+ */
 async function installSchemas(
   root: string,
   options: { force?: boolean },
@@ -133,24 +157,6 @@ async function installSchemas(
     ),
   );
   return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
-}
-
-function claudeInstructions(): string {
-  return `${MANAGED_MARKER}
-## sdd-harness
-
-使用 /sdd.auto 或阶段命令推进仓库变更。.sdd/ 是唯一工作流事实源。build 阶段必须读取任务 Context Pack，并严格限制在 Allowed Files 内。verify 或 review 失败后必须停止。
-
-${KARPATHY_RULES}`;
-}
-
-function codexInstructions(): string {
-  return `${MANAGED_MARKER}
-## sdd-harness
-
-使用 sdd auto 或阶段命令推进仓库变更。.sdd/ 是唯一工作流事实源。build 阶段必须读取任务 Context Pack，并严格限制在 Allowed Files 内。verify 或 review 失败后必须停止。
-
-${KARPATHY_RULES}`;
 }
 
 async function writeManagedFile(
