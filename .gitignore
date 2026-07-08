@@ -5,6 +5,7 @@ coverage/
 .DS_Store
 .worktrees/
 package-lock.json
+/.sdd/
 
 # 测试样本项目的构建产物
 fixtures/**/target/
