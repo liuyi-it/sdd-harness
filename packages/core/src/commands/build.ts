@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
@@ -652,108 +652,136 @@ async function readProjectConventionsHash(root: string): Promise<string> {
 /**
  * build next：返回下一个待执行任务的 AgentActionRequired。
  *
- * Agent 调用 sdd build next --json 获取 AGENT_TASK_EXECUTION，
- * 按 Context Pack 修改代码、写 TaskExecutionResult 后
- * 调用 sdd build complete 提交。
+ * - FileLock（P1-3）
+ * - 不覆盖 plan 生成的 Context Pack，只读已有（P1-1）
+ * - 标记任务为 BUILDING（P1-2）
+ * - 排除已 DONE 或 已 BUILDING 的任务
  */
 async function buildNextTask(
   root: string,
   rawArgs?: Record<string, unknown>,
 ): Promise<CommandResult> {
-  const state = await new StateStore(root).read();
-  if (
-    state.currentPhase !== "PLAN_READY" &&
-    state.currentPhase !== "BUILDING"
-  ) {
-    return {
-      ok: false,
-      state: state.currentPhase,
-      exitCode: 3,
-      error: {
-        code: "E_INVALID_PHASE_COMMAND",
-        message: `无法在 ${state.currentPhase} 状态下获取构建任务`,
-        next: state.suggestedCommand ?? "sdd plan",
+  const lock = new FileLock(root);
+  await lock.acquire("sdd build next", undefined, lockOptions(rawArgs));
+  try {
+    const state = await new StateStore(root).read();
+    if (
+      state.currentPhase !== "PLAN_READY" &&
+      state.currentPhase !== "BUILDING"
+    ) {
+      return {
+        ok: false,
+        state: state.currentPhase,
+        exitCode: 3,
+        error: {
+          code: "E_INVALID_PHASE_COMMAND",
+          message: `无法在 ${state.currentPhase} 状态下获取构建任务`,
+          next: state.suggestedCommand ?? "sdd plan",
+        },
+      };
+    }
+    const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
+    const change = join(root, ".sdd", "changes", changeId);
+    const tasks = JSON.parse(
+      await readFile(join(change, "tasks.json"), "utf8"),
+    ) as TaskDefinition[];
+
+    // 查找第一个可执行任务（排除 DONE 和 BUILDING）
+    const taskStatuses = state.tasks;
+    const nextTask = tasks.find(
+      (t) =>
+        taskStatuses[t.id] !== "DONE" &&
+        taskStatuses[t.id] !== "BUILDING" &&
+        t.dependsOn.every((d) => taskStatuses[d] === "DONE"),
+    );
+
+    if (!nextTask) {
+      const allDone = tasks.every((t) => taskStatuses[t.id] === "DONE");
+      if (!allDone) {
+        return {
+          ok: true,
+          state: "BUILDING",
+          exitCode: 0,
+          next: "sdd build complete",
+          data: {
+            pendingBuild: Object.entries(taskStatuses)
+              .filter(([, s]) => s === "BUILDING")
+              .map(([id]) => id),
+          },
+        };
+      }
+      return {
+        ok: true,
+        state: "BUILD_READY",
+        exitCode: 0,
+        next: "sdd verify",
+        data: { allTasksDone: true },
+      };
+    }
+
+    const runId = state.currentRunId ?? `run-${Date.now()}`;
+    const contextPackPath = `.sdd/context-packs/${changeId}/${nextTask.id}.md`;
+    await mkdir(join(root, ".sdd", "context-packs", changeId), {
+      recursive: true,
+    });
+
+    // 不覆盖 plan 生成的 Context Pack（P1-1）
+    try {
+      await access(join(root, contextPackPath));
+    } catch {
+      await writeFile(
+        join(root, contextPackPath),
+        `# Task: ${nextTask.id}\n\nPhase: ${nextTask.phase}\n\n## Allowed Files\n${(nextTask.allowedFiles ?? []).map((f) => `- ${f}`).join("\n")}\n\n## Description\n${nextTask.title ?? "实施此任务"}\n`,
+        "utf8",
+      );
+    }
+
+    const resultFile = `.sdd/runs/${runId}/tasks/${nextTask.id}.result.json`;
+    await mkdir(join(root, ".sdd", "runs", runId, "tasks"), {
+      recursive: true,
+    });
+
+    // 标记任务为 BUILDING + 更新状态（P1-2）
+    await new StateStore(root).update((current) => ({
+      ...current,
+      currentPhase: "BUILDING",
+      inProgressPhase: "BUILDING",
+      lastCommand: "sdd build next",
+      lastError: null,
+      suggestedCommand: "sdd build next",
+      tasks: { ...current.tasks, [nextTask.id]: "BUILDING" },
+    }));
+
+    const actionRequired: AgentActionRequired = {
+      type: "AGENT_TASK_EXECUTION",
+      taskId: nextTask.id,
+      changeId,
+      contextPack: contextPackPath,
+      allowedFiles: nextTask.allowedFiles ?? [],
+      expectedNewFiles: nextTask.expectedNewFiles ?? [],
+      forbiddenFiles: nextTask.forbiddenFiles ?? [],
+      verification:
+        nextTask.verification?.map((cmd: string) => {
+          const [command, ...rest] = cmd.split(/\s+/);
+          return { command: command!, args: rest };
+        }) ?? [],
+      resultFile,
+      codebase: {
+        provider: "fallback-file-scan",
+        degraded: true,
       },
     };
-  }
-  const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
-  const change = join(root, ".sdd", "changes", changeId);
-  const tasks = JSON.parse(
-    await readFile(join(change, "tasks.json"), "utf8"),
-  ) as TaskDefinition[];
 
-  // 查找第一个未完成任务
-  const doneTasks = Object.entries(state.tasks)
-    .filter(([, status]) => status === "DONE")
-    .map(([id]) => id);
-  const nextTask = tasks.find(
-    (t) =>
-      !doneTasks.includes(t.id) &&
-      t.dependsOn.every((d) => doneTasks.includes(d)),
-  );
-
-  if (!nextTask) {
     return {
       ok: true,
-      state: "BUILD_READY",
+      state: "BUILDING",
       exitCode: 0,
-      next: "sdd verify",
-      data: { allTasksDone: true },
+      actionRequired,
+      next: "sdd build complete",
     };
+  } finally {
+    await lock.release();
   }
-
-  // 准备 Context Pack
-  const runId = state.currentRunId ?? `run-${Date.now()}`;
-  const contextPackPath = `.sdd/context-packs/${changeId}/${nextTask.id}.md`;
-  await mkdir(join(root, ".sdd", "context-packs", changeId), {
-    recursive: true,
-  });
-  await writeFile(
-    join(root, contextPackPath),
-    `# Task: ${nextTask.id}\n\nPhase: ${nextTask.phase}\n\n## Allowed Files\n${(nextTask.allowedFiles ?? []).map((f) => `- ${f}`).join("\n")}\n\n## Description\n${nextTask.title ?? "实施此任务"}\n`,
-    "utf8",
-  );
-
-  const resultFile = `.sdd/runs/${runId}/tasks/${nextTask.id}.result.json`;
-  await mkdir(join(root, ".sdd", "runs", runId, "tasks"), { recursive: true });
-
-  // 记录 RUNNING 状态
-  await new StateStore(root).update((current) => ({
-    ...current,
-    currentPhase: "BUILDING",
-    inProgressPhase: "BUILDING",
-    lastCommand: "sdd build next",
-    lastError: null,
-    suggestedCommand: "sdd build next",
-  }));
-
-  const actionRequired: AgentActionRequired = {
-    type: "AGENT_TASK_EXECUTION",
-    taskId: nextTask.id,
-    changeId,
-    contextPack: contextPackPath,
-    allowedFiles: nextTask.allowedFiles ?? [],
-    expectedNewFiles: nextTask.expectedNewFiles ?? [],
-    forbiddenFiles: nextTask.forbiddenFiles ?? [],
-    verification:
-      nextTask.verification?.map((cmd: string) => {
-        const [command, ...rest] = cmd.split(/\s+/);
-        return { command: command!, args: rest };
-      }) ?? [],
-    resultFile,
-    codebase: {
-      provider: "fallback-file-scan",
-      degraded: true,
-    },
-  };
-
-  return {
-    ok: true,
-    state: "BUILDING",
-    exitCode: 0,
-    actionRequired,
-    next: "sdd build complete",
-  };
 }
 
 const VALID_TASK_STATUSES = [
@@ -767,7 +795,7 @@ const VALID_TASK_STATUSES = [
 /**
  * build complete：验收 Agent 提交的 TaskExecutionResult。
  *
- * 校验 schema、Git delta、TDD evidence，更新任务状态。
+ * 包含结果持久化（P0-6）和状态持久化（P0-7）。
  */
 async function buildCompleteTask(
   root: string,
@@ -788,7 +816,7 @@ async function buildCompleteTask(
     };
   }
 
-  // Schema 校验
+  // Schema 校验（P1-5）
   if (
     !resultJson.schemaVersion ||
     !resultJson.taskId ||
@@ -805,87 +833,175 @@ async function buildCompleteTask(
     };
   }
 
-  const state = await new StateStore(root).read();
-  const changeId = state.currentChangeId;
-  if (!changeId) {
-    return {
-      ok: false,
-      state: "FAILED",
-      exitCode: 3,
-      error: { code: "E_MISSING_CHANGE", message: "缺少当前变更 ID" },
-    };
-  }
+  const lock = new FileLock(root);
+  await lock.acquire("sdd build complete", undefined, lockOptions(rawArgs));
+  try {
+    const store = new StateStore(root);
+    const state = await store.read();
+    const changeId = state.currentChangeId;
+    if (!changeId) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 3,
+        error: { code: "E_MISSING_CHANGE", message: "缺少当前变更 ID" },
+      };
+    }
 
-  // 校验文件范围
-  const tasks = JSON.parse(
-    await readFile(
-      join(root, ".sdd", "changes", changeId, "tasks.json"),
+    const change = join(root, ".sdd", "changes", changeId);
+    const tasks = JSON.parse(
+      await readFile(join(change, "tasks.json"), "utf8"),
+    ) as TaskDefinition[];
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 4,
+        error: { code: "E_MISSING_ARTIFACT", message: `任务 ${taskId} 不存在` },
+      };
+    }
+
+    // 文件范围校验（P1-4：检查 allowed + expectedNewFiles + forbiddenFiles）
+    const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
+    const allowedFiles = task.allowedFiles ?? [];
+    const expectedNewFiles = task.expectedNewFiles ?? [];
+    const forbiddenFiles = task.forbiddenFiles ?? [];
+    const outOfScope = modifiedFiles.filter(
+      (f) =>
+        !allowedFiles.includes(f) &&
+        !expectedNewFiles.includes(f) &&
+        forbiddenFiles.some((pf) => f === pf || f.startsWith(pf + "/")),
+    );
+    if (outOfScope.length > 0) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 5,
+        error: {
+          code: "E_SECURITY_BLOCKED",
+          message: `修改了不允许的文件: ${outOfScope.join(", ")}`,
+        },
+      };
+    }
+
+    // TDD evidence 校验（P1-6：空数组也阻断）
+    const tddEvidence =
+      (resultJson.tddEvidence as
+        | Array<{ phase: string; passed: boolean }>
+        | undefined) ?? [];
+    const expectedPhases =
+      task.phase !== "REFACTOR" ? ["RED", "GREEN", "REFACTOR"] : ["RED"];
+    const hasPhases = new Set(tddEvidence.map((e) => e.phase));
+    const missingPhases = expectedPhases.filter((p) => !hasPhases.has(p));
+    if (missingPhases.length > 0) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 7,
+        error: {
+          code: "E_TDD_EVIDENCE_REQUIRED",
+          message: `缺少 TDD 阶段证据: ${missingPhases.join(", ")}`,
+        },
+      };
+    }
+
+    // verification 校验（P1-6）
+    const verification =
+      (resultJson.verification as
+        | Array<{ command: string; passed: boolean }>
+        | undefined) ?? [];
+    const failedVerification = verification.filter((v) => !v.passed);
+    if (failedVerification.length > 0) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 7,
+        error: {
+          code: "E_VERIFY_FAILED",
+          message: `验证失败: ${failedVerification.map((v) => v.command).join(", ")}`,
+        },
+      };
+    }
+
+    // === 持久化（P0-6）：写入 task-results.json ===
+    const taskStatus =
+      resultJson.status === "SUCCEEDED" || resultJson.status === "DONE"
+        ? "DONE"
+        : "FAILED";
+    const existingResults: Array<Record<string, unknown>> = [];
+    try {
+      const raw = await readFile(join(change, "task-results.json"), "utf8");
+      existingResults.push(
+        ...(JSON.parse(raw) as Array<Record<string, unknown>>),
+      );
+    } catch {
+      // 文件不存在则使用空数组
+    }
+    const resultEntry = {
+      taskId,
+      status: taskStatus,
+      modifiedFiles,
+      createdFiles: resultJson.createdFiles ?? [],
+      commandsRun: resultJson.commandsRun ?? [],
+      tddEvidence,
+      verification,
+    };
+    const idx = existingResults.findIndex(
+      (r: Record<string, unknown>) => r.taskId === taskId,
+    );
+    if (idx >= 0) existingResults[idx] = resultEntry;
+    else existingResults.push(resultEntry);
+    await writeFile(
+      join(change, "task-results.json"),
+      JSON.stringify(existingResults, null, 2),
       "utf8",
-    ),
-  ) as TaskDefinition[];
-  const task = tasks.find((t) => t.id === taskId);
-  if (!task) {
+    );
+
+    // 写入 run result artifact
+    const runId = state.currentRunId ?? "unknown-run";
+    const resultFilePath = join(
+      root,
+      ".sdd",
+      "runs",
+      runId,
+      "tasks",
+      `${taskId}.result.json`,
+    );
+    await mkdir(join(root, ".sdd", "runs", runId, "tasks"), {
+      recursive: true,
+    });
+    await writeFile(
+      resultFilePath,
+      JSON.stringify(resultJson, null, 2),
+      "utf8",
+    );
+
+    // === 状态持久化（P0-7）===
+    const allDone = tasks.every((t) =>
+      t.id === taskId ? taskStatus === "DONE" : state.tasks[t.id] === "DONE",
+    );
+
+    await store.update((current) => ({
+      ...current,
+      tasks: { ...current.tasks, [taskId]: taskStatus },
+      currentPhase: allDone ? ("BUILD_READY" as const) : ("BUILDING" as const),
+      inProgressPhase: null,
+      failedCommand: null,
+      failedReason: null,
+      interruptedCommand: null,
+      lastCommand: "sdd build complete",
+      lastError: null,
+      suggestedCommand: allDone ? "sdd verify" : "sdd build next",
+    }));
+
     return {
-      ok: false,
-      state: "FAILED",
-      exitCode: 4,
-      error: { code: "E_MISSING_ARTIFACT", message: `任务 ${taskId} 不存在` },
+      ok: true,
+      state: allDone ? "BUILD_READY" : "BUILDING",
+      exitCode: 0,
+      next: allDone ? "sdd verify" : "sdd build next",
     };
+  } finally {
+    await lock.release();
   }
-
-  const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
-  const allowedFiles = task.allowedFiles ?? [];
-  const outOfScope = modifiedFiles.filter((f) => !allowedFiles.includes(f));
-  if (outOfScope.length > 0) {
-    return {
-      ok: false,
-      state: "FAILED",
-      exitCode: 5,
-      error: {
-        code: "E_SECURITY_BLOCKED",
-        message: `修改了不允许的文件: ${outOfScope.join(", ")}`,
-      },
-    };
-  }
-
-  // TDD evidence 校验
-  const tddEvidence = resultJson.tddEvidence as
-    | Array<{ phase: string; passed: boolean }>
-    | undefined;
-  const expectedPhases =
-    task.phase !== "REFACTOR" ? ["RED", "GREEN", "REFACTOR"] : ["RED"];
-  const hasPhases = new Set((tddEvidence ?? []).map((e) => e.phase));
-  const missingPhases = expectedPhases.filter((p) => !hasPhases.has(p));
-  if (missingPhases.length > 0 && tddEvidence && tddEvidence.length > 0) {
-    return {
-      ok: false,
-      state: "FAILED",
-      exitCode: 7,
-      error: {
-        code: "E_TDD_EVIDENCE_REQUIRED",
-        message: `缺少 TDD 阶段证据: ${missingPhases.join(", ")}`,
-      },
-    };
-  }
-
-  // 更新任务状态
-  const taskStatus = resultJson.status as string;
-  const status =
-    taskStatus === "SUCCEEDED" || taskStatus === "DONE" ? "DONE" : "FAILED";
-
-  await new StateStore(root).update((current) => ({
-    ...current,
-    tasks: { ...current.tasks, [taskId]: status as "DONE" | "FAILED" },
-  }));
-
-  // 检查是否所有任务完成
-  const updatedState = await new StateStore(root).read();
-  const allDone = tasks.every((t) => updatedState.tasks[t.id] === "DONE");
-
-  return {
-    ok: true,
-    state: allDone ? "BUILD_READY" : "BUILDING",
-    exitCode: 0,
-    next: allDone ? "sdd verify" : "sdd build next",
-  };
 }

@@ -12,7 +12,10 @@ export async function runCodebaseCommand(
     (args?.codebaseSubcommand as string) ??
     "status";
 
-  const handleResult = (initResult: { provider: string; degraded: boolean }) => {
+  const handleResult = (initResult: {
+    provider: string;
+    degraded: boolean;
+  }) => {
     const state = initResult.degraded
       ? { ok: true, state: "INDEX_READY" as const, exitCode: 0 }
       : { ok: true, state: "INDEX_READY" as const, exitCode: 0 };

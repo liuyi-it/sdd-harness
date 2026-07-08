@@ -187,13 +187,7 @@ async function main(): Promise<void> {
       const query = queryParts.join(" ");
       if (query) extraArgs.query = query;
       if (!extraArgs.intent && values.intent) extraArgs.intent = values.intent;
-      result = await runCodebase(
-        core,
-        cwd,
-        subcommand,
-        extraArgs,
-        undefined,
-      );
+      result = await runCodebase(core, cwd, subcommand, extraArgs, undefined);
       break;
     }
     default:

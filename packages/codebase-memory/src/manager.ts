@@ -138,7 +138,16 @@ export class CodebaseMemoryManager {
       provider: degraded ? "fallback-file-scan" : "codebase-memory-mcp",
       supportedIntents: degraded
         ? ["impact", "related-files"]
-        : ["impact", "related-files", "symbols", "callers", "callees", "routes", "tests", "architecture"],
+        : [
+            "impact",
+            "related-files",
+            "symbols",
+            "callers",
+            "callees",
+            "routes",
+            "tests",
+            "architecture",
+          ],
       supportsIndex: !degraded,
       supportsGraphQuery: !degraded,
     };
