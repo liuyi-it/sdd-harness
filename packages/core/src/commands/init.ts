@@ -43,6 +43,8 @@ import {
   normalizeCommandError,
   persistCommandFailure,
 } from "./recovery.js";
+import { getAvailableAdapters } from "../adapters/registry.js";
+import type { AdapterManifest } from "../adapters/types.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
 
 /**
@@ -114,13 +116,16 @@ export async function runInit(
       lastError: null,
     }));
     started = true;
+    const selectedAgents = normalizeAgentArg(args?.agent);
+    const allManifests = await getAvailableAdapters();
+    const manifests = filterManifests(allManifests, selectedAgents);
     await writeIfMissing(
       join(sddRoot, "config.yml"),
-      stringify(defaultConfig(root)),
+      stringify(defaultConfig(root, manifests.map((m) => m.agent))),
     );
     await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
-    const integration = await installProjectIntegration(root, {
+    const integration = await installProjectIntegration(root, manifests, {
       force: args?.force === true,
     });
     inProgressPhase = "INDEXING";
@@ -266,13 +271,29 @@ export async function runInit(
   }
 }
 
-function defaultConfig(root: string): Record<string, unknown> {
+function defaultConfig(
+  root: string,
+  agentNames?: string[],
+): Record<string, unknown> {
+  const plugins: Record<string, unknown> = {};
+  if (agentNames === undefined || agentNames.length === 0) {
+    // 向后兼容默认值
+    plugins.claudeCode = { enabled: true };
+    plugins.codex = { enabled: true };
+  } else {
+    for (const name of agentNames) {
+      if (name === "claude") plugins.claudeCode = { enabled: true };
+      else if (name === "codex") plugins.codex = { enabled: true };
+      else if (name === "opencode") plugins.openCode = { enabled: true };
+      else plugins[name] = { enabled: true };
+    }
+  }
   return {
     schemaVersion: CURRENT_SCHEMA_VERSION,
     project: {
       name: root.split(/[\\/]/).filter(Boolean).at(-1) ?? "auto-detect",
     },
-    plugins: { claudeCode: { enabled: true }, codex: { enabled: true } },
+    plugins,
     codebase: {
       provider: "codebase-memory-mcp",
       fallbackProvider: "file-scan",
@@ -482,6 +503,38 @@ function lockOptions(args: Record<string, unknown> | undefined): {
 } {
   const timeoutMs = timeoutMilliseconds(args);
   return timeoutMs === undefined ? {} : { timeoutMs };
+}
+
+/**
+ * 将 args.agent 规范化为字符串数组。
+ * 支持逗号分隔字符串 "claude,codex" 或 string[]。
+ * 未提供时返回 undefined（表示安装全部可用适配器，保持向后兼容）。
+ */
+function normalizeAgentArg(raw: unknown): string[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (Array.isArray(raw))
+    return raw.filter(
+      (a): a is string => typeof a === "string" && a.length > 0,
+    );
+  if (typeof raw === "string")
+    return raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  return undefined;
+}
+
+/**
+ * 按用户选择的 agent 列表过滤 manifest。
+ * selectedAgents 为 undefined 时返回全部（向后兼容直接调用 Core API）。
+ */
+function filterManifests(
+  all: AdapterManifest[],
+  selected: string[] | undefined,
+): AdapterManifest[] {
+  if (selected === undefined) return all;
+  const set = new Set(selected);
+  return all.filter((m) => set.has(m.agent));
 }
 
 async function validateConfig(path: string): Promise<string[]> {
