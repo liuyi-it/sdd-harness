@@ -223,8 +223,16 @@ describe("init and status", () => {
       ".claude/commands/sdd.status.md",
       ".claude/skills/sdd-harness/SKILL.md",
       ".claude/skills/sdd-harness/SKILL.md.meta.json",
+      ".codex/commands/sdd.init.md",
+      ".codex/commands/sdd.init.md.meta.json",
+      ".codex/commands/sdd.status.md",
       ".codex/skills/sdd-harness/SKILL.md",
       ".codex/skills/sdd-harness/SKILL.md.meta.json",
+      ".opencode/commands/sdd.init.md",
+      ".opencode/commands/sdd.init.md.meta.json",
+      ".opencode/commands/sdd.status.md",
+      ".opencode/skills/sdd-harness/SKILL.md",
+      ".opencode/skills/sdd-harness/SKILL.md.meta.json",
     ]) {
       await expect(access(join(root, path))).resolves.toBeUndefined();
     }
@@ -335,7 +343,10 @@ describe("init and status", () => {
       "AGENTS.md",
       ".claude/commands/sdd.init.md",
       ".claude/skills/sdd-harness/SKILL.md",
+      ".codex/commands/sdd.init.md",
       ".codex/skills/sdd-harness/SKILL.md",
+      ".opencode/commands/sdd.init.md",
+      ".opencode/skills/sdd-harness/SKILL.md",
     ]) {
       const content = await readFile(join(root, path), "utf8");
       expect(content).toContain("先思考再编码");
@@ -727,9 +738,10 @@ describe("init and status", () => {
     await expect(
       access(join(root, ".claude/commands/sdd.init.md.candidate.md")),
     ).resolves.toBeUndefined();
-    await expect(
-      access(join(root, "CLAUDE.md.candidate.md")),
-    ).resolves.toBeUndefined();
+    // 指令文件采用行级去重追加，保留原有 "manual override" 行并追加缺失的受管行
+    const claudeContent = await readFile(join(root, "CLAUDE.md"), "utf8");
+    expect(claudeContent).toContain("manual override");
+    expect(claudeContent).toContain("## sdd-harness");
   });
 
   it("传入 --force 时直接覆盖受管集成文件而不是生成 candidate", async () => {
@@ -771,7 +783,7 @@ describe("init and status", () => {
     ).rejects.toThrow();
   });
 
-  it("keeps pre-existing unmanaged instruction files unchanged and writes candidates", async () => {
+  it("appends managed content to pre-existing instruction files via line dedup", async () => {
     const root = await project();
     await writeFile(join(root, "CLAUDE.md"), "# Existing guide\n", "utf8");
     await writeFile(join(root, "AGENTS.md"), "# Existing agents\n", "utf8");
@@ -785,30 +797,21 @@ describe("init and status", () => {
       ok: true,
       state: "INDEX_READY",
     });
-    expect(result.warnings).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("CLAUDE.md.candidate.md"),
-        expect.stringContaining("AGENTS.md.candidate.md"),
-      ]),
-    );
-    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toBe(
-      "# Existing guide\n",
-    );
-    expect(await readFile(join(root, "AGENTS.md"), "utf8")).toBe(
-      "# Existing agents\n",
-    );
-    expect(
-      await readFile(join(root, "CLAUDE.md.candidate.md"), "utf8"),
-    ).toContain("# Existing guide");
-    expect(
-      await readFile(join(root, "CLAUDE.md.candidate.md"), "utf8"),
-    ).toContain("<!-- sdd-harness:managed -->");
-    expect(
-      await readFile(join(root, "AGENTS.md.candidate.md"), "utf8"),
-    ).toContain("# Existing agents");
-    expect(
-      await readFile(join(root, "AGENTS.md.candidate.md"), "utf8"),
-    ).toContain("<!-- sdd-harness:managed -->");
+    // 指令文件采用行级去重追加：原有行保持不变，受管内容追加到末尾
+    const claudeContent = await readFile(join(root, "CLAUDE.md"), "utf8");
+    expect(claudeContent).toContain("# Existing guide");
+    expect(claudeContent).toContain("<!-- sdd-harness:managed -->");
+    expect(claudeContent).toContain("## sdd-harness");
+    // 原有行不应重复
+    const guideLines = claudeContent.split("\n").filter((l) => l === "# Existing guide");
+    expect(guideLines.length).toBe(1);
+
+    const agentsContent = await readFile(join(root, "AGENTS.md"), "utf8");
+    expect(agentsContent).toContain("# Existing agents");
+    expect(agentsContent).toContain("<!-- sdd-harness:managed -->");
+    expect(agentsContent).toContain("## sdd-harness");
+    const agentsLines = agentsContent.split("\n").filter((l) => l === "# Existing agents");
+    expect(agentsLines.length).toBe(1);
   });
 
   it("validates existing config and warns on unknown keys", async () => {
