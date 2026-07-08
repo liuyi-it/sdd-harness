@@ -82,11 +82,27 @@ async function createRealFixtures() {
 async function createArchivedWorkflowFixture() {
   const root = await createRepo("schema-archived-");
   const core = createCore();
-  await core.execute({ command: "init", cwd: root });
+  await core.execute({
+    command: "init",
+    cwd: root,
+    args: { structurePolicy: "free-design" },
+  });
+  // 提供完整 answers 避免 CLARIFYING
   await core.execute({
     command: "auto",
     cwd: root,
-    args: { requirement, changeId: "add-cancel" },
+    args: {
+      requirement,
+      changeId: "add-cancel",
+      answers: {
+        "Q-ACTOR": "admin users authenticated",
+        "Q-AUTHORIZATION": "JWT authorization required unauthorized",
+        "Q-INTERFACE": "POST /api/orders/:id/cancel API endpoint",
+        "Q-PRECONDITION": "pending order precondition",
+        "Q-RESULT": "success cancelled result",
+        "Q-TEST": "automated tests automation",
+      },
+    },
   });
   return { kind: "archived", root };
 }
@@ -94,11 +110,26 @@ async function createArchivedWorkflowFixture() {
 async function createBlockedReviewFixture() {
   const root = await createRepo("schema-blocked-");
   const core = createCore();
-  await core.execute({ command: "init", cwd: root });
+  await core.execute({
+    command: "init",
+    cwd: root,
+    args: { structurePolicy: "free-design" },
+  });
   await core.execute({
     command: "new",
     cwd: root,
-    args: { requirement, changeId: "add-cancel" },
+    args: {
+      requirement,
+      changeId: "add-cancel",
+      answers: {
+        "Q-ACTOR": "admin users",
+        "Q-AUTHORIZATION": "JWT authorization",
+        "Q-INTERFACE": "POST /api/cancel",
+        "Q-PRECONDITION": "pending order",
+        "Q-RESULT": "successful result",
+        "Q-TEST": "automated tests",
+      },
+    },
   });
   await core.execute({ command: "design", cwd: root });
   await core.execute({ command: "plan", cwd: root });
