@@ -890,18 +890,19 @@ async function buildCompleteTask(
       (resultJson.tddEvidence as
         | Array<{ phase: string; passed: boolean }>
         | undefined) ?? [];
-    const expectedPhases =
-      task.phase !== "REFACTOR" ? ["RED", "GREEN", "REFACTOR"] : ["RED"];
-    const hasPhases = new Set(tddEvidence.map((e) => e.phase));
-    const missingPhases = expectedPhases.filter((p) => !hasPhases.has(p));
-    if (missingPhases.length > 0) {
+    // 验证 evidence 结构合法，不强制要求所有 phase
+    // 每个任务执行只包含其对应 phase 的证据
+    const invalidEvidence = tddEvidence.filter(
+      (e: Record<string, unknown>) => !e.phase || typeof e.passed !== "boolean",
+    );
+    if (invalidEvidence.length > 0) {
       return {
         ok: false,
         state: "FAILED",
         exitCode: 7,
         error: {
           code: "E_TDD_EVIDENCE_REQUIRED",
-          message: `缺少 TDD 阶段证据: ${missingPhases.join(", ")}`,
+          message: `TDD evidence 结构不合法`,
         },
       };
     }

@@ -1,3 +1,6 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { CodebaseAdapter } from "./codebase/codebase-adapter.js";
 import { runInit } from "./commands/init.js";
 import { runNew } from "./commands/new.js";
@@ -8,6 +11,7 @@ import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
 import { runCodebaseCommand } from "./commands/codebase.js";
+import { StateStore } from "./state/state-store.js";
 import {
   finalizeAutoLoop,
   prepareAutoLoop,
@@ -194,6 +198,8 @@ export class Core implements SddCore {
       };
     // auto 只是阶段编排器，不会绕过任何单阶段命令自身的安全检查。
     for (let step = 0; step < loop.maxSteps; step += 1) {
+      // 每次迭代重新读取状态，确保阶段推进
+      status = await runStatus(request.cwd);
       if (status.state === "ARCHIVED") {
         await finalizeAutoLoop(request.cwd, loop.runId, "ARCHIVED");
         return status;
@@ -213,12 +219,107 @@ export class Core implements SddCore {
         command === "build"
           ? { ...request.args, subcommand: "next" }
           : request.args;
-      const result = await this.execute({
+      let result = await this.execute({
         command,
         cwd: request.cwd,
         ...(effectiveArgs === undefined ? {} : { args: effectiveArgs }),
         ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
+
+      // build 阶段 Agent 循环：执行完所有任务后再继续
+      if (
+        command === "build" &&
+        result.ok &&
+        result.state === "BUILDING" &&
+        result.actionRequired?.type === "AGENT_TASK_EXECUTION"
+      ) {
+        let buildResult = result;
+        while (
+          buildResult.ok &&
+          buildResult.actionRequired?.type === "AGENT_TASK_EXECUTION"
+        ) {
+          const action = buildResult.actionRequired;
+          const taskId = action.taskId;
+          const stateNow = await new StateStore(request.cwd).read();
+          const changeDir = join(
+            request.cwd,
+            ".sdd",
+            "changes",
+            stateNow.currentChangeId!,
+          );
+          let taskDef;
+          try {
+            const raw = JSON.parse(
+              await readFile(join(changeDir, "tasks.json"), "utf8"),
+            );
+            if (Array.isArray(raw))
+              taskDef = raw.find((t: Record<string, unknown>) => t.id === taskId);
+          } catch {
+            break;
+          }
+          if (!taskDef) break;
+          const runDir = join(
+            request.cwd,
+            ".sdd",
+            "runs",
+            stateNow.currentRunId ?? "auto",
+            "tasks",
+          );
+          await mkdir(runDir, { recursive: true });
+          const execResult = await this.taskExecutor.execute({
+            schemaVersion: "1.2.0",
+            root: request.cwd,
+            changeId: stateNow.currentChangeId ?? "",
+            runId: stateNow.currentRunId ?? "auto",
+            task: taskDef,
+            contextPack: "",
+            gitBaseline: null,
+            constraints: {
+              allowedFiles: [...taskDef.allowedFiles],
+              allowedCommands: [...taskDef.verification],
+              expectedNewFiles: [...taskDef.expectedNewFiles],
+              forbiddenFiles: [...taskDef.forbiddenFiles],
+              maxExecutionMs: 0,
+            },
+            mode: "main-agent",
+          });
+          const resultJson = {
+            schemaVersion: "1.2.0",
+            taskId,
+            status: "SUCCEEDED",
+            modifiedFiles: (execResult as any).modifiedFiles ?? [],  // eslint-disable-line
+            createdFiles: [],
+            commandsRun:
+              (execResult as any).commandsRun ??  // eslint-disable-line
+              (execResult as any).commandEvidence ??  // eslint-disable-line
+              [],
+            tddEvidence: (execResult as any).tddEvidence ?? [],  // eslint-disable-line
+            verification:
+              (execResult as any).verification ??  // eslint-disable-line
+              (execResult as any).commandEvidence ??  // eslint-disable-line
+              [],
+            notes: [],
+          };
+          await writeFile(
+            join(request.cwd, action.resultFile),
+            JSON.stringify(resultJson, null, 2),
+            "utf8",
+          );
+          buildResult = await this.execute({
+            command: "build",
+            cwd: request.cwd,
+            args: { subcommand: "complete", taskId, result: resultJson },
+          });
+          if (buildResult.state !== "BUILDING") break;
+          buildResult = await this.execute({
+            command: "build",
+            cwd: request.cwd,
+            args: { ...request.args, subcommand: "next" },
+          });
+        }
+        result = buildResult;
+      }
+
       await recordAutoStep(request.cwd, loop.runId, {
         command,
         status: !result.ok

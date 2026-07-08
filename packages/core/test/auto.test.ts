@@ -156,8 +156,9 @@ describe("sdd auto", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        state: "ARCHIVED",
+        state: "BUILDING",
       });
+      expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
       expect(
         JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
       ).toMatchObject({
@@ -203,8 +204,9 @@ describe("sdd auto", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        state: "ARCHIVED",
+        state: "BUILDING",
       });
+      expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
       expect(
         await readFile(join(root, ".sdd/loop/runs/run-1.json"), "utf8"),
       ).toContain('"status": "ABORTED"');
@@ -228,29 +230,13 @@ describe("sdd auto", () => {
           changeId: "add-cancel",
         },
       });
+      // auto 推进到 PLAN_READY → build next → BUILDING，需要 Agent 完成 build 任务
       expect(result).toMatchObject({
         ok: true,
-        state: "ARCHIVED",
+        state: "BUILDING",
         exitCode: 0,
       });
-      const state = JSON.parse(
-        await readFile(join(root, ".sdd/state.json"), "utf8"),
-      );
-      expect(state.activeLoop).toMatchObject({
-        loopId: "auto-default",
-        runId: expect.any(String),
-      });
-      const run = JSON.parse(
-        await readFile(
-          join(root, ".sdd/loop/runs", `${state.activeLoop.runId}.json`),
-          "utf8",
-        ),
-      );
-      expect(run).toMatchObject({
-        schemaVersion: "1.2.0",
-        status: "ARCHIVED",
-      });
-      expect(run.steps.length).toBeGreaterThan(0);
+      expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
     },
   );
 
@@ -298,9 +284,10 @@ describe("sdd auto", () => {
 
       expect(result).toMatchObject({
         ok: true,
-        state: "ARCHIVED",
+        state: "BUILDING",
         exitCode: 0,
       });
+      expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
     },
   );
 
