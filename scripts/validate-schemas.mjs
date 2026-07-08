@@ -592,7 +592,11 @@ function resolveRef(schemaStore, schemaPath, ref) {
     };
   }
   const [rawPath, fragment = ""] = ref.split("#");
-  const targetPath = normalize(join(dirname(schemaPath), rawPath));
+  // 跨平台路径兼容：normalize 在 Windows 会产生反斜杠，统一转为正斜杠
+  const targetPath = normalize(join(dirname(schemaPath), rawPath)).replace(
+    /\\/g,
+    "/",
+  );
   const schema = schemaStore.get(targetPath);
   if (schema === undefined)
     throw new Error(`schema ref not found: ${targetPath}`);
