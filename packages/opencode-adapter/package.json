@@ -9,6 +9,7 @@
   "files": [
     "rules/",
     "docs/",
-    "AGENT_PROTOCOL.md"
+    "AGENT_PROTOCOL.md",
+    "manifest.json"
   ]
 }

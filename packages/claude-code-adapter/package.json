@@ -9,6 +9,7 @@
   "files": [
     "commands/",
     "skills/",
-    "AGENTS.md"
+    "AGENTS.md",
+    "manifest.json"
   ]
 }
