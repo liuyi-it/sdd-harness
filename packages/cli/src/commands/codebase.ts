@@ -23,11 +23,10 @@ export async function runCodebase(
     };
   }
 
-  // 委托给 Core（Core 内部调用 CodebaseMemoryManager）
   const request: Parameters<SddCore["execute"]>[0] = {
-    command: "status",
+    command: "codebase",
     cwd,
-    args: { ...args, codebaseSubcommand: subcommand },
+    args: { ...args, subcommand },
   };
   if (signal) request.signal = signal;
   return core.execute(request);

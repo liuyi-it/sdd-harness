@@ -1,6 +1,12 @@
 import type { AgentTaskResult } from "./types/task-result.js";
 
-const VALID_STATUSES = ["DONE", "FAILED", "SKIPPED"];
+const VALID_STATUSES = [
+  "SUCCEEDED",
+  "FAILED",
+  "BLOCKED",
+  "SKIPPED",
+  "DEGRADED",
+];
 const VALID_PHASES = ["RED", "GREEN", "REFACTOR"];
 
 function assertString(val: unknown, field: string): asserts val is string {
@@ -41,8 +47,8 @@ export function validateTaskResult(data: unknown): AgentTaskResult {
   const obj = data as Record<string, unknown>;
 
   // 顶层必填字段
-  if (obj.schemaVersion !== "1.0.0") {
-    throw new Error("E_SCHEMA_VALIDATION_FAILED: schemaVersion 必须为 1.0.0");
+  if (obj.schemaVersion !== "1.2.0") {
+    throw new Error("E_SCHEMA_VALIDATION_FAILED: schemaVersion 必须为 1.2.0");
   }
   assertString(obj.taskId, "taskId");
 

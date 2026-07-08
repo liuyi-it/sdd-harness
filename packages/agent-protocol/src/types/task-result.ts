@@ -1,8 +1,16 @@
 /** Agent 任务执行结果 — Agent 完成构建任务后写入 */
+/** Agent 任务结果状态 — 与 Core v2 协议对齐 */
+export type AgentTaskStatus =
+  | "SUCCEEDED"
+  | "FAILED"
+  | "BLOCKED"
+  | "SKIPPED"
+  | "DEGRADED";
+
 export interface AgentTaskResult {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.2.0";
   taskId: string;
-  status: "DONE" | "FAILED" | "SKIPPED";
+  status: AgentTaskStatus;
   modifiedFiles: string[];
   createdFiles: string[];
   commandsRun: AgentCommandRun[];

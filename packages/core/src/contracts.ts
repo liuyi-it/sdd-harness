@@ -9,6 +9,7 @@ export const COMMANDS = [
   "review",
   "archive",
   "status",
+  "codebase",
 ] as const;
 
 /**

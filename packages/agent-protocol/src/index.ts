@@ -1,6 +1,7 @@
 export type { AgentActionRequired } from "./types/action-required.js";
 export type {
   AgentTaskResult,
+  AgentTaskStatus,
   AgentCommandRun,
   AgentTddEvidence,
   AgentVerification,

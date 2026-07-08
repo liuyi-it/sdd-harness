@@ -314,6 +314,7 @@ const COMMAND_DESCRIPTIONS: Record<CommandName, string> = {
   review: "检查实现证据、文件范围和无关修改风险。",
   archive: "归档当前 Change，生成追溯和归档报告并切换为只读。",
   status: "查看当前初始化状态、阶段、Change 和建议下一步。",
+  codebase: "代码库上下文管理：状态、诊断、索引、查询与重建。",
 };
 
 const COMMAND_EXAMPLES: Record<CommandName, string[]> = {
@@ -327,6 +328,7 @@ const COMMAND_EXAMPLES: Record<CommandName, string[]> = {
   review: ["sdd review", "sdd review --json"],
   archive: ["sdd archive", "sdd archive --json"],
   status: ["sdd status", "sdd status --json"],
+  codebase: ["sdd codebase status", "sdd codebase doctor"],
 };
 
 const COMMON_EXIT_CODES = [
@@ -398,4 +400,5 @@ const HELP_EXIT_CODES: Record<
     },
   ],
   status: [{ code: 0, meaning: "成功" }],
+  codebase: COMMON_EXIT_CODES,
 };

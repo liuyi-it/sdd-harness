@@ -7,6 +7,7 @@ import { runBuild } from "./commands/build.js";
 import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
+import { runCodebaseCommand } from "./commands/codebase.js";
 import {
   finalizeAutoLoop,
   prepareAutoLoop,
@@ -57,6 +58,17 @@ export class Core implements SddCore {
       // status 是纯只读命令，不依赖完整的写命令分发流程。
       if (request.command === "status")
         return withVerboseData(await runStatus(request.cwd), request);
+      // codebase 子命令：委托 CodebaseAdapter 处理
+      if (request.command === "codebase")
+        return withVerboseData(
+          await runCodebaseCommand(
+            request.cwd,
+            this.codebase,
+            request.args,
+            request.signal,
+          ),
+          request,
+        );
       if (request.command === "init")
         return withVerboseData(
           await runInit(
