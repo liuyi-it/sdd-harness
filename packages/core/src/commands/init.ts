@@ -121,7 +121,12 @@ export async function runInit(
     const manifests = filterManifests(allManifests, selectedAgents);
     await writeIfMissing(
       join(sddRoot, "config.yml"),
-      stringify(defaultConfig(root, manifests.map((m) => m.agent))),
+      stringify(
+        defaultConfig(
+          root,
+          manifests.map((m) => m.agent),
+        ),
+      ),
     );
     await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));

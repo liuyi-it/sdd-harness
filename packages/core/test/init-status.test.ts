@@ -803,14 +803,18 @@ describe("init and status", () => {
     expect(claudeContent).toContain("<!-- sdd-harness:managed -->");
     expect(claudeContent).toContain("## sdd-harness");
     // 原有行不应重复
-    const guideLines = claudeContent.split("\n").filter((l) => l === "# Existing guide");
+    const guideLines = claudeContent
+      .split("\n")
+      .filter((l) => l === "# Existing guide");
     expect(guideLines.length).toBe(1);
 
     const agentsContent = await readFile(join(root, "AGENTS.md"), "utf8");
     expect(agentsContent).toContain("# Existing agents");
     expect(agentsContent).toContain("<!-- sdd-harness:managed -->");
     expect(agentsContent).toContain("## sdd-harness");
-    const agentsLines = agentsContent.split("\n").filter((l) => l === "# Existing agents");
+    const agentsLines = agentsContent
+      .split("\n")
+      .filter((l) => l === "# Existing agents");
     expect(agentsLines.length).toBe(1);
   });
 

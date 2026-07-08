@@ -85,7 +85,10 @@ export async function runInit(
     let selected: string[] = [];
     while (selected.length === 0) {
       const answer = await rl.question("请输入编号（至少选择一个）：");
-      selected = parseSelection(answer, adapters.map((a) => a.agent));
+      selected = parseSelection(
+        answer,
+        adapters.map((a) => a.agent),
+      );
       if (selected.length === 0) {
         console.log("输入无效或为空，请至少选择一个适配器。");
       }
@@ -119,7 +122,9 @@ function parseSelection(input: string, available: string[]): string[] {
     .filter((s) => s.length > 0)
     .map((s) => {
       const n = Number(s);
-      return Number.isInteger(n) && n >= 1 && n <= available.length ? n - 1 : -1;
+      return Number.isInteger(n) && n >= 1 && n <= available.length
+        ? n - 1
+        : -1;
     })
     .filter((i) => i >= 0);
 
