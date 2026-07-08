@@ -92,22 +92,22 @@ sdd build complete --task T001 --result result.json --json
 
 ### 命令参考
 
-| 命令                       | 作用                             |
-| -------------------------- | -------------------------------- |
-| `sdd init`                 | 初始化项目，建立代码库上下文     |
-| `sdd status`               | 查看当前 SDD 状态与下一步建议    |
-| `sdd new <需求>`            | 创建需求变更，需求分析与规格生成 |
-| `sdd design`               | 基于规格生成设计方案             |
-| `sdd plan`                 | 基于设计拆解开发任务             |
-| `sdd build next`           | 获取下一个构建任务（Agent 使用）  |
-| `sdd build complete`       | 提交构建结果（Agent 使用）        |
-| `sdd verify`               | 验证任务完成度与功能边界         |
-| `sdd review`               | 审查代码质量与实现合理性         |
-| `sdd archive`              | 归档当前需求变更                 |
-| `sdd auto <需求>`           | 自动推进完整 SDD 流程            |
-| `sdd codebase status`      | 显示 codebase 提供者与状态       |
-| `sdd codebase doctor`      | 诊断 codebase-memory-mcp 健康    |
-| `sdd codebase query <q>`   | 结构化代码库查询                 |
+| 命令                     | 作用                             |
+| ------------------------ | -------------------------------- |
+| `sdd init`               | 初始化项目，建立代码库上下文     |
+| `sdd status`             | 查看当前 SDD 状态与下一步建议    |
+| `sdd new <需求>`         | 创建需求变更，需求分析与规格生成 |
+| `sdd design`             | 基于规格生成设计方案             |
+| `sdd plan`               | 基于设计拆解开发任务             |
+| `sdd build next`         | 获取下一个构建任务（Agent 使用） |
+| `sdd build complete`     | 提交构建结果（Agent 使用）       |
+| `sdd verify`             | 验证任务完成度与功能边界         |
+| `sdd review`             | 审查代码质量与实现合理性         |
+| `sdd archive`            | 归档当前需求变更                 |
+| `sdd auto <需求>`        | 自动推进完整 SDD 流程            |
+| `sdd codebase status`    | 显示 codebase 提供者与状态       |
+| `sdd codebase doctor`    | 诊断 codebase-memory-mcp 健康    |
+| `sdd codebase query <q>` | 结构化代码库查询                 |
 
 通用参数：`--json` `--cwd <path>` `--change <id>` `--timeout <s>` `--non-interactive` `--force` `--verbose` `--help` `--version`
 
@@ -185,6 +185,21 @@ sdd build complete
   → 校验文件范围、TDD evidence、verification
   → 更新 task 状态，全部完成进入 BUILD_READY
 ```
+
+### OpenSpec 与 Superpowers 的借鉴与实现
+
+`sdd-harness` 内置了两个上游项目的固定版本快照（`vendor/openspec/upstream/` v1.4.1，`vendor/superpowers/upstream/` v6.1.1），分别承担规格管理和任务编排职责。下表对比二者的定位、优缺点及在本项目中的实现方式：
+
+|                          | OpenSpec                                                                                                                                                    | Superpowers                                                                                                                                                                 |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **定位**                 | 需求规格形式化——将自然语言需求转换为结构化的 Requirement / Scenario / Delta 模型                                                                            | Agent 工作流编排——提供 brainstorming、planning、TDD 等多阶段 Agent 协作 Skill                                                                                               |
+| **核心能力**             | Requirement → Scenario → ADDED/MODIFIED/REMOVED delta → 可机读 spec.model.json                                                                              | RED → GREEN → REFACTOR → VERIFY 四阶段原子任务链，Context Pack 生成                                                                                                         |
+| **优势**                 | 规格结构严谨，可校验 Scenario 覆盖、幽灵引用、delta 一致性；适合做质量门禁的事实源                                                                          | 任务拆解粒度高，依赖图 + 并行批次控制；Context Pack 机制将代码上下文和项目规则注入每个任务                                                                                  |
+| **局限**                 | 规格输出依赖输入质量，自身不做需求澄清；流程编排能力弱，不管理 build/verify/review/archive 门禁                                                             | 偏向 Claude Code 生态，CLI 耦合宿主；插件安装模型（marketplace.json）不符合 CLI-first 架构                                                                                  |
+| **sdd-harness 借鉴方式** | 吸取其 Requirement / Scenario / Delta 规格模型，通过 `SpecEngine` 驱动 `sdd new` 的需求分析和规格生成，通过 `traceability` 做归档前的需求 → 任务 → 证据追踪 | 吸取其 TDD 四阶段任务模型和 Context Pack 机制，通过 `TddEngine` 和 `Planner` 驱动 `sdd plan` 的任务拆解，通过 `AgentActionRequired` 机制将 Context Pack 交给外部 Agent 执行 |
+| **实现方式**             | vendor 快照固定 v1.4.1，通过 `packages/core/src/engines/openspec/` 层做模型适配和校验；运行时只读取上游类型定义，不执行上游可执行代码                       | vendor 快照固定 v6.1.1，通过 `packages/core/src/engines/superpowers/` 层做协议适配；取其 TaskDefinition / TddPhase 协议，替换其宿主耦合的 Skill 触发方式为统一 CLI          |
+
+**总的取舍**：OpenSpec 提供"规格长什么样"，Superpowers 提供"任务怎么拆"。`sdd-harness` 取两者的协议层精华，用自己的 CLI + 状态机 + 质量门禁替代它们各自的流程编排和宿主耦合，形成统一的 Agent-agnostic 流程。
 
 ### codebase-memory-mcp 降级策略
 
