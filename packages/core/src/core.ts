@@ -253,7 +253,9 @@ export class Core implements SddCore {
               await readFile(join(changeDir, "tasks.json"), "utf8"),
             );
             if (Array.isArray(raw))
-              taskDef = raw.find((t: Record<string, unknown>) => t.id === taskId);
+              taskDef = raw.find(
+                (t: Record<string, unknown>) => t.id === taskId,
+              );
           } catch {
             break;
           }
@@ -287,16 +289,16 @@ export class Core implements SddCore {
             schemaVersion: "1.2.0",
             taskId,
             status: "SUCCEEDED",
-            modifiedFiles: (execResult as any).modifiedFiles ?? [],  // eslint-disable-line
+            modifiedFiles: (execResult as any).modifiedFiles ?? [], // eslint-disable-line
             createdFiles: [],
             commandsRun:
-              (execResult as any).commandsRun ??  // eslint-disable-line
-              (execResult as any).commandEvidence ??  // eslint-disable-line
+              (execResult as any).commandsRun ?? // eslint-disable-line
+              (execResult as any).commandEvidence ?? // eslint-disable-line
               [],
-            tddEvidence: (execResult as any).tddEvidence ?? [],  // eslint-disable-line
+            tddEvidence: (execResult as any).tddEvidence ?? [], // eslint-disable-line
             verification:
-              (execResult as any).verification ??  // eslint-disable-line
-              (execResult as any).commandEvidence ??  // eslint-disable-line
+              (execResult as any).verification ?? // eslint-disable-line
+              (execResult as any).commandEvidence ?? // eslint-disable-line
               [],
             notes: [],
           };
