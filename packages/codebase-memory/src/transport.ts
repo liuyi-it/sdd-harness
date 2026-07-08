@@ -4,29 +4,28 @@ import type {
   McpTransport,
   McpQueryInput,
 } from "@sdd-harness/core";
-import type { CodebaseMemoryManager } from "./manager.js";
+import { CodebaseMemoryManager } from "./manager.js";
 
 /**
  * CodebaseMemoryTransport — 将 CodebaseMemoryManager 适配为 Core 期望的 McpTransport 接口
  *
- * 这是 codebase-memory 包和 Core 之间的桥梁：
- * - Core 通过 McpTransport 接口使用 codebase 能力
- * - CodebaseMemoryManager 负责 npx 托管、降级、diagnostics
- * - 本类负责接口适配和协议转换
+ * isAvailable() 返回 true 告知 adapter "可以尝试启动 MCP"，
+ * index(root) 实际调用 manager.initialize(root) 启动 npx 进程。
+ * adapter 内部有 try/catch，启动失败时自动走 fallback。
  */
 export class CodebaseMemoryTransport implements McpTransport {
-  private initialized = false;
+  private manager: CodebaseMemoryManager;
 
-  constructor(private readonly manager: CodebaseMemoryManager) {}
+  constructor(manager?: CodebaseMemoryManager) {
+    this.manager = manager ?? new CodebaseMemoryManager();
+  }
 
+  /** 只要有 manager 就认为可尝试启动 MCP，实际启动在 index() 中由 adapter 兜底 */
   async isAvailable(): Promise<boolean> {
-    if (!this.initialized) return false;
-    const caps = await this.manager.getCapabilities();
-    return caps.provider === "codebase-memory-mcp";
+    return true;
   }
 
   async index(root: string): Promise<void> {
-    this.initialized = true;
     await this.manager.initialize(root);
   }
 
@@ -76,12 +75,7 @@ export class CodebaseMemoryTransport implements McpTransport {
         degraded: true,
         reason: "MCP unavailable, using fallback",
         confidence: 0.3,
-        payload: {
-          files: [],
-          symbols: [],
-          tests: [],
-          risks: [],
-        },
+        payload: { files: [], symbols: [], tests: [], risks: [] },
       };
     }
     return {

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "requestedProvider": "codebase-memory-mcp",
+  "actualProvider": "codebase-memory-mcp",
+  "mode": "managed",
+  "degraded": false,
+  "indexStatus": "READY",
+  "errors": [],
+  "version": "0.8.1",
+  "lastStartedAt": "2026-07-08T06:06:21.544Z",
+  "storageDir": ".sdd/index/codebase-memory"
+}
