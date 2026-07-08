@@ -81,6 +81,9 @@ async function main(): Promise<void> {
       task: { type: "string" },
       result: { type: "string" },
       intent: { type: "string" },
+      structurePolicy: { type: "string" },
+      host: { type: "string" },
+      answers: { type: "string" },
     },
     allowPositionals: true,
   });
@@ -118,6 +121,17 @@ async function main(): Promise<void> {
   if (values["non-interactive"]) extraArgs.nonInteractive = true;
   if (values.force) extraArgs.force = true;
   if (values.verbose) extraArgs.verbose = true;
+  if (values.structurePolicy)
+    extraArgs.structurePolicy = values.structurePolicy;
+  if (values.host) extraArgs.host = values.host;
+  if (values.intent) extraArgs.intent = values.intent;
+  if (values.answers) {
+    try {
+      extraArgs.answers = JSON.parse(values.answers);
+    } catch {
+      /* ignore */
+    }
+  }
 
   let result: CommandResult;
 

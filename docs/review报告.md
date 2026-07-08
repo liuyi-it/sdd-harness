@@ -1,299 +1,137 @@
-# sdd-harness 三期代码 Review 修复报告
+# sdd-harness 三期全局 Review 报告
 
-## 背景
+## 评审范围
 
-当前仓库：`liuyi-it/sdd-harness`
+仓库：`liuyi-it/sdd-harness`
 
-三期目标是将项目升级为 CLI-first、Agent-agnostic、codebase-memory-powered、verification-gated 的 SDD Harness，支持：
+本报告基于 GitHub 当前最新代码进行全局 Review，不只看本次提交，而是按三期整体目标审查：
 
-- Claude Code
-- Codex
-- OpenCode
-- Kimi Code
-- GitHub Copilot CLI
-- 自研 Coding Agent
+- CLI-first
+- Agent-agnostic
+- 支持 Claude Code、Codex、OpenCode、Kimi Code、GitHub Copilot CLI、自研 Coding Agent
 - Node.js >= 22
 - 内置 `codebase-memory-mcp`
-- MCP 不可用时自动降级为 `fallback-file-scan`，且必须明确提示用户诊断
-- CLI 作为唯一确定性入口
-
-当前主架构方向基本正确，但主链路尚未闭合，存在多个 P0 阻断问题。请按本文优先级修复。
-
----
-
-# P0 阻断问题
-
-## P0-1：CLI 无法正常创建新变更，`sdd new` / `sdd auto` 主流程会失败
-
-### 现象
-
-README 的快速开始是：
-
-```bash
-sdd init
-sdd auto "实现订单取消功能"
-```
-
-README 明确把 `sdd auto "..."` 作为主入口使用方式。
-
-但当前 `runNew()` 在非继续执行场景中要求 `args.changeId` 必须存在，否则抛出：
-
-```ts
-throw new SddError("E_MISSING_CHANGE", "缺少必需的变更 id");
-```
-
-相关代码位于 `packages/core/src/commands/new.ts`。
-
-同时 CLI 解析 `--change` 后传给 Core 的字段是 `change`，不是 `changeId`：
-
-```ts
-if (values.change) extraArgs.change = values.change;
-```
-
-相关代码位于 `packages/cli/src/cli.ts`。
-
-但 Core 内部统一读取的是 `args.changeId`。
-
-### 影响
-
-以下命令会失败或行为不符合预期：
-
-```bash
-sdd new "xxx"
-sdd new "xxx" --change abc
-sdd auto "xxx"
-```
-
-### 修复要求
-
-1. CLI 层把 `--change` 映射为 `changeId`：
-
-```ts
-if (values.change) extraArgs.changeId = values.change;
-```
-
-2. `runNew()` 支持未传 `changeId` 时自动生成变更 ID，例如：
-
-```ts
-const changeId = continuing
-  ? state.currentChangeId
-  : (args.changeId ?? `change-${Date.now()}`);
-```
-
-3. 自动生成的 changeId 应满足：
-   - 文件路径安全
-   - 可读
-   - 稳定写入 `.sdd/state.json`
-   - 后续 `design/plan/build/verify/review/archive` 能通过 `currentChangeId` 继续执行
-
-### 验收用例
-
-```bash
-sdd init
-sdd new "实现订单取消功能"
-sdd status
-```
-
-期望：
-
-- `sdd new` 成功进入 `SPEC_READY` 或 `CLARIFYING`
-- `.sdd/state.json.currentChangeId` 非空
-- `.sdd/changes/<changeId>/` 已生成
-
-```bash
-sdd init
-sdd auto "实现订单取消功能"
-```
-
-期望：
-
-- 不因为缺少 changeId 失败
-- 能至少推进到 `CLARIFYING`、`SPEC_READY` 或后续阶段
+- MCP 不可用时自动降级为 `fallback-file-scan`
+- 降级时必须明确提示用户诊断
+- `sdd build next / complete` 支撑 Agent 执行闭环
+- 不发布 npm / GitHub Packages
+- 不提交 `package-lock.json`
 
 ---
 
-## P0-2：`sdd codebase doctor/index/query/rebuild` 实际没有执行
+# 一、总体结论
 
-### 现象
+当前版本相比上一轮已经有明显修复：
 
-CLI 的 `runCodebase()` 校验子命令后，把所有 codebase 子命令都包装成：
+1. CLI 已经把 `--change` 映射为 `changeId`。
+2. CLI 已经把 `--non-interactive` 映射为 `nonInteractive`。
+3. CLI 已经注入 `CodebaseMemoryManager → CodebaseMemoryTransport → CodebaseAdapter → Core`。
+4. Core 命令契约已经加入 `codebase`。
+5. Core 已经增加 `codebase` 命令分发入口。
+6. `sdd new` 已经支持未传 `changeId` 时自动生成 `change-${Date.now()}`。
+7. Agent Protocol 已经从 `1.0.0` 改到 `1.2.0`。
 
-```ts
-command: "status"
-args: { ...args, codebaseSubcommand: subcommand }
+但当前代码仍然没有达到三期验收标准，仍存在 P0 阻断项。
+
+核心问题集中在：
+
+```text
+1. codebase-memory-mcp 生命周期仍未真正跑通
+2. sdd codebase index/rebuild 未实现
+3. sdd codebase query 参数没有正确传递
+4. sdd auto 到 build 阶段仍会失败
+5. build next / complete 只是雏形，尚未形成 verify/review/archive 可用闭环
+6. build complete 没有写 task-results.json，也没有持久化 BUILD_READY
+7. Agent result 校验、安全校验、Git delta 校验仍不完整
 ```
 
-相关代码位于 `packages/cli/src/commands/codebase.ts`。
+当前不建议发布，也不建议交给真实 Agent 正式使用。
 
-但 `Core.execute()` 对 `status` 是直接短路：
+---
 
-```ts
-if (request.command === "status")
-  return withVerboseData(await runStatus(request.cwd), request);
-```
+# 二、P0 阻断问题
 
-它完全不读取 `codebaseSubcommand`。
+## P0-1：`codebase-memory-mcp` 仍然不会被正常启动，`sdd init` 大概率永远 fallback
 
-### 影响
+### 问题说明
 
-以下命令目前大概率只是普通 `sdd status`：
-
-```bash
-sdd codebase status
-sdd codebase doctor
-sdd codebase index
-sdd codebase query "xxx"
-sdd codebase rebuild
-```
-
-README 明确将这些命令列为正式功能。
-
-### 修复要求
-
-1. 把 `codebase` 加入 Core 命令契约：
+`CodebaseAdapter.initialize()` 当前逻辑是先判断：
 
 ```ts
-export const COMMANDS = [
-  "init",
-  "auto",
-  "new",
-  "design",
-  "plan",
-  "build",
-  "verify",
-  "review",
-  "archive",
-  "status",
-  "codebase",
-] as const;
-```
-
-当前 `COMMANDS` 不包含 `codebase`。
-
-2. `packages/cli/src/commands/codebase.ts` 应传：
-
-```ts
-command: "codebase"
-args: { ...args, subcommand, query }
-```
-
-而不是伪装成 `status`。
-
-3. 在 Core 中新增 `codebase` 分发逻辑，例如：
-
-```ts
-if (request.command === "codebase") {
-  return runCodebaseCommand(
-    request.cwd,
-    this.codebase,
-    request.args,
-    request.signal,
-  );
+if (await this.transport.isAvailable()) {
+  await this.transport.index(root);
+  ...
 }
 ```
 
-4. 实现至少以下子命令：
-   - `status`：显示 provider、degraded、diagnostics 路径
-   - `doctor`：执行 MCP 可用性诊断，输出明确修复建议
-   - `index`：触发 MCP index 或 fallback index
-   - `query <q>`：执行结构化 codebase 查询
-   - `rebuild`：清理/重建索引
+只有 `isAvailable()` 返回 true 才会调用 `index(root)`。
 
-### 验收用例
-
-```bash
-sdd codebase doctor --json
-```
-
-期望：
-
-- 返回 codebase 专属结果，不是普通 `sdd status`
-- MCP 不可用时必须包含：
-  - `provider: fallback-file-scan`
-  - `degraded: true`
-  - 明确提示执行 `sdd codebase doctor`
-  - 明确提示检查 `codebase-memory-mcp`
-
----
-
-## P0-3：`codebase-memory-mcp` 没有真正接入 Core 主链路
-
-### 现象
-
-`Core` 默认构造的是：
+但 `CodebaseMemoryTransport.isAvailable()` 当前逻辑是：
 
 ```ts
-this.codebase = dependencies.codebase ?? new CodebaseAdapter();
+if (!this.initialized) return false;
 ```
 
-没有传入任何 MCP transport。
+而 `initialized = true` 是在 `index(root)` 中设置的。
 
-`CodebaseAdapter.initialize()` 在没有 transport 时直接 fallback。
-
-仓库里虽然有 `packages/codebase-memory`，但它没有被 CLI 默认 Core 主链路使用。
-
-`CodebaseMemoryManager.query()` 也只是返回 fallback：
-
-```ts
-// 正常模式 — 此处后续可通过 MCP stdio 发送 query 请求
-// 当前 MVP 返回 fallback 结果
-return fallbackQuery(input);
-```
-
-MCP lifecycle 当前只是启动：
-
-```ts
-npx -y codebase-memory-mcp@${version}
-```
-
-然后 1 秒后未崩溃就判定 `STARTED`，没有完成 MCP protocol 初始化、tools/list、可调用性验证。
-
-### 影响
-
-README 声称：
-
-> `sdd init` 会自动通过 `npx` 启动托管的 `codebase-memory-mcp`。MCP 不可用时会自动降级为 fallback-file-scan，且绝不静默降级。
-
-相关 README 位置。
-
-但当前默认行为更接近：
+因此形成死锁：
 
 ```text
-永远没有 MCP transport → 永远 fallback
+CodebaseAdapter.initialize()
+→ transport.isAvailable()
+→ initialized=false
+→ 返回 false
+→ 不调用 transport.index()
+→ CodebaseMemoryManager.initialize() 永远不会被触发
+→ MCP 永远不会启动
+→ 永远 fallback
 ```
+
+README 声称 `sdd init` 会自动通过 `npx` 启动托管的 `codebase-memory-mcp`，MCP 不可用时才降级。
+
+当前代码不符合该行为。
 
 ### 修复要求
 
-1. 实现真实的 `CodebaseMemoryTransport implements McpTransport`。
-2. CLI 默认构造 Core 时注入该 transport。
-3. transport 至少实现：
-   - `isAvailable()`
-   - `index(root)`
-   - `summarize(root)`
-   - `inspect(root)`
-   - `capabilities(root)`
-   - `query(root, input)`
+修改 `CodebaseAdapter.initialize()` 启动顺序：
 
-4. `isAvailable()` 不得只看进程是否 1 秒未退出，应验证 MCP 可调用性。
-5. `doctor` 必须能区分：
-   - npx 不可用
-   - 包下载失败
-   - MCP 启动失败
-   - MCP 启动成功但 protocol 握手失败
-   - MCP tools 不完整
-   - index 未完成
-   - fallback 正常启用
+```ts
+if (this.transport !== undefined) {
+  try {
+    await this.transport.index(root);
 
-### 验收用例
+    if (await this.transport.isAvailable()) {
+      return {
+        provider: "codebase-memory-mcp",
+        degraded: false,
+        ...(await this.transport.summarize(root)),
+        diagnostics: ...
+      };
+    }
+  } catch (error) {
+    return fallback(...);
+  }
+}
+
+return fallback(...);
+```
+
+或者修改 `CodebaseMemoryTransport.isAvailable()`，使其在未初始化时能进行轻量探测，但更推荐由 `initialize()` 明确驱动生命周期。
+
+### 验收标准
+
+执行：
 
 ```bash
 sdd init --json
 ```
 
-MCP 可用时：
+当 MCP 可用时：
 
 ```json
 {
+  "ok": true,
+  "state": "INDEX_READY",
   "data": {
     "provider": "codebase-memory-mcp",
     "degraded": false
@@ -301,7 +139,7 @@ MCP 可用时：
 }
 ```
 
-MCP 不可用时：
+当 MCP 不可用时：
 
 ```json
 {
@@ -318,498 +156,689 @@ MCP 不可用时：
 
 ---
 
-## P0-4：`sdd build next` / `sdd build complete` 没有实现主协议闭环
+## P0-2：MCP diagnostics 存在假阳性
 
-### 现象
+### 问题说明
 
-CLI wrapper 已识别：
+`CodebaseMemoryTransport.inspect()` 根据 `manager.getCapabilities()` 判断 degraded。
 
-```bash
-sdd build next
-sdd build complete --task <id> --result <path>
-```
-
-相关代码位于 `packages/cli/src/commands/build.ts`。
-
-但 Core 的 `runBuild()` 没有处理 `rawArgs.subcommand === "next"` 或 `"complete"`。它直接进入完整 build 流程并调用 `TaskExecutor`。
-
-默认 executor 是 `MissingTaskExecutor`，会直接失败：
+但 `CodebaseMemoryManager.getCapabilities()` 只看 config mode，不看 MCP 是否真的启动、握手、可调用或索引完成。只要 mode 不是 fallback，就返回：
 
 ```ts
-"宿主适配器必须为 sdd build 提供 TaskExecutor";
+provider: "codebase-memory-mcp";
 ```
 
-虽然 `AgentActionRequired` 类型已经定义，但主流程没有返回它。
+这会导致 diagnostics 中可能出现：
 
-### 影响
-
-三期最关键的 Agent 协议无法闭环：
-
-```text
-sdd build next
-→ 返回 AGENT_TASK_EXECUTION
-→ Agent 执行任务
-→ 写 result.json
-→ sdd build complete --task --result
-→ Core 验收任务并推进状态
+```json
+{
+  "installed": true,
+  "configured": true,
+  "connected": true,
+  "callable": true,
+  "indexed": true
+}
 ```
+
+但实际 MCP 并没有启动成功。
 
 ### 修复要求
 
-在 `runBuild()` 开头增加 subcommand 分发：
+`CodebaseMemoryManager` 必须维护真实状态：
 
 ```ts
-if (rawArgs?.subcommand === "next") {
-  return buildNext(root, state, changeId, tasks);
-}
+private lifecycleResult: McpLifecycleResult | null;
+private lastDiagnostics: McpDiagnostics | null;
+private initializedRoot: string | null;
+```
 
-if (rawArgs?.subcommand === "complete") {
-  return buildComplete(root, state, changeId, rawArgs);
+`getCapabilities()` 和 `inspect()` 必须基于真实状态：
+
+- MCP 进程是否启动
+- MCP protocol 是否握手成功
+- tools/list 是否成功
+- index 是否完成
+- query 是否可调用
+- fallback 是否启用
+
+### 验收标准
+
+模拟 MCP 不可用时：
+
+```bash
+sdd codebase doctor --json
+```
+
+必须显示：
+
+```json
+{
+  "data": {
+    "provider": "fallback-file-scan",
+    "degraded": true
+  },
+  "warnings": [
+    {
+      "code": "W_CODEBASE_MEMORY_UNAVAILABLE",
+      "next": "sdd codebase doctor"
+    }
+  ]
 }
 ```
 
-`build next` 应：
+不得显示 `connected/callable/indexed=true`。
 
-- 读取当前 change 的 `tasks.json`
-- 找到第一个可执行且未完成任务
-- 返回 `CommandResult.actionRequired`
-- 不调用 `TaskExecutor`
-- 不修改业务代码
-- 可将任务状态置为 `BUILDING`，但必须支持恢复/重试
+---
 
-返回结构示例：
+## P0-3：`sdd codebase index` 和 `sdd codebase rebuild` 仍未实现
+
+### 问题说明
+
+CLI 允许：
+
+```ts
+const validSubcommands = ["status", "doctor", "index", "query", "rebuild"];
+```
+
+但 Core 的 `runCodebaseCommand()` 只实现了：
+
+```text
+status
+doctor
+query
+```
+
+`index` 和 `rebuild` 会走 default，返回“暂未实现”。
+
+README 已经把 `index` 和 `rebuild` 列为正式命令。
+
+### 修复要求
+
+补齐：
+
+```bash
+sdd codebase index
+sdd codebase rebuild
+```
+
+行为要求：
+
+#### `sdd codebase index`
+
+- 主动触发 MCP index。
+- MCP 不可用时触发 fallback-file-scan。
+- 写入：
+  - `.sdd/index/codebase-summary.md`
+  - `.sdd/index/package-structure.md`
+  - `.sdd/index/architecture.md`
+  - `.sdd/index/codebase-diagnostics.json`
+  - `.sdd/index/mcp-capabilities.json`
+
+#### `sdd codebase rebuild`
+
+- 清理旧索引。
+- 重新执行 index。
+- 不破坏 `.sdd/state.json` 中当前 change 状态。
+- 返回 provider、degraded、diagnostics、warnings。
+
+### 验收标准
+
+```bash
+sdd codebase index --json
+sdd codebase rebuild --json
+```
+
+必须返回 `ok: true`，并且生成或刷新 `.sdd/index/*` 制品。
+
+---
+
+## P0-4：`sdd codebase query <q>` 没有把 `<q>` 正确传入
+
+### 问题说明
+
+CLI 当前只读取第一个 positional 作为 subcommand：
+
+```ts
+const codebasePositionals = positionals.slice(1);
+const subcommand = codebasePositionals[0];
+result = await runCodebase(core, cwd, subcommand, extraArgs, undefined);
+```
+
+没有把后续参数拼成 query。
+
+Core 里 query 从 `args.query` 读取：
+
+```ts
+const query = (args?.query as string) || "";
+```
+
+但 CLI 没有设置 `extraArgs.query`。
+
+此外，`CodebaseMemoryTransport.query()` 当前传给 manager 的是：
+
+```ts
+query: input.requirement ?? input.intent;
+```
+
+它没有使用 `input.query`。
+
+### 修复要求
+
+CLI 修改为：
+
+```ts
+case "codebase": {
+  const [subcommand, ...queryParts] = positionals.slice(1);
+  const query = queryParts.join(" ");
+  if (query) extraArgs.query = query;
+  if (values.intent) extraArgs.intent = values.intent;
+  result = await runCodebase(core, cwd, subcommand, extraArgs, undefined);
+}
+```
+
+Transport 修改为：
+
+```ts
+query: input.query ?? input.requirement ?? input.intent;
+```
+
+同时建议 `CodebaseAdapter.query()` 不要硬编码 root 为 `"."`。当前调用为：
+
+```ts
+const raw = await this.transport.query(".", input);
+```
+
+应改成显式传 root：
+
+```ts
+async query(root: string, input: McpQueryInput)
+```
+
+### 验收标准
+
+```bash
+sdd codebase query "OrderService" --json
+```
+
+结果中的 query input 必须包含 `"OrderService"`，不得退化为 `"impact"` 或空字符串。
+
+---
+
+## P0-5：`sdd auto` 到 build 阶段仍会失败
+
+### 问题说明
+
+README 快速开始推荐：
+
+```bash
+sdd init
+sdd auto "实现订单取消功能"
+```
+
+Core 的 auto 映射是：
+
+```ts
+PLAN_READY: "build";
+```
+
+这会调用无子命令的完整 build 流程。完整 build 需要 `TaskExecutor`。
+
+但 CLI 默认构造 Core 时只注入了 codebase，没有注入 taskExecutor。
+
+Core 默认 `taskExecutor` 是 `MissingTaskExecutor`。
+
+`MissingTaskExecutor` 会直接抛错。
+
+### 修复要求
+
+`auto` 到 `PLAN_READY` 时，不应直接调用传统 `build`，而应返回 `build next` 的 `actionRequired`。
+
+建议在 `runAuto()` 中特殊处理：
+
+```ts
+if (status.state === "PLAN_READY") {
+  return this.execute({
+    command: "build",
+    cwd: request.cwd,
+    args: {
+      ...request.args,
+      subcommand: "next",
+    },
+    signal: request.signal,
+  });
+}
+```
+
+### 验收标准
+
+```bash
+sdd auto "实现订单取消功能" --json
+```
+
+当流程推进到 build 阶段时，应返回：
 
 ```json
 {
   "ok": true,
   "state": "BUILDING",
-  "exitCode": 0,
-  "actionRequired": {
-    "type": "AGENT_TASK_EXECUTION",
-    "taskId": "T001",
-    "changeId": "change-xxx",
-    "contextPack": ".sdd/context-packs/change-xxx/T001.md",
-    "allowedFiles": [],
-    "expectedNewFiles": [],
-    "forbiddenFiles": [],
-    "verification": [],
-    "resultFile": ".sdd/runs/run-xxx/tasks/T001.result.json",
-    "codebase": {
-      "provider": "codebase-memory-mcp",
-      "degraded": false
-    }
-  }
-}
-```
-
-`build complete` 应：
-
-- 读取 `--task`
-- 读取 `--result`
-- 校验 result schema
-- 校验文件范围
-- 校验 TDD/verification evidence
-- 写入 `.sdd/changes/<changeId>/task-results.json`
-- 更新 `.sdd/state.json.tasks[taskId] = DONE`
-- 所有任务完成后进入 `BUILD_READY`
-- 未完成时保持 `BUILDING` 或 `PLAN_READY` 语义一致，继续允许 `build next`
-
-### 验收用例
-
-```bash
-sdd build next --json
-```
-
-期望返回 `actionRequired.type = AGENT_TASK_EXECUTION`。
-
-```bash
-sdd build complete --task T001 --result .sdd/runs/run-xxx/tasks/T001.result.json --json
-```
-
-期望：
-
-- 单任务验收
-- 状态正确推进
-- 不依赖 `MissingTaskExecutor`
-
----
-
-## P0-5：CLI 参数解析会拦截 `--task` / `--result`
-
-### 现象
-
-CLI 顶层 `parseArgs()` 只声明了全局参数：
-
-```ts
-json;
-cwd;
-change;
-timeout;
-non - interactive;
-force;
-verbose;
-help;
-version;
-```
-
-但 `build complete` 使用：
-
-```bash
---task
---result
-```
-
-CLI 后面虽然尝试从 `positionals` 查找 `--task` 和 `--result`。
-
-问题是 `node:util.parseArgs()` 默认 `strict: true`，未知参数会直接抛错。因此 `--task` / `--result` 可能在进入后续逻辑前就被拦截。
-
-### 修复要求
-
-采用二阶段解析或关闭 strict。
-
-推荐：
-
-```ts
-const { values, positionals } = parseArgs({
-  args: process.argv.slice(2),
-  options: {
-    json: { type: "boolean", default: false },
-    cwd: { type: "string" },
-    change: { type: "string" },
-    timeout: { type: "string" },
-    "non-interactive": { type: "boolean", default: false },
-    force: { type: "boolean", default: false },
-    verbose: { type: "boolean", default: false },
-    help: { type: "boolean", default: false },
-    version: { type: "boolean", default: false },
-    task: { type: "string" },
-    result: { type: "string" },
-    host: { type: "string" },
-    structurePolicy: { type: "string" },
-  },
-  allowPositionals: true,
-});
-```
-
-或者：
-
-```ts
-strict: false;
-```
-
-并自行校验未知参数。
-
----
-
-# P1 高风险问题
-
-## P1-1：`--non-interactive` 没有映射到 Core 预期字段
-
-### 现象
-
-CLI 传入：
-
-```ts
-extraArgs["non-interactive"] = true;
-```
-
-但 `runNew()` 读取的是：
-
-```ts
-nonInteractive;
-```
-
-### 影响
-
-`--non-interactive` 对 blocker 问题逻辑无效。
-
-### 修复要求
-
-CLI 改为：
-
-```ts
-if (values["non-interactive"]) extraArgs.nonInteractive = true;
-```
-
-Core 解析层兼容旧字段：
-
-```ts
-const nonInteractive =
-  args.nonInteractive === true || args["non-interactive"] === true;
-```
-
----
-
-## P1-2：Agent Protocol 与 Core Build Protocol 版本不一致
-
-### 现象
-
-`packages/agent-protocol` 定义：
-
-```ts
-schemaVersion: "1.0.0";
-status: "DONE" | "FAILED" | "SKIPPED";
-```
-
-校验器也强制：
-
-```ts
-schemaVersion 必须为 1.0.0
-```
-
-但 Core build 的 v2 协议是：
-
-```ts
-schemaVersion: "1.2.0";
-status: "SUCCEEDED" | "FAILED" | "BLOCKED" | "SKIPPED" | "DEGRADED";
-commandEvidence;
-fileDelta;
-timestamps;
-```
-
-Core normalizer 也按 `schemaVersion === "1.2.0"` 判断 v2 结果。
-
-### 影响
-
-Agent 按 `packages/agent-protocol` 写出的结果，和 Core build 验收格式不一致。
-
-### 修复要求
-
-统一协议事实源：
-
-1. 将 `packages/agent-protocol` 升级到 `schemaVersion: "1.2.0"`。
-2. 状态枚举与 Core 对齐：
-   - `SUCCEEDED`
-   - `FAILED`
-   - `BLOCKED`
-   - `SKIPPED`
-   - `DEGRADED`
-
-3. 复用或导出 Core 的 `TaskExecutionResultV2`。
-4. `validateTaskResult()` 应校验 1.2.0 结构。
-5. 如果需要兼容 1.0.0，应提供显式 migration，不应静默混用。
-
----
-
-## P1-3：Claude command 安装缺少 `codebase`
-
-### 现象
-
-`installClaudeCommands()` 按 Core 的 `COMMANDS` 生成 `.claude/commands/sdd.<command>.md`。
-
-但 Core 的 `COMMANDS` 不包含 `codebase`。
-
-### 影响
-
-`/sdd.codebase` 不会被安装，Agent 文档和 README 中的 codebase 命令不一致。
-
-### 修复要求
-
-修复 P0-2 后，`COMMANDS` 包含 `codebase`，安装逻辑自然生成对应命令。
-
-也可以单独为 codebase 子命令生成：
-
-```text
-.claude/commands/sdd.codebase.status.md
-.claude/commands/sdd.codebase.doctor.md
-.claude/commands/sdd.codebase.index.md
-.claude/commands/sdd.codebase.query.md
-.claude/commands/sdd.codebase.rebuild.md
-```
-
----
-
-# P2 工程与发布问题
-
-## P2-1：当前没有 GitHub Packages 发布配置
-
-### 现状
-
-根 `package.json`：
-
-```json
-"name": "sdd-harness",
-"private": true
-```
-
-CLI 子包：
-
-```json
-"name": "@sdd-harness/cli"
-```
-
-README 当前写的是“不发布 npm”，安装脚本通过 `npm link` 注册命令。
-
-当前 CI 只有格式、lint、typecheck、test、schema 校验，没有 publish workflow。
-
-### 修复建议
-
-在主链路修复前，不建议发布。
-
-主链路修复后，如果要发布 GitHub Packages，建议新增：
-
-```text
-.github/workflows/npm-publish-github-packages.yml
-```
-
-并决定发布策略：
-
-方案 A：发布多个 workspace 包：
-
-```text
-@sdd-harness/cli
-@sdd-harness/core
-@sdd-harness/agent-protocol
-@sdd-harness/codebase-memory
-```
-
-方案 B：改成用户入口包：
-
-```text
-@liuyi-it/sdd-harness
-```
-
-更推荐方案 B，降低用户安装复杂度。
-
----
-
-## P2-2：`package-lock.json` 被忽略，CI 不可复现
-
-### 现象
-
-`.gitignore` 忽略了：
-
-```text
-package-lock.json
-```
-
-CI 使用：
-
-```yaml
-npm install
-```
-
-### 修复建议
-
-1. 提交 `package-lock.json`
-2. CI 改为：
-
-```yaml
-- run: npm ci
-```
-
----
-
-# 建议修复顺序
-
-请按以下顺序修：
-
-1. 修复 CLI 参数映射：
-   - `--change -> changeId`
-   - `--non-interactive -> nonInteractive`
-   - 支持 `--task` / `--result`
-
-2. 修复 `runNew()`：
-   - 未传 `changeId` 时自动生成
-   - `sdd new` / `sdd auto` 主流程可跑通
-
-3. 把 `codebase` 纳入 Core command：
-   - 实现 `sdd codebase status/doctor/index/query/rebuild`
-
-4. 实现 `build next` / `build complete`：
-   - 返回 `AGENT_TASK_EXECUTION`
-   - 消费 Agent result
-   - 单任务验收并推进状态
-
-5. 统一 Agent Protocol 到 `1.2.0`
-6. 真正接入 `CodebaseMemoryManager` 到 `CodebaseAdapter`
-7. 补充测试
-8. 最后再处理 GitHub Packages 发布
-
----
-
-# 必须补充的测试
-
-## CLI 参数测试
-
-覆盖：
-
-```bash
-sdd new "xxx"
-sdd new "xxx" --change change-001
-sdd auto "xxx"
-sdd new "xxx" --non-interactive
-sdd build complete --task T001 --result result.json
-```
-
-## Codebase 命令测试
-
-覆盖：
-
-```bash
-sdd codebase status
-sdd codebase doctor
-sdd codebase index
-sdd codebase query "OrderService"
-sdd codebase rebuild
-```
-
-要求验证它们不是普通 `status` 结果。
-
-## Build Agent Protocol 测试
-
-覆盖：
-
-```bash
-sdd build next --json
-```
-
-必须返回：
-
-```json
-{
   "actionRequired": {
     "type": "AGENT_TASK_EXECUTION"
   }
 }
 ```
 
-覆盖：
-
-```bash
-sdd build complete --task T001 --result result.json --json
-```
-
-必须能：
-
-- 校验 result schema
-- 校验 allowedFiles
-- 校验 TDD evidence
-- 更新 task 状态
-- 所有任务完成后进入 `BUILD_READY`
-
-## MCP fallback 测试
-
-模拟 MCP 不可用，期望：
-
-- fallback 到 `fallback-file-scan`
-- `degraded: true`
-- warnings 中必须包含 `sdd codebase doctor`
-- `.sdd/index/codebase-diagnostics.json` 存在
+不得因为 `MissingTaskExecutor` 失败。
 
 ---
 
-# 当前结论
+## P0-6：`build complete` 不写 `task-results.json`，导致后续 `verify` 失败
 
-三期当前还不能发布，也不建议交给真实 Agent 使用。
+### 问题说明
 
-主要原因是：
+`buildCompleteTask()` 当前只更新 `.sdd/state.json.tasks[taskId]`：
 
-1. `sdd new` / `sdd auto` 主流程会因为 changeId 问题失败。
-2. `sdd codebase ...` 子命令没有真正执行。
-3. `codebase-memory-mcp` 没有真正接入默认 Core 主链路。
-4. `sdd build next` / `sdd build complete` 没实现 Agent 协议闭环。
-5. CLI 参数解析会拦截关键子命令参数。
-6. Agent Protocol 与 Core Build Protocol 版本不一致。
+```ts
+tasks: { ...current.tasks, [taskId]: status as "DONE" | "FAILED" }
+```
 
-修完上述 P0 后，再进入发布流程。
+但没有写入：
+
+```text
+.sdd/changes/<changeId>/task-results.json
+```
+
+`verify` 阶段明确读取：
+
+```ts
+readFile(join(change, "task-results.json"), "utf8");
+```
+
+传统完整 build 流程会写 `task-results.json`。
+
+### 修复要求
+
+`buildCompleteTask()` 必须：
+
+1. 读取已有 `task-results.json`，不存在则使用 `[]`。
+2. 将 Agent result 转成 Core `TaskResult`。
+3. 替换同 taskId 的旧结果。
+4. 写回 `.sdd/changes/<changeId>/task-results.json`。
+5. 写入 `.sdd/runs/<runId>/tasks/<taskId>.result.json`。
+6. 写入 audit log。
+
+### 验收标准
+
+执行：
+
+```bash
+sdd build complete --task T001 --result .sdd/runs/<runId>/tasks/T001.result.json --json
+```
+
+必须生成或更新：
+
+```text
+.sdd/changes/<changeId>/task-results.json
+```
+
+随后：
+
+```bash
+sdd verify --json
+```
+
+不得因为缺少 `task-results.json` 失败。
+
+---
+
+## P0-7：`build complete` 返回 `BUILD_READY`，但没有持久化 `BUILD_READY`
+
+### 问题说明
+
+`buildCompleteTask()` 最后返回：
+
+```ts
+state: allDone ? "BUILD_READY" : "BUILDING";
+```
+
+但它没有把 `.sdd/state.json.currentPhase` 更新为 `BUILD_READY`。
+
+`verify` 要求持久状态必须是 `BUILD_READY` 或 `VERIFY_READY`。
+
+### 影响
+
+CLI 返回看似成功，但下一步 `sdd verify` 会读取旧状态 `BUILDING`，从而拒绝执行。
+
+### 修复要求
+
+当 `allDone === true` 时，必须持久化：
+
+```ts
+currentPhase: "BUILD_READY",
+inProgressPhase: null,
+failedCommand: null,
+failedReason: null,
+interruptedCommand: null,
+lastCommand: "sdd build complete",
+lastError: null,
+suggestedCommand: "sdd verify"
+```
+
+当未全部完成时，应持久化：
+
+```ts
+currentPhase: "BUILDING",
+inProgressPhase: "BUILDING",
+lastCommand: "sdd build complete",
+suggestedCommand: "sdd build next"
+```
+
+### 验收标准
+
+所有任务完成后：
+
+```bash
+sdd status --json
+```
+
+必须显示：
+
+```json
+{
+  "state": "BUILD_READY",
+  "next": "sdd verify"
+}
+```
+
+---
+
+# 三、P1 高风险问题
+
+## P1-1：`build next` 会覆盖 plan 阶段生成的 Context Pack
+
+### 问题说明
+
+`plan` 阶段已经生成完整 context pack，包括 rules、spec/design/impact、tasksJson、metadata 等。
+
+但 `buildNextTask()` 会直接覆盖同一路径：
+
+```text
+.sdd/context-packs/<changeId>/<taskId>.md
+```
+
+只写入极简内容。
+
+### 修复要求
+
+`build next` 不应重写 context pack。它应该只读取 plan 生成的 context pack：
+
+```ts
+const contextPackPath = `.sdd/context-packs/${changeId}/${nextTask.id}.md`;
+await access(join(root, contextPackPath));
+```
+
+如果缺失，应返回 `E_MISSING_ARTIFACT`。
+
+---
+
+## P1-2：`build next` 不把任务标记为 BUILDING，重复调用会重复领取同一任务
+
+### 问题说明
+
+`buildNextTask()` 只排除 `DONE` 任务。
+
+但返回任务后没有设置：
+
+```ts
+tasks[nextTask.id] = "BUILDING";
+```
+
+只更新了阶段和 suggestedCommand。
+
+### 修复要求
+
+`build next` 返回任务时应更新：
+
+```ts
+tasks: {
+  ...current.tasks,
+  [nextTask.id]: "BUILDING"
+}
+```
+
+并且下次选择任务时应排除 `BUILDING`，除非显式指定重取当前任务。
+
+---
+
+## P1-3：`build next / complete` 没有 FileLock，存在并发风险
+
+### 问题说明
+
+传统 build 有 FileLock。
+
+但 `buildNextTask()` 和 `buildCompleteTask()` 没有加锁。
+
+### 修复要求
+
+`build next` 和 `build complete` 都必须加锁：
+
+```ts
+const lock = new FileLock(root);
+await lock.acquire("sdd build", undefined, lockOptions(rawArgs));
+try {
+  ...
+} finally {
+  await lock.release();
+}
+```
+
+---
+
+## P1-4：`build complete` 文件范围校验过弱
+
+### 问题说明
+
+当前只检查：
+
+```ts
+const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
+const allowedFiles = task.allowedFiles ?? [];
+const outOfScope = modifiedFiles.filter((f) => !allowedFiles.includes(f));
+```
+
+问题：
+
+- 不支持 glob/pattern。
+- 不校验 expectedNewFiles。
+- 不校验 deleted files。
+- 不读取真实 Git delta。
+- Agent 可以漏报 modifiedFiles 绕过检查。
+
+### 修复要求
+
+复用传统 build 的安全校验：
+
+```ts
+validateTaskFiles(actualFiles, task);
+```
+
+并基于真实 Git delta，而不是只相信 Agent result。
+
+---
+
+## P1-5：`build complete` 没复用 `validateTaskResult()` 或 Core normalizer
+
+### 问题说明
+
+Agent Protocol validator 已经支持 `schemaVersion: "1.2.0"`。
+
+但 `buildCompleteTask()` 只做浅校验：
+
+```ts
+!resultJson.schemaVersion ||
+!resultJson.taskId ||
+!VALID_TASK_STATUSES.includes(...)
+```
+
+同时 Core 内部 `TaskExecutionResultV2` 又是另一套结构。
+
+### 修复要求
+
+建议采用：
+
+```text
+外部 Agent Result: packages/agent-protocol
+内部 Core Result: TaskExecutionResult / TaskExecutionResultV2
+```
+
+`build complete` 流程：
+
+```text
+读取 result json
+→ validateTaskResult()
+→ 转换为 Core TaskResult
+→ validateExecution()
+→ 写 task-results.json
+→ 写 run result artifact
+→ 更新 state
+```
+
+---
+
+## P1-6：`build complete` 没完整校验 TDD / verification evidence
+
+### 问题说明
+
+当前 TDD 校验逻辑存在问题：
+
+```ts
+if (missingPhases.length > 0 && tddEvidence && tddEvidence.length > 0)
+```
+
+这意味着：
+
+- `tddEvidence` 为空数组时不会报错。
+- verification 失败不会阻断。
+- command 白名单没有校验。
+- verification command 是否符合任务要求没有校验。
+
+### 修复要求
+
+必须复用或抽取传统 build 中的校验逻辑：
+
+- `taskEvidenceFailures()`
+- `tddChainFailures()`
+- `isCommandAllowed()`
+- `validateTaskFiles()`
+
+---
+
+# 四、P2 设计一致性问题
+
+## P2-1：`codebase status` 有副作用
+
+当前 `status` 调用了 `codebase.initialize(root)`。
+
+这可能启动 MCP、扫描文件、写 diagnostics。是否接受取决于设计。
+
+建议：
+
+```text
+status：只读读取已有 diagnostics
+doctor：主动诊断
+index：主动索引
+rebuild：清理并重建
+```
+
+---
+
+## P2-2：MCP 官方 URL 不一致
+
+Core 中 URL 是：
+
+```text
+https://github.com/DeusData/codebase-memory-mcp
+```
+
+Transport 中 URL 是：
+
+```text
+https://github.com/liuyi-it/codebase-memory-mcp
+```
+
+需要统一。
+
+---
+
+## P2-3：README 中 `sdd auto` 仍然过度承诺
+
+README 当前仍把 `sdd auto "..."` 作为快速开始主流程。
+
+在 P0-5 修复前，建议 README 改为阶段式流程，或者明确说明 `auto` 会在 build 阶段返回 `actionRequired`。
+
+---
+
+# 五、建议修复顺序
+
+## 第一轮：修主链路
+
+1. 修 `CodebaseAdapter.initialize()` 与 `CodebaseMemoryTransport.isAvailable()` 的启动死锁。
+2. 修 `sdd codebase query` 参数传递。
+3. 实现 `sdd codebase index`。
+4. 实现 `sdd codebase rebuild`。
+5. 修 `sdd auto` 到 `PLAN_READY` 后返回 `build next` 的 `actionRequired`。
+6. 修 `build complete` 写 `task-results.json`。
+7. 修 `build complete` 所有任务完成后持久化 `BUILD_READY`。
+
+## 第二轮：修安全和一致性
+
+8. `build next / complete` 加 FileLock。
+9. `build next` 不覆盖 context pack。
+10. `build next` 把任务标记为 `BUILDING`。
+11. `build complete` 使用真实 Git delta 校验文件范围。
+12. `build complete` 复用 `validateTaskResult()` 和 Core evidence 校验。
+13. 统一 MCP diagnostics 真实状态。
+
+## 第三轮：补测试和文档
+
+14. 补 E2E 测试：
+    - `init → new → design → plan`
+    - `build next → build complete → verify`
+    - `auto → actionRequired`
+    - `codebase query`
+    - MCP unavailable fallback
+
+15. 更新 README，避免 `sdd auto` 在未完全修通前过度承诺。
+16. 保持不发布 npm / GitHub Packages。
+17. 保持不提交 `package-lock.json`。
+
+---
+
+# 六、当前最终判断
+
+当前代码已经解决了上一轮的一部分结构性问题，但还没有满足三期可验收标准。
+
+不能通过的关键验收：
+
+```bash
+sdd init
+sdd auto "xxx"
+```
+
+当前仍会在 build 阶段失败。
+
+```bash
+sdd codebase index
+sdd codebase rebuild
+```
+
+当前仍未实现。
+
+```bash
+sdd build next
+sdd build complete
+sdd verify
+```
+
+当前不能可靠闭环，因为 `build complete` 没写 `task-results.json`，也没持久化 `BUILD_READY`。
+
+建议先修完 P0-1 到 P0-7，再进入下一轮全链路验收。

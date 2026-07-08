@@ -61,11 +61,7 @@ export class Core implements SddCore {
       // codebase 子命令：委托 CodebaseAdapter 处理
       if (request.command === "codebase")
         return withVerboseData(
-          await runCodebaseCommand(
-            request.cwd,
-            this.codebase,
-            request.args,
-          ),
+          await runCodebaseCommand(request.cwd, this.codebase, request.args),
           request,
         );
       if (request.command === "init")
