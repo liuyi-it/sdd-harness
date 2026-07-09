@@ -1053,7 +1053,7 @@ async function buildCompleteTask(
     await store.update((current) => ({
       ...current,
       tasks: { ...current.tasks, [taskId]: taskStatus },
-      currentPhase: allDone ? ("BUILD_READY" as const) : ("BUILDING" as const),
+      currentPhase: allDone ? ("BUILD_READY" as const) : ("PLAN_READY" as const),
       inProgressPhase: null,
       failedCommand: null,
       failedReason: null,
@@ -1061,11 +1061,24 @@ async function buildCompleteTask(
       lastCommand: "sdd build complete",
       lastError: null,
       suggestedCommand: allDone ? "sdd verify" : "sdd build next",
+      // 清除 activeLoop.waiting
+      activeLoop:
+        current.activeLoop !== null &&
+        typeof current.activeLoop === "object"
+          ? (() => {
+              const loop = {
+                ...(current.activeLoop as Record<string, unknown>),
+              };
+              loop.status = "RUNNING";
+              delete loop.waiting;
+              return loop;
+            })()
+          : current.activeLoop,
     }));
 
     return {
       ok: true,
-      state: allDone ? "BUILD_READY" : "BUILDING",
+      state: allDone ? "BUILD_READY" : "PLAN_READY",
       exitCode: 0,
       next: allDone ? "sdd verify" : "sdd build next",
     };
