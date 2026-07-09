@@ -159,7 +159,7 @@ describe("sdd auto", () => {
         cwd: root,
         args: { resume: "run-2" },
       });
-      expect(result).toMatchObject({ ok: true, state: "BUILDING" });
+      expect(result).toMatchObject({ ok: true, state: "BUILD_WAITING_AGENT" });
       expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
       expect(
         JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
@@ -200,7 +200,7 @@ describe("sdd auto", () => {
         cwd: root,
         args: { restart: true },
       });
-      expect(result).toMatchObject({ ok: true, state: "BUILDING" });
+      expect(result).toMatchObject({ ok: true, state: "BUILD_WAITING_AGENT" });
       expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
       expect(
         await readFile(join(root, ".sdd/loop/runs/run-1.json"), "utf8"),
@@ -228,7 +228,7 @@ describe("sdd auto", () => {
       });
       expect(result).toMatchObject({
         ok: true,
-        state: "BUILDING",
+        state: "BUILD_WAITING_AGENT",
         exitCode: 0,
       });
       expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
@@ -273,7 +273,7 @@ describe("sdd auto", () => {
       });
       expect(result).toMatchObject({
         ok: true,
-        state: "BUILDING",
+        state: "BUILD_WAITING_AGENT",
         exitCode: 0,
       });
       expect(result.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");

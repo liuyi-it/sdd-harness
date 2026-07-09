@@ -667,7 +667,8 @@ async function buildNextTask(
     const state = await new StateStore(root).read();
     if (
       state.currentPhase !== "PLAN_READY" &&
-      state.currentPhase !== "BUILDING"
+      state.currentPhase !== "BUILDING" &&
+      state.currentPhase !== "BUILD_WAITING_AGENT"
     ) {
       return {
         ok: false,
@@ -744,12 +745,26 @@ async function buildNextTask(
     // 标记任务为 BUILDING + 更新状态（P1-2）
     await new StateStore(root).update((current) => ({
       ...current,
-      currentPhase: "BUILDING",
-      inProgressPhase: "BUILDING",
+      currentPhase: "BUILD_WAITING_AGENT",
+      inProgressPhase: null,
       lastCommand: "sdd build next",
       lastError: null,
-      suggestedCommand: "sdd build next",
+      suggestedCommand: "sdd build complete",
       tasks: { ...current.tasks, [nextTask.id]: "BUILDING" },
+      activeLoop:
+        current.activeLoop !== null &&
+        typeof current.activeLoop === "object"
+          ? {
+              ...(current.activeLoop as Record<string, unknown>),
+              status: "WAITING_AGENT",
+              waiting: {
+                reason: "AGENT_TASK_EXECUTION",
+                taskId: nextTask.id,
+                resultFile,
+                since: new Date().toISOString(),
+              },
+            }
+          : current.activeLoop,
     }));
 
     const actionRequired: AgentActionRequired = {
@@ -774,7 +789,7 @@ async function buildNextTask(
 
     return {
       ok: true,
-      state: "BUILDING",
+      state: "BUILD_WAITING_AGENT",
       exitCode: 0,
       actionRequired,
       next: "sdd build complete",

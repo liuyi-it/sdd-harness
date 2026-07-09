@@ -28,7 +28,7 @@ describe("core contracts", () => {
   it("defines every stable and in-progress workflow phase", () => {
     expect(PHASES).toContain("DESIGNING");
     expect(PHASES).toContain("PLANNING");
-    expect(PHASES).toHaveLength(21);
+    expect(PHASES).toHaveLength(22);
   });
 
   it("maps canonical errors to their specified exit codes", () => {
