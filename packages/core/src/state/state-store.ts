@@ -428,7 +428,7 @@ function suggestedCommand(phase: Phase): string | null {
       INDEX_READY: "sdd new",
       SPEC_READY: "sdd design",
       DESIGN_READY: "sdd plan",
-      PLAN_READY: "sdd build",
+      PLAN_READY: "sdd build next",
       BUILD_READY: "sdd verify",
       VERIFY_READY: "sdd review",
       REVIEW_READY: "sdd archive",

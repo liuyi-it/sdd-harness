@@ -122,12 +122,24 @@ export async function runPlan(
     }
 
     if (unchanged) {
+      await store.update((current) => ({
+        ...current,
+        currentPhase: "PLAN_READY",
+        inProgressPhase: null,
+        suggestedCommand: "sdd build next",
+        artifacts: {
+          ...current.artifacts,
+          tasks: "READY" as const,
+          testPlan: "READY" as const,
+          context: "READY" as const,
+        },
+      }));
       return {
         ok: true,
         state: "PLAN_READY",
         exitCode: 0,
         changeId,
-        next: "sdd build",
+        next: "sdd build next",
         data: { alreadyReady: true },
       };
     }
@@ -215,7 +227,7 @@ export async function runPlan(
         testPlan: "READY",
         context: "READY",
       },
-      suggestedCommand: "sdd build",
+      suggestedCommand: "sdd build next",
     }));
     await new AuditLogger(root).write({
       command: "sdd plan",
@@ -228,7 +240,7 @@ export async function runPlan(
       state: ready.currentPhase,
       exitCode: 0,
       changeId,
-      next: "sdd build",
+      next: "sdd build next",
     };
   } catch (error) {
     const normalized = normalizeCommandError(

@@ -128,7 +128,7 @@ describe("design and plan", () => {
     expect(result).toMatchObject({
       ok: true,
       state: "PLAN_READY",
-      next: "sdd build",
+      next: "sdd build next",
     });
     const tasks = await readFile(
       join(root, ".sdd/changes/add-order-cancellation/tasks.md"),

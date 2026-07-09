@@ -101,6 +101,13 @@ export async function runDesign(
     }
 
     if (unchanged) {
+      await store.update((current) => ({
+        ...current,
+        currentPhase: "DESIGN_READY",
+        inProgressPhase: null,
+        suggestedCommand: "sdd plan",
+        artifacts: { ...current.artifacts, design: "READY" as const },
+      }));
       return {
         ok: true,
         state: "DESIGN_READY",
