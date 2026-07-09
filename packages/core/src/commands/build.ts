@@ -665,6 +665,58 @@ async function buildNextTask(
   await lock.acquire("sdd build next", undefined, lockOptions(rawArgs));
   try {
     const state = await new StateStore(root).read();
+
+    // 如果当前已有 active waiting task，返回同一份 handoff，不重复分配
+    if (state.currentPhase === "BUILD_WAITING_AGENT") {
+      const activeLoop = state.activeLoop as Record<string, unknown> | null;
+      const waiting = activeLoop?.waiting as Record<string, unknown> | undefined;
+      if (waiting?.taskId && waiting?.resultFile) {
+        const existingTaskId = waiting.taskId as string;
+        const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
+        const change = join(root, ".sdd", "changes", changeId);
+        const tasks = JSON.parse(
+          await readFile(join(change, "tasks.json"), "utf8"),
+        ) as TaskDefinition[];
+        const task = tasks.find((t) => t.id === existingTaskId);
+        if (task) {
+          const contextPackPath = `.sdd/context-packs/${changeId}/${existingTaskId}.md`;
+          await mkdir(
+            join(root, ".sdd", "runs", state.currentRunId ?? "unknown-run", "tasks"),
+            { recursive: true },
+          );
+          const actionRequired: AgentActionRequired = {
+            type: "AGENT_TASK_EXECUTION",
+            taskId: existingTaskId,
+            changeId,
+            contextPack: contextPackPath,
+            allowedFiles: task.allowedFiles ?? [],
+            expectedNewFiles: task.expectedNewFiles ?? [],
+            forbiddenFiles: task.forbiddenFiles ?? [],
+            verification:
+              task.verification?.map((cmd: string) => {
+                const [command, ...rest] = cmd.split(/\s+/);
+                return { command: command!, args: rest };
+              }) ?? [],
+            resultFile: waiting.resultFile as string,
+            codebase: {
+              provider:
+                state.codebaseProvider === "codebase-memory-mcp"
+                  ? ("codebase-memory-mcp" as const)
+                  : ("fallback-file-scan" as const),
+              degraded: state.degraded,
+            },
+          };
+          return {
+            ok: true,
+            state: "BUILD_WAITING_AGENT",
+            exitCode: 0,
+            actionRequired,
+            next: "sdd build complete",
+          };
+        }
+      }
+    }
+
     if (
       state.currentPhase !== "PLAN_READY" &&
       state.currentPhase !== "BUILDING" &&
