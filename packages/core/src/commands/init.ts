@@ -130,7 +130,7 @@ export async function runInit(
     );
     await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
-    const integration = await installProjectIntegration(root, manifests, {
+    await installProjectIntegration(root, manifests, {
       force: args?.force === true,
     });
     inProgressPhase = "INDEXING";
@@ -252,7 +252,6 @@ export async function runInit(
       next: "sdd new",
       ...buildWarnings(
         index,
-        integration.candidateFiles,
         configWarnings,
         loopOutcome,
       ),
@@ -469,7 +468,6 @@ function targetDescriptor(evidence: ComponentIntegrityEvidence): {
 
 function buildWarnings(
   index: { degraded: boolean; reason?: string | null },
-  candidateFiles: string[],
   configWarnings: string[],
   loopOutcome?: "written" | "unchanged" | "candidate",
 ): { warnings?: string[] } {
@@ -480,11 +478,6 @@ function buildWarnings(
     );
     warnings.push(
       `安装建议：请先安装并配置 codebase-memory-mcp，官方项目地址：${PINNED_DEPENDENCIES.codebaseMemoryMcp.repository}`,
-    );
-  }
-  if (candidateFiles.length > 0) {
-    warnings.push(
-      `检测到人工修改，已生成候选文件供人工合并：${candidateFiles.join(", ")}`,
     );
   }
   if (loopOutcome === "candidate") {

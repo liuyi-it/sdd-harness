@@ -1,14 +1,10 @@
 import { access, mkdir, readFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import type { AdapterManifest } from "../adapters/types.js";
 import { COMMANDS } from "../contracts.js";
 import { CANONICAL_SCHEMAS } from "./canonical-schemas.js";
-
-export interface ProjectIntegrationResult {
-  candidateFiles: string[];
-}
 
 /**
  * 按选定的适配器清单安装项目集成文件。
@@ -18,29 +14,28 @@ export interface ProjectIntegrationResult {
 export async function installProjectIntegration(
   root: string,
   manifests: AdapterManifest[],
-  options: { force?: boolean } = {},
-): Promise<ProjectIntegrationResult> {
-  const results = await Promise.all([
+  _options: { force?: boolean } = {},
+): Promise<void> {
+  await Promise.all([
     ...manifests.flatMap((manifest) => [
       installInstructions(
         join(root, manifest.instructionFile),
         manifest.instructionContent,
-        options,
+        _options,
       ),
-      installCommands(root, manifest, options),
+      installCommands(root, manifest),
       ...(manifest.skillsDir !== undefined &&
       manifest.skillContent !== undefined
-        ? [installSkill(root, manifest, options)]
+        ? [installSkill(root, manifest)]
         : []),
       ...(manifest.rules !== undefined
         ? manifest.rules.map((rule) =>
-            installRule(root, rule.file, rule.content, options),
+            installRule(root, rule.file, rule.content),
           )
         : []),
     ]),
-    installSchemas(root, options),
+    installSchemas(root),
   ]);
-  return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
 }
 
 /**
@@ -52,7 +47,7 @@ async function installInstructions(
   path: string,
   managedContent: string,
   options: { force?: boolean },
-): Promise<ProjectIntegrationResult> {
+): Promise<void> {
   const writer = new ArtifactWriter();
   let existing = "";
   try {
@@ -62,7 +57,7 @@ async function installInstructions(
   }
   if (existing === "") {
     await writer.write(path, managedContent, managedInputs(managedContent));
-    return { candidateFiles: [] };
+    return;
   }
 
   // 逐行比较：只追加 existing 中不存在的行，避免重复内容
@@ -75,12 +70,12 @@ async function installInstructions(
 
   if (newLines.length === 0) {
     await ensureMetadata(path, managedInputs(managedContent));
-    return { candidateFiles: [] };
+    return;
   }
 
   if (options.force === true) {
     await writer.write(path, managedContent, managedInputs(managedContent));
-    return { candidateFiles: [] };
+    return;
   }
 
   // 追加新行到文件末尾
@@ -90,7 +85,6 @@ async function installInstructions(
     existing + appendContent,
     managedInputs(managedContent),
   );
-  return { candidateFiles: [] };
 }
 
 /**
@@ -99,20 +93,20 @@ async function installInstructions(
 async function installCommands(
   root: string,
   manifest: AdapterManifest,
-  options: { force?: boolean },
-): Promise<ProjectIntegrationResult> {
+): Promise<void> {
   const directory = join(root, manifest.commandsDir);
   await mkdir(directory, { recursive: true });
-  const results = await Promise.all(
+  const writer = new ArtifactWriter();
+  const inputs = managedInputs(manifest.commandTemplate);
+  await Promise.all(
     COMMANDS.map((command) =>
-      writeManagedFile(
+      writer.write(
         join(directory, `sdd.${command}.md`),
         manifest.commandTemplate.replaceAll("{command}", command),
-        options,
+        inputs,
       ),
     ),
   );
-  return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
 }
 
 /**
@@ -121,11 +115,14 @@ async function installCommands(
 async function installSkill(
   root: string,
   manifest: AdapterManifest,
-  options: { force?: boolean },
-): Promise<ProjectIntegrationResult> {
+): Promise<void> {
   const skillPath = join(root, manifest.skillsDir!, "SKILL.md");
   await mkdir(join(skillPath, ".."), { recursive: true });
-  return writeManagedFile(skillPath, manifest.skillContent!, options);
+  await new ArtifactWriter().write(
+    skillPath,
+    manifest.skillContent!,
+    managedInputs(manifest.skillContent!),
+  );
 }
 
 /**
@@ -135,53 +132,28 @@ async function installRule(
   root: string,
   ruleFile: string,
   content: string,
-  options: { force?: boolean },
-): Promise<ProjectIntegrationResult> {
+): Promise<void> {
   const rulePath = join(root, ruleFile);
   await mkdir(join(rulePath, ".."), { recursive: true });
-  return writeManagedFile(rulePath, content, options);
+  await new ArtifactWriter().write(
+    rulePath,
+    content,
+    managedInputs(content),
+  );
 }
 
 /**
  * 安装 JSON Schema 文件（与适配器无关，始终安装）。
  */
-async function installSchemas(
-  root: string,
-  options: { force?: boolean },
-): Promise<ProjectIntegrationResult> {
+async function installSchemas(root: string): Promise<void> {
   const directory = join(root, ".sdd", "schemas");
   await mkdir(directory, { recursive: true });
-  const results = await Promise.all(
+  const writer = new ArtifactWriter();
+  await Promise.all(
     Object.entries(CANONICAL_SCHEMAS).map(async ([name, content]) =>
-      writeManagedFile(join(directory, name), content, options),
+      writer.write(join(directory, name), content, managedInputs(content)),
     ),
   );
-  return { candidateFiles: results.flatMap((result) => result.candidateFiles) };
-}
-
-async function writeManagedFile(
-  path: string,
-  content: string,
-  options: { force?: boolean },
-): Promise<ProjectIntegrationResult> {
-  const writer = new ArtifactWriter();
-  try {
-    const existing = await readFile(path, "utf8");
-    if (existing === content) {
-      await ensureMetadata(path, managedInputs(content));
-      return { candidateFiles: [] };
-    }
-    if (options.force === true) {
-      await writer.write(path, content, managedInputs(content));
-      return { candidateFiles: [] };
-    }
-    const candidatePath = `${path}.candidate.md`;
-    await writer.write(candidatePath, content, managedInputs(content));
-    return { candidateFiles: [basename(candidatePath)] };
-  } catch {
-    await writer.write(path, content, managedInputs(content));
-    return { candidateFiles: [] };
-  }
 }
 
 function managedInputs(content: string): Record<string, unknown> {
