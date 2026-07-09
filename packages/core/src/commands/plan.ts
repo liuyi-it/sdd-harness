@@ -93,13 +93,25 @@ export async function runPlan(
 
     try {
       const metaPath = `${join(change, "tasks.md")}.meta.json`;
-      const metadata = JSON.parse(await readFile(metaPath, "utf8")) as { inputHash: string };
+      const metadata = JSON.parse(await readFile(metaPath, "utf8")) as {
+        inputHash: string;
+      };
       if (metadata.inputHash === inputHash) {
         try {
           const tasksContent = await readFile(join(change, "tasks.md"), "utf8");
-          const testPlanContent = await readFile(join(change, "test-plan.md"), "utf8");
-          const contextContent = await readFile(join(change, "context.md"), "utf8");
-          existingPlan = { tasksMarkdown: tasksContent, testPlan: testPlanContent, context: contextContent };
+          const testPlanContent = await readFile(
+            join(change, "test-plan.md"),
+            "utf8",
+          );
+          const contextContent = await readFile(
+            join(change, "context.md"),
+            "utf8",
+          );
+          existingPlan = {
+            tasksMarkdown: tasksContent,
+            testPlan: testPlanContent,
+            context: contextContent,
+          };
           unchanged = true;
         } catch {
           // 文件不完整，不算 unchanged

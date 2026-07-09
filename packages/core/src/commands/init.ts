@@ -246,10 +246,7 @@ export async function runInit(
       state: ready.currentPhase,
       exitCode: 0,
       next: "sdd new",
-      ...buildWarnings(
-        index,
-        configWarnings,
-      ),
+      ...buildWarnings(index, configWarnings),
     };
   } catch (error) {
     const normalized = normalizeCommandError(

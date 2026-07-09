@@ -1,9 +1,4 @@
-import {
-  mkdtemp,
-  readFile,
-  readdir,
-  rename,
-} from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -50,6 +45,4 @@ describe("ArtifactWriter.writeGroupAtomically", () => {
       ).toEqual([]);
     },
   );
-
-
 });

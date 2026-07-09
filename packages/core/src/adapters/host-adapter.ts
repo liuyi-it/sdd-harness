@@ -215,7 +215,7 @@ function helpDocument(command: CommandName, style: HostStyle): HelpDocument {
         name: "--force",
         type: "boolean",
         default: "false",
-        description: "强制覆盖受管制品或集成文件，不生成 candidate 文件",
+        description: "强制覆盖受管制品或集成文件，不执行就地合并",
       },
       {
         name: "--timeout <seconds>",

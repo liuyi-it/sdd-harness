@@ -11,7 +11,7 @@ import { dirname } from "node:path";
 
 /**
  * ArtifactWriter 统一负责阶段制品和元数据落盘。
- * 这样各命令只需要关心内容本身，不必重复实现摘要与 candidate 逻辑。
+ * 这样各命令只需要关心内容本身，不必重复实现摘要与元数据逻辑。
  */
 export interface ArtifactMetadata {
   schemaVersion: "1.0.0";
@@ -127,7 +127,6 @@ export class ArtifactWriter {
       return false;
     }
   }
-
 }
 
 async function syncFile(path: string): Promise<void> {

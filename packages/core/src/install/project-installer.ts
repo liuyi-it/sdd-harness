@@ -135,11 +135,7 @@ async function installRule(
 ): Promise<void> {
   const rulePath = join(root, ruleFile);
   await mkdir(join(rulePath, ".."), { recursive: true });
-  await new ArtifactWriter().write(
-    rulePath,
-    content,
-    managedInputs(content),
-  );
+  await new ArtifactWriter().write(rulePath, content, managedInputs(content));
 }
 
 /**

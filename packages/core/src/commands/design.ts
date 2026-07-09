@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
-import { ArtifactWriter, artifactInputHash } from "../artifacts/artifact-writer.js";
+import {
+  ArtifactWriter,
+  artifactInputHash,
+} from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
 import type { DesignInput, TddEngine } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";

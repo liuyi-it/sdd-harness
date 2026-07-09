@@ -2,11 +2,17 @@ import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
-import { ArtifactWriter, artifactInputHash } from "../artifacts/artifact-writer.js";
+import {
+  ArtifactWriter,
+  artifactInputHash,
+} from "../artifacts/artifact-writer.js";
 import { type CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import { wrapUntrustedMcpOutput } from "../security/untrusted-content.js";
 import { type CommandResult } from "../contracts.js";
-import type { GenerateSpecInput, SpecEngine } from "../engines/spec/spec-engine.js";
+import type {
+  GenerateSpecInput,
+  SpecEngine,
+} from "../engines/spec/spec-engine.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
@@ -244,7 +250,9 @@ export async function runNew(
       let sameInput = false;
       try {
         const metaPath = `${join(changeDirectory, "spec.md")}.meta.json`;
-        const metadata = JSON.parse(await readFile(metaPath, "utf8")) as { inputHash: string };
+        const metadata = JSON.parse(await readFile(metaPath, "utf8")) as {
+          inputHash: string;
+        };
         if (metadata.inputHash === artifactInputHash(requirementInputs)) {
           sameInput = true;
         }
@@ -255,8 +263,13 @@ export async function runNew(
         try {
           existingSpec = {
             spec: await readFile(join(changeDirectory, "spec.md"), "utf8"),
-            delta: await readFile(join(changeDirectory, "spec.delta.md"), "utf8"),
-            model: JSON.parse(await readFile(join(changeDirectory, "spec.model.json"), "utf8")),
+            delta: await readFile(
+              join(changeDirectory, "spec.delta.md"),
+              "utf8",
+            ),
+            model: JSON.parse(
+              await readFile(join(changeDirectory, "spec.model.json"), "utf8"),
+            ),
           };
         } catch {
           // 制品不存在或无法读取
@@ -283,9 +296,21 @@ export async function runNew(
       });
     }
     await Promise.all([
-      writer.write(join(changeDirectory, "spec.md"), artifacts.spec, requirementInputs),
-      writer.write(join(changeDirectory, "spec.delta.md"), artifacts.delta, requirementInputs),
-      writer.write(join(changeDirectory, "spec.model.json"), JSON.stringify(artifacts.model, null, 2), requirementInputs),
+      writer.write(
+        join(changeDirectory, "spec.md"),
+        artifacts.spec,
+        requirementInputs,
+      ),
+      writer.write(
+        join(changeDirectory, "spec.delta.md"),
+        artifacts.delta,
+        requirementInputs,
+      ),
+      writer.write(
+        join(changeDirectory, "spec.model.json"),
+        JSON.stringify(artifacts.model, null, 2),
+        requirementInputs,
+      ),
     ]);
     const ready = await store.update((current) => ({
       ...current,

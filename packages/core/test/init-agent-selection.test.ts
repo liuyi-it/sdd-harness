@@ -54,9 +54,7 @@ function makeCodexManifest(): AdapterManifest {
 describe("installProjectIntegration agent selection", () => {
   it("仅安装选中的适配器 — claude", async () => {
     const root = await project();
-    await installProjectIntegration(root, [
-      makeClaudeManifest(),
-    ]);
+    await installProjectIntegration(root, [makeClaudeManifest()]);
 
     await expect(access(join(root, "CLAUDE.md"))).resolves.toBeUndefined();
     await expect(access(join(root, "AGENTS.md"))).rejects.toThrow();
@@ -111,9 +109,7 @@ describe("installProjectIntegration agent selection", () => {
       "utf8",
     );
 
-    await installProjectIntegration(root, [
-      makeClaudeManifest(),
-    ]);
+    await installProjectIntegration(root, [makeClaudeManifest()]);
 
     const content = await readFile(join(root, "CLAUDE.md"), "utf8");
     const lines = content.split("\n");
