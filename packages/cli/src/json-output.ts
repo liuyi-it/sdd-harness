@@ -32,6 +32,30 @@ export function outputText(result: CommandResult): void {
       }
     }
   }
+  if (result.actionRequired) {
+    const ar = result.actionRequired;
+    console.log(`\nAction Required: ${ar.type}`);
+    console.log(`Task: ${ar.taskId}`);
+    console.log(`Context Pack: ${ar.contextPack}`);
+    console.log(`Result File: ${ar.resultFile}`);
+    if (ar.allowedFiles.length > 0) {
+      console.log(`\nAllowed Files:`);
+      for (const f of ar.allowedFiles) console.log(`  - ${f}`);
+    }
+    if (ar.expectedNewFiles.length > 0) {
+      console.log(`\nExpected New Files:`);
+      for (const f of ar.expectedNewFiles) console.log(`  - ${f}`);
+    }
+    if (ar.forbiddenFiles.length > 0) {
+      console.log(`\nForbidden Files:`);
+      for (const f of ar.forbiddenFiles) console.log(`  - ${f}`);
+    }
+    if (ar.verification.length > 0) {
+      console.log(`\nVerification:`);
+      for (const v of ar.verification)
+        console.log(`  - ${v.command} ${v.args.join(" ")}`);
+    }
+  }
   if (result.error) {
     console.error(`Error [${result.error.code}]: ${result.error.message}`);
     if (result.error.next) console.error(`  → ${result.error.next}`);

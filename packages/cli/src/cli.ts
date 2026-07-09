@@ -36,7 +36,11 @@ const HELP_TEXT = `sdd — SDD Agent Harness CLI
   verify            验证
   review            审查
   archive           归档
-  auto <需求>        自动推进完整流程
+  auto <需求>        自动推进 SDD Loop
+  auto --resume     恢复当前 auto run
+  auto --restart    重启 auto run
+  auto --stop       停止当前 auto run
+  auto --events     查看 auto run 事件
   codebase           代码库上下文管理 (status/doctor/index/query/rebuild)
 
 通用参数:
@@ -85,6 +89,14 @@ async function main(): Promise<void> {
       structurePolicy: { type: "string" },
       host: { type: "string" },
       answers: { type: "string" },
+      resume: { type: "boolean", default: false },
+      restart: { type: "boolean", default: false },
+      stop: { type: "boolean", default: false },
+      events: { type: "boolean", default: false },
+      tail: { type: "string" },
+      loop: { type: "boolean", default: false },
+      run: { type: "string" },
+      "loop-status": { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
@@ -142,6 +154,7 @@ async function main(): Promise<void> {
       result = await runInit(core, cwd, extraArgs, undefined);
       break;
     case "status":
+      if (values.loop) extraArgs.loop = true;
       result = await runStatus(core, cwd, extraArgs, undefined);
       break;
     case "new": {
@@ -179,6 +192,14 @@ async function main(): Promise<void> {
       result = await runArchive(core, cwd, extraArgs, undefined);
       break;
     case "auto": {
+      if (values.resume) extraArgs.resume = values.run ?? true;
+      if (values.restart) extraArgs.restart = true;
+      if (values.stop) extraArgs.stop = true;
+      if (values.events) {
+        extraArgs.events = true;
+        if (values.tail) extraArgs.tail = Number(values.tail);
+      }
+      if (values["loop-status"]) extraArgs.loopStatus = true;
       const requirement = positionals.slice(1).join(" ") || "";
       result = await runAuto(core, cwd, requirement, extraArgs, undefined);
       break;
