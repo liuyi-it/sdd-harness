@@ -73,6 +73,9 @@ const configSchema = z
     workflow: z.object({}).passthrough(),
     quality: z.object({}).passthrough(),
     security: z.object({}).passthrough(),
+    contextPack: z.object({}).passthrough(),
+    audit: z.object({}).passthrough(),
+    git: z.object({}).passthrough(),
   })
   .passthrough();
 
@@ -84,6 +87,9 @@ const REQUIRED_CONFIG_KEYS = [
   "workflow",
   "quality",
   "security",
+  "contextPack",
+  "audit",
+  "git",
 ] as const;
 
 export async function runInit(
