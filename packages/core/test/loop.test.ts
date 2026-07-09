@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 
 describe("loop store", () => {
-  it("writes a default loop spec during init and protects manual edits with candidate", async () => {
+  it("writes a default loop spec during init and overwrites on subsequent init", async () => {
     const { root, core } = await initializedProject();
 
     expect(await core.execute({ command: "init", cwd: root })).toMatchObject({
@@ -55,9 +55,14 @@ describe("loop store", () => {
       ok: true,
       state: "INDEX_READY",
     });
-    await expect(
-      access(join(root, ".sdd/loop/loop.json.candidate.md")),
-    ).resolves.toBeUndefined();
+    const overwritten = JSON.parse(
+      await readFile(join(root, ".sdd/loop/loop.json"), "utf8"),
+    );
+    expect(overwritten).toMatchObject({
+      schemaVersion: "1.2.0",
+      loopId: "auto-default",
+      mode: "auto",
+    });
   });
 
   it("recovers activeLoop when the referenced run record is missing", async () => {

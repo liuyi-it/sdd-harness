@@ -15,16 +15,12 @@ export class LoopStore {
     this.runsDirectory = join(this.directory, "runs");
   }
 
-  async writeSpec(
-    spec: LoopSpec,
-    options: { force?: boolean } = {},
-  ): Promise<"written" | "unchanged" | "candidate"> {
+  async writeSpec(spec: LoopSpec): Promise<void> {
     await mkdir(this.runsDirectory, { recursive: true });
-    return new ArtifactWriter().writeOrCandidate(
+    await new ArtifactWriter().write(
       this.specPath,
       JSON.stringify(spec, null, 2),
       spec,
-      options,
     );
   }
 

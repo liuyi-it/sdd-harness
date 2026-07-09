@@ -183,9 +183,7 @@ export async function runInit(
     await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
     const loopStore = new LoopStore(root);
-    const loopOutcome = await loopStore.writeSpec(createDefaultLoopSpec(), {
-      force: args?.force === true,
-    });
+    await loopStore.writeSpec(createDefaultLoopSpec());
     const conventionsStore = new ProjectConventionsStore(root);
     const emptyProject = await isEmptyProject(root);
     const structurePolicy = readStructurePolicy(args);
@@ -215,9 +213,6 @@ export async function runInit(
         next: "sdd init",
         warnings: [
           "空项目需要先通过 structurePolicy 指定目录结构策略，可选 free-design 或 user-defined",
-          ...(loopOutcome === "candidate"
-            ? ["检测到人工修改的 loop spec，已生成候选文件供人工合并"]
-            : []),
         ],
       };
     }
@@ -253,7 +248,6 @@ export async function runInit(
       ...buildWarnings(
         index,
         configWarnings,
-        loopOutcome,
       ),
     };
   } catch (error) {
@@ -469,7 +463,6 @@ function targetDescriptor(evidence: ComponentIntegrityEvidence): {
 function buildWarnings(
   index: { degraded: boolean; reason?: string | null },
   configWarnings: string[],
-  loopOutcome?: "written" | "unchanged" | "candidate",
 ): { warnings?: string[] } {
   const warnings: string[] = [];
   if (index.degraded) {
@@ -479,9 +472,6 @@ function buildWarnings(
     warnings.push(
       `安装建议：请先安装并配置 codebase-memory-mcp，官方项目地址：${PINNED_DEPENDENCIES.codebaseMemoryMcp.repository}`,
     );
-  }
-  if (loopOutcome === "candidate") {
-    warnings.push("检测到人工修改的 loop spec，已生成候选文件供人工合并");
   }
   warnings.push(...configWarnings);
   return warnings.length === 0 ? {} : { warnings };
