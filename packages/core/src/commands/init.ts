@@ -119,7 +119,8 @@ export async function runInit(
     const selectedAgents = normalizeAgentArg(args?.agent);
     const allManifests = await getAvailableAdapters();
     const manifests = filterManifests(allManifests, selectedAgents);
-    await writeIfMissing(
+    const writer = new ArtifactWriter();
+    await writer.write(
       join(sddRoot, "config.yml"),
       stringify(
         defaultConfig(
@@ -127,6 +128,7 @@ export async function runInit(
           manifests.map((m) => m.agent),
         ),
       ),
+      { generatedBy: "sdd-harness", purpose: "config" },
     );
     await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
     const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
@@ -147,7 +149,6 @@ export async function runInit(
       "sdd init",
       signal,
     );
-    const writer = new ArtifactWriter();
     const indexInputs = {
       provider: index.provider,
       degraded: index.degraded,
@@ -348,10 +349,6 @@ async function writeDependencyMetadata(
       );
     }),
   );
-}
-
-async function writeIfMissing(path: string, content: string): Promise<void> {
-  if (!(await exists(path))) await writeFile(path, content, "utf8");
 }
 
 async function verifyDependencyIntegrityIfProvided(
