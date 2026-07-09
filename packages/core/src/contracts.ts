@@ -34,6 +34,7 @@ export const PHASES = [
   "PLANNING",
   "PLAN_READY",
   "BUILDING",
+  "BUILD_WAITING_AGENT",
   "BUILD_READY",
   "VERIFYING",
   "VERIFY_READY",
