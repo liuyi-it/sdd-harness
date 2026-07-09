@@ -60,11 +60,13 @@ export async function prepareAutoLoop(
     });
     const runId = `run-${Date.now()}`;
     await loops.writeRun({
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.3.0" as const,
       runId,
       loopId: currentLoop.loopId,
       status: "RUNNING",
       startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentStep: 0,
       steps: [],
     });
     await store.update((current) => ({
@@ -90,11 +92,13 @@ export async function prepareAutoLoop(
   const loopId = currentLoop?.loopId ?? spec.loopId;
   if (!(await loops.hasRun(runId))) {
     await loops.writeRun({
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.3.0" as const,
       runId,
       loopId,
       status: "RUNNING",
       startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      currentStep: 0,
       steps: [],
     });
   }
@@ -130,7 +134,11 @@ export async function recordAutoStep(
       ...run.steps,
       {
         step: run.steps.length + 1,
+        kind: "COMMAND" as const,
         command: step.command,
+        phaseBefore: run.steps.length > 0
+          ? (run.steps[run.steps.length - 1]!.phaseAfter ?? run.steps[run.steps.length - 1]!.phaseBefore)
+          : "NOT_INITIALIZED",
         status:
           step.status === "BLOCKED"
             ? "BLOCKED"

@@ -8,11 +8,10 @@ import { runVerify } from "./commands/verify.js";
 import { runReview } from "./commands/review.js";
 import { runArchive } from "./commands/archive.js";
 import { runCodebaseCommand } from "./commands/codebase.js";
-import {
-  finalizeAutoLoop,
-  prepareAutoLoop,
-  recordAutoStep,
-} from "./commands/auto.js";
+import { LoopEngine } from "./loop/loop-engine.js";
+import { LoopStore } from "./loop/loop-store.js";
+import { LoopEventStore } from "./loop/loop-events.js";
+import { StateStore } from "./state/state-store.js";
 import { runStatus } from "./commands/status.js";
 import {
   COMMANDS,
@@ -173,92 +172,16 @@ export class Core implements SddCore {
   }
 
   private async runAuto(request: CommandRequest): Promise<CommandResult> {
-    let status = await runStatus(request.cwd);
-    if (status.state === "NOT_INITIALIZED") {
-      throw new SddError(
-        "E_NOT_INITIALIZED",
-        "请先运行 sdd init 再执行 sdd auto",
-        "sdd init",
-      );
-    }
-    const loop = await prepareAutoLoop(request.cwd, request.args);
-    const commandByPhase: Partial<Record<CommandResult["state"], CommandName>> =
-      {
-        INDEX_READY: "new",
-        SPEC_READY: "design",
-        DESIGN_READY: "plan",
-        PLAN_READY: "build",
-        BUILD_READY: "verify",
-        VERIFY_READY: "review",
-        REVIEW_READY: "archive",
-      };
-    // auto 只是阶段编排器，不会绕过任何单阶段命令自身的安全检查。
-    let result: CommandResult | undefined;
-    for (let step = 0; step < loop.maxSteps; step += 1) {
-      // step>0 时 status 已由上轮 loop 底部的 `status = result` 更新，无需 runStatus（避免 normalizeTransientState）
-      if (status.state === "ARCHIVED") {
-        await finalizeAutoLoop(request.cwd, loop.runId, "ARCHIVED");
-        return status;
-      }
-      const command = autoCommand(status, request.args, commandByPhase);
-      if (command === undefined) {
-        await finalizeAutoLoop(
-          request.cwd,
-          loop.runId,
-          status.state === "CLARIFYING" ? "PAUSED" : "RUNNING",
-        );
-        return status;
-      }
-      const startedAt = new Date().toISOString();
-      // PLAN_READY → build next（不走传统 build，避免 MissingTaskExecutor）
-      const effectiveArgs =
-        command === "build"
-          ? { ...request.args, subcommand: "next" }
-          : request.args;
-      result = await this.execute({
-        command,
-        cwd: request.cwd,
-        ...(effectiveArgs === undefined ? {} : { args: effectiveArgs }),
-        ...(request.signal === undefined ? {} : { signal: request.signal }),
-      });
-
-      // auto 到 build 阶段返回 AGENT_TASK_EXECUTION，由外部 Agent 执行任务后调 build complete 继续
-
-      await recordAutoStep(request.cwd, loop.runId, {
-        command,
-        status: !result.ok
-          ? "FAILED"
-          : result.state === "ARCHIVED"
-            ? "ARCHIVED"
-            : result.state === "CLARIFYING"
-              ? "PAUSED"
-              : "SUCCEEDED",
-        startedAt,
-        endedAt: new Date().toISOString(),
-      });
-      if (
-        !result.ok ||
-        result.state === "CLARIFYING" ||
-        result.state === "ARCHIVED"
-      ) {
-        await finalizeAutoLoop(
-          request.cwd,
-          loop.runId,
-          !result.ok
-            ? "FAILED"
-            : result.state === "ARCHIVED"
-              ? "ARCHIVED"
-              : "PAUSED",
-        );
-        return result;
-      }
-      status = result;
-    }
-    throw new SddError(
-      "E_STATE_CORRUPTED",
-      "auto 流程超过了允许的最大阶段推进次数",
+    const loopEngine = new LoopEngine(
+      request.cwd,
+      new StateStore(request.cwd),
+      new LoopStore(request.cwd),
+      new LoopEventStore(request.cwd),
+      (req) => this.execute(req),
     );
+    return loopEngine.run(request);
   }
+
 }
 
 function withVerboseData(
@@ -298,48 +221,3 @@ function withVerboseData(
   };
 }
 
-function autoCommand(
-  status: CommandResult,
-  args: Record<string, unknown> | undefined,
-  commandByPhase: Partial<Record<CommandResult["state"], CommandName>>,
-): CommandName | undefined {
-  if (status.state === "CLARIFYING") {
-    return hasAnswers(args) ? "new" : undefined;
-  }
-  if (status.state === "FAILED" || status.state === "PAUSED") {
-    const state = status.data as
-      | {
-          failedCommand?: string | null;
-          interruptedCommand?: string | null;
-          suggestedCommand?: string | null;
-        }
-      | undefined;
-    return parseCommandName(
-      state?.interruptedCommand ??
-        state?.failedCommand ??
-        state?.suggestedCommand ??
-        status.next,
-    );
-  }
-  return commandByPhase[status.state];
-}
-
-function hasAnswers(args: Record<string, unknown> | undefined): boolean {
-  const answers = args?.answers;
-  return (
-    answers !== undefined &&
-    typeof answers === "object" &&
-    answers !== null &&
-    Object.keys(answers).length > 0
-  );
-}
-
-function parseCommandName(
-  input: string | undefined | null,
-): CommandName | undefined {
-  if (input === undefined || input === null) return undefined;
-  const normalized = input.replace(/^\/?sdd[.\s]/, "") as CommandName;
-  return (COMMANDS as readonly string[]).includes(normalized)
-    ? normalized
-    : undefined;
-}

@@ -40,14 +40,14 @@ describe("loop store", () => {
     expect(
       JSON.parse(await readFile(join(root, ".sdd/loop/loop.json"), "utf8")),
     ).toMatchObject({
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.3.0",
       loopId: "auto-default",
       mode: "auto",
     });
 
     await writeFile(
       join(root, ".sdd/loop/loop.json"),
-      '{ "schemaVersion": "1.2.0", "manual": true }\n',
+      '{ "schemaVersion": "1.3.0", "manual": true }\n',
       "utf8",
     );
 
@@ -59,7 +59,7 @@ describe("loop store", () => {
       await readFile(join(root, ".sdd/loop/loop.json"), "utf8"),
     );
     expect(overwritten).toMatchObject({
-      schemaVersion: "1.2.0",
+      schemaVersion: "1.3.0",
       loopId: "auto-default",
       mode: "auto",
     });
