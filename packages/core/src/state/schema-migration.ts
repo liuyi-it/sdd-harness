@@ -1,11 +1,11 @@
 import { SddError } from "../errors.js";
 
-export const CURRENT_SCHEMA_VERSION = "1.2.0";
+export const CURRENT_SCHEMA_VERSION = "1.3.0";
 export const LEGACY_SCHEMA_VERSION = "1.0.0";
 
 export interface MigrationResult {
   from: "1.0.0";
-  to: "1.2.0";
+  to: "1.3.0";
   state: Record<string, unknown>;
   backupPaths: string[];
 }

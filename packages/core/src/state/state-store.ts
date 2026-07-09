@@ -167,6 +167,11 @@ export class StateStore {
         await this.write(migrated);
         return migrated;
       }
+      if (raw.schemaVersion === "1.2.0") {
+        const migrated = migrateFrom120(raw);
+        await this.write(migrated);
+        return migrated;
+      }
       if (raw.schemaVersion !== CURRENT_SCHEMA_VERSION) {
         throw new SddError(
           "E_STATE_CORRUPTED",
@@ -491,3 +496,62 @@ const TRANSIENT_PHASE_RECOVERY: Partial<
   REVIEWING: { command: "sdd review", previousPhase: "VERIFY_READY" },
   ARCHIVING: { command: "sdd archive", previousPhase: "REVIEW_READY" },
 };
+
+/** 将 1.2.0 schema 迁移到 1.3.0 */
+function migrateFrom120(raw: Record<string, unknown>): WorkflowState {
+  const phase = raw.currentPhase as string | undefined;
+  const suggested = raw.suggestedCommand as string | undefined;
+  const tasks = (raw.tasks as Record<string, string>) ?? {};
+
+  if (
+    phase === "BUILDING" &&
+    (suggested?.includes("build next") ||
+      suggested?.includes("build complete"))
+  ) {
+    // 找到 BUILDING 状态的任务
+    const buildingTasks = Object.entries(tasks).filter(
+      ([, status]) => status === "BUILDING",
+    );
+    if (buildingTasks.length === 1) {
+      const [taskId] = buildingTasks[0]!;
+      return workflowStateSchema.parse({
+        ...raw,
+        schemaVersion: "1.3.0",
+        currentPhase: "BUILD_WAITING_AGENT",
+        inProgressPhase: null,
+        activeLoop: {
+          loopId: "auto-default",
+          runId: (raw.currentRunId as string) ?? `run-${Date.now()}`,
+          status: "WAITING_AGENT",
+          waiting: {
+            reason: "AGENT_TASK_EXECUTION",
+            taskId,
+            since: (raw.updatedAt as string) ?? new Date().toISOString(),
+          },
+        },
+        version:
+          typeof raw.version === "number" ? raw.version + 1 : 1,
+        updatedAt: new Date().toISOString(),
+      });
+    }
+    // 无法确定唯一 taskId → 标记 FAILED
+    return workflowStateSchema.parse({
+      ...raw,
+      schemaVersion: "1.3.0",
+      currentPhase: "FAILED",
+      failedReason:
+        "旧 BUILDING 等待状态迁移失败：无法确定唯一 taskId，请人工检查",
+      version:
+        typeof raw.version === "number" ? raw.version + 1 : 1,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  // 其他 1.2.0 → 1.3.0：仅升级 schemaVersion
+  return workflowStateSchema.parse({
+    ...raw,
+    schemaVersion: "1.3.0",
+    version: typeof raw.version === "number" ? raw.version + 1 : 1,
+    updatedAt: new Date().toISOString(),
+  });
+}
