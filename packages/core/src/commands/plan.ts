@@ -9,6 +9,7 @@ import {
 import { renderContextPack } from "../build/context-pack.js";
 import { type CommandResult } from "../contracts.js";
 import type { TddEngine } from "../engines/tdd/tdd-engine.js";
+import type { PlanningInput } from "../engines/superpowers/protocol.js";
 import { SddError } from "../errors.js";
 import {
   resolveProjectRules,
@@ -69,7 +70,7 @@ export async function runPlan(
       lastError: null,
     }));
     started = true;
-    const input = {
+    const input: PlanningInput = {
       spec: await readFile(join(change, "spec.md"), "utf8"),
       design: await readFile(join(change, "design.md"), "utf8"),
       impact: await readFile(join(change, "impact.md"), "utf8"),
@@ -85,27 +86,30 @@ export async function runPlan(
       signal,
     );
     const writer = new ArtifactWriter();
-    const outcomes = await Promise.all([
-      writer.writeOrCandidate(
-        join(change, "tasks.md"),
-        artifacts.tasksMarkdown,
-        input,
-        { force: args?.force === true },
-      ),
-      writer.writeOrCandidate(
-        join(change, "test-plan.md"),
-        artifacts.testPlan,
-        input,
-        { force: args?.force === true },
-      ),
-      writer.writeOrCandidate(
-        join(change, "context.md"),
-        artifacts.context,
-        input,
-        { force: args?.force === true },
-      ),
-    ]);
-    if (outcomes.every((outcome) => outcome === "unchanged")) {
+    const force = args?.force === true;
+    const inputHash = artifactInputHash(input);
+    let existingPlan: PlanningInput["existingPlan"];
+    let unchanged = false;
+
+    try {
+      const metaPath = `${join(change, "tasks.md")}.meta.json`;
+      const metadata = JSON.parse(await readFile(metaPath, "utf8")) as { inputHash: string };
+      if (metadata.inputHash === inputHash) {
+        try {
+          const tasksContent = await readFile(join(change, "tasks.md"), "utf8");
+          const testPlanContent = await readFile(join(change, "test-plan.md"), "utf8");
+          const contextContent = await readFile(join(change, "context.md"), "utf8");
+          existingPlan = { tasksMarkdown: tasksContent, testPlan: testPlanContent, context: contextContent };
+          unchanged = true;
+        } catch {
+          // 文件不完整，不算 unchanged
+        }
+      }
+    } catch {
+      // 文件不存在
+    }
+
+    if (unchanged) {
       return {
         ok: true,
         state: "PLAN_READY",
@@ -115,16 +119,35 @@ export async function runPlan(
         data: { alreadyReady: true },
       };
     }
-    if (outcomes.some((outcome) => outcome === "candidate")) {
-      return {
-        ok: true,
-        state: "PLAN_READY",
-        exitCode: 0,
-        changeId,
-        next: "sdd build",
-        warnings: ["plan 输入已变化；已生成候选制品供人工合并"],
-      };
+
+    if (!force) {
+      if (existingPlan === undefined) {
+        try {
+          existingPlan = {
+            tasksMarkdown: await readFile(join(change, "tasks.md"), "utf8"),
+            testPlan: await readFile(join(change, "test-plan.md"), "utf8"),
+            context: await readFile(join(change, "context.md"), "utf8"),
+          };
+        } catch {
+          // 文件不存在，不用合并
+        }
+      }
+      if (existingPlan !== undefined) {
+        input.existingPlan = existingPlan;
+        const merged = await engine.generatePlan(input);
+        artifacts.tasksMarkdown = merged.tasksMarkdown;
+        artifacts.testPlan = merged.testPlan;
+        artifacts.context = merged.context;
+        artifacts.tasks = merged.tasks;
+        artifacts.contextPacks = merged.contextPacks;
+      }
     }
+
+    await Promise.all([
+      writer.write(join(change, "tasks.md"), artifacts.tasksMarkdown, input),
+      writer.write(join(change, "test-plan.md"), artifacts.testPlan, input),
+      writer.write(join(change, "context.md"), artifacts.context, input),
+    ]);
     await writeFile(
       join(change, "tasks.json"),
       `${JSON.stringify(artifacts.tasks, null, 2)}\n`,
