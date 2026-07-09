@@ -54,11 +54,10 @@ function makeCodexManifest(): AdapterManifest {
 describe("installProjectIntegration agent selection", () => {
   it("仅安装选中的适配器 — claude", async () => {
     const root = await project();
-    const result = await installProjectIntegration(root, [
+    await installProjectIntegration(root, [
       makeClaudeManifest(),
     ]);
 
-    expect(result.candidateFiles).toEqual([]);
     await expect(access(join(root, "CLAUDE.md"))).resolves.toBeUndefined();
     await expect(access(join(root, "AGENTS.md"))).rejects.toThrow();
     await expect(
@@ -77,12 +76,11 @@ describe("installProjectIntegration agent selection", () => {
 
   it("同时安装 claude 和 codex", async () => {
     const root = await project();
-    const result = await installProjectIntegration(root, [
+    await installProjectIntegration(root, [
       makeClaudeManifest(),
       makeCodexManifest(),
     ]);
 
-    expect(result.candidateFiles).toEqual([]);
     await expect(access(join(root, "CLAUDE.md"))).resolves.toBeUndefined();
     await expect(access(join(root, "AGENTS.md"))).resolves.toBeUndefined();
     await expect(
@@ -95,9 +93,8 @@ describe("installProjectIntegration agent selection", () => {
 
   it("空 manifests 数组不创建任何指令文件", async () => {
     const root = await project();
-    const result = await installProjectIntegration(root, []);
+    await installProjectIntegration(root, []);
 
-    expect(result.candidateFiles).toEqual([]);
     await expect(access(join(root, "CLAUDE.md"))).rejects.toThrow();
     await expect(access(join(root, "AGENTS.md"))).rejects.toThrow();
     // schemas 始终安装
@@ -114,11 +111,10 @@ describe("installProjectIntegration agent selection", () => {
       "utf8",
     );
 
-    const result = await installProjectIntegration(root, [
+    await installProjectIntegration(root, [
       makeClaudeManifest(),
     ]);
 
-    expect(result.candidateFiles).toEqual([]);
     const content = await readFile(join(root, "CLAUDE.md"), "utf8");
     const lines = content.split("\n");
     const instructionLines = lines.filter((l) => l === "Claude 指令内容");

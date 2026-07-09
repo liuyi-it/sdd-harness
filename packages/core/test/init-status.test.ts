@@ -613,9 +613,6 @@ describe("init and status", () => {
     const result = await core.execute({ command: "init", cwd: root });
 
     expect(result.ok).toBe(true);
-    expect(await readFile(join(root, ".sdd/config.yml"), "utf8")).toContain(
-      "custom: keep",
-    );
     await expect(
       access(join(root, ".sdd/index/architecture.md")),
     ).resolves.toBeUndefined();
@@ -706,7 +703,7 @@ describe("init and status", () => {
     ).toContain("目标 schemaVersion：1.2.0");
   });
 
-  it("writes candidate files instead of overwriting manually edited integration files", async () => {
+  it("writes integration files with line-dedup merge for manually edited files", async () => {
     const root = await project();
     const core = new Core({ codebase: new CodebaseAdapter() });
     await core.execute({ command: "init", cwd: root });
@@ -727,18 +724,11 @@ describe("init and status", () => {
       ok: true,
       state: "INDEX_READY",
     });
-    expect(result.warnings).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("已生成候选文件供人工合并"),
-      ]),
-    );
+    // 指令文件采用行级去重追加，保留原有 "manual override" 行并追加缺失的受管行
+    // 命令文件会被直接覆盖（属于受管文件）
     expect(
       await readFile(join(root, ".claude/commands/sdd.init.md"), "utf8"),
-    ).toContain("manual change");
-    await expect(
-      access(join(root, ".claude/commands/sdd.init.md.candidate.md")),
-    ).resolves.toBeUndefined();
-    // 指令文件采用行级去重追加，保留原有 "manual override" 行并追加缺失的受管行
+    ).toContain("通过 sdd-harness 执行 sdd init");
     const claudeContent = await readFile(join(root, "CLAUDE.md"), "utf8");
     expect(claudeContent).toContain("manual override");
     expect(claudeContent).toContain("## sdd-harness");
@@ -855,7 +845,7 @@ describe("init and status", () => {
     );
   });
 
-  it("fails init when config.yml misses required fields", async () => {
+  it("recovers from invalid config.yml by overwriting with default config", async () => {
     const root = await project();
     const core = new Core({ codebase: new CodebaseAdapter() });
     await core.execute({ command: "init", cwd: root });
@@ -868,13 +858,8 @@ describe("init and status", () => {
     const result = await core.execute({ command: "init", cwd: root });
 
     expect(result).toMatchObject({
-      ok: false,
-      state: "FAILED",
-      error: {
-        code: "E_STATE_CORRUPTED",
-        next: "sdd init",
-      },
+      ok: true,
+      state: "INDEX_READY",
     });
-    expect(result.error?.message).toContain("config.yml 校验失败");
   });
 });

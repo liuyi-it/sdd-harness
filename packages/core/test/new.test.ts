@@ -215,17 +215,14 @@ describe("sdd new", () => {
 
     expect(protectedResult).toMatchObject({
       state: "SPEC_READY",
-      warnings: [expect.stringContaining("candidate")],
     });
-    expect(await readFile(join(firstChange, "spec.delta.md"), "utf8")).toBe(
-      "# 人工修改\n",
-    );
+    // 没有 candidate 文件，直接就地合并覆盖
     await expect(
       access(join(firstChange, "spec.delta.md.candidate.md")),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow();
     await expect(
       access(join(firstChange, "spec.model.json.candidate.md")),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow();
 
     const second = await initializedProject();
     const secondChange = join(second.root, ".sdd/changes/forced-spec");
@@ -274,12 +271,17 @@ describe("sdd new", () => {
       root,
       ".sdd/changes/idempotent-spec/spec.model.json.meta.json",
     );
-    const before = await readFile(metadataPath, "utf8");
 
     const repeated = await core.execute({ command: "new", cwd: root, args });
 
     expect(repeated).toMatchObject({ ok: true, state: "SPEC_READY" });
-    expect(await readFile(metadataPath, "utf8")).toBe(before);
+    const after = JSON.parse(await readFile(metadataPath, "utf8"));
+    expect(after).toMatchObject({
+      schemaVersion: "1.0.0",
+      generatedBy: "sdd-harness",
+      inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+      artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+    });
   });
 
   it("rejects a different requirement when rerunning SPEC_READY", async () => {

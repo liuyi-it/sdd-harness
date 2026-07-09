@@ -215,14 +215,13 @@ describe("design and plan", () => {
     });
   });
 
-  it("returns already ready for unchanged input and writes a candidate when input changed", async () => {
+  it("returns already ready for unchanged input and regenerates with existing design merge when input changed", async () => {
     const { root, core } = await specifiedProject();
     await core.execute({ command: "design", cwd: root });
     const designPath = join(
       root,
       ".sdd/changes/add-order-cancellation/design.md",
     );
-    const original = await readFile(designPath, "utf8");
 
     expect(await core.execute({ command: "design", cwd: root })).toMatchObject({
       ok: true,
@@ -240,13 +239,14 @@ describe("design and plan", () => {
     expect(changed).toMatchObject({
       ok: true,
       state: "DESIGN_READY",
-      warnings: [expect.stringContaining("供人工合并")],
     });
-    expect(await readFile(designPath, "utf8")).toBe(original);
-    await expect(access(`${designPath}.candidate.md`)).resolves.toBeUndefined();
+    // 输入变化后，design 使用已有 design 合并重新生成，不再使用 candidate 文件
+    const newDesign = await readFile(designPath, "utf8");
+    expect(newDesign).toContain("Current Code Structure");
+    await expect(access(`${designPath}.candidate.md`)).rejects.toThrow();
   });
 
-  it("protects planned artifacts from changed inputs", async () => {
+  it("regenerates plan artifacts with merge when input changes", async () => {
     const { root, core } = await specifiedProject();
     await core.execute({ command: "design", cwd: root });
     await core.execute({ command: "plan", cwd: root });
@@ -266,13 +266,12 @@ describe("design and plan", () => {
     expect(changed).toMatchObject({
       ok: true,
       state: "PLAN_READY",
-      warnings: [expect.stringContaining("供人工合并")],
     });
     await expect(
       access(
         join(root, ".sdd/changes/add-order-cancellation/tasks.md.candidate.md"),
       ),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow();
   });
 
   it("传入 --force 时直接覆盖 design 制品而不是生成 candidate", async () => {
