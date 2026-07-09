@@ -104,25 +104,40 @@ export class TddEngine {
 
   generatePlan(input: PlanningInput): MaybePromise<PlanArtifacts> {
     const { tasks, requirements } = createAtomicTasks(input);
+    let context = [
+      "# Change Context",
+      "",
+      "## Codebase",
+      "",
+      input.codebaseSummary,
+      "",
+      "## Impact",
+      "",
+      input.impact,
+      "",
+      "## Design",
+      "",
+      input.design,
+    ].join("\n");
+    if (input.existingPlan !== undefined) {
+      context += `
+
+## 已有计划制品
+
+以下是上次生成的计划文件。用户可能已在其上做了修改。请在已有内容基础上更新，遵循以下规则：
+1. 保留用户新增、删除或重排的任务。
+2. 保留用户修改的测试计划和上下文。
+3. 仅因设计变更而需要调整的部分才更新。
+4. 输出完整的计划文件。`;
+      context += `\n\n### tasks.md\n${input.existingPlan.tasksMarkdown}`;
+      context += `\n\n### test-plan.md\n${input.existingPlan.testPlan}`;
+      context += `\n\n### context.md\n${input.existingPlan.context}`;
+    }
     return {
       tasks,
       tasksMarkdown: renderTasks(tasks),
       testPlan: renderTestPlan(requirements),
-      context: [
-        "# Change Context",
-        "",
-        "## Codebase",
-        "",
-        input.codebaseSummary,
-        "",
-        "## Impact",
-        "",
-        input.impact,
-        "",
-        "## Design",
-        "",
-        input.design,
-      ].join("\n"),
+      context,
       contextPacks: Object.fromEntries(
         tasks.map((task) => [task.id, renderContextPack(task, input)]),
       ),

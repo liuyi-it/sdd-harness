@@ -28,4 +28,9 @@ export interface PlanningInput {
   design: string;
   impact: string;
   codebaseSummary: string;
+  existingPlan?: {
+    tasksMarkdown: string;
+    testPlan: string;
+    context: string;
+  };
 }
