@@ -972,7 +972,7 @@ async function buildCompleteTask(
       };
     }
 
-    // v2 result 处理（选择方案 B：v2 必须包含 legacy）
+    // v2 result 处理（选择方案 B：v2 必须包含 legacy，从 legacy 提取 v1 字段）
     if (
       resultJson.schemaVersion === "1.2.0" &&
       "fileDelta" in resultJson &&
@@ -989,7 +989,11 @@ async function buildCompleteTask(
           },
         };
       }
-      // 使用 legacy 作为 modifiedFiles/tddEvidence/verification 的来源
+      // 从 legacy 提取 v1 字段供后续校验使用
+      const legacy = resultJson.legacy as Record<string, unknown>;
+      resultJson.modifiedFiles = legacy.modifiedFiles;
+      resultJson.tddEvidence = legacy.tddEvidence;
+      resultJson.verification = legacy.verification;
     }
 
     // 文件范围校验：统一使用 validateTaskFiles
@@ -1015,7 +1019,7 @@ async function buildCompleteTask(
     // TDD evidence 校验（P1-6：空数组也阻断）
     const tddEvidence =
       (resultJson.tddEvidence as
-        | Array<{ phase: string; passed: boolean }>
+        | Array<{ phase: string; passed: boolean; command?: string }>
         | undefined) ?? [];
     // 验证 evidence 结构合法，不强制要求所有 phase
     // 每个任务执行只包含其对应 phase 的证据
@@ -1034,11 +1038,45 @@ async function buildCompleteTask(
       };
     }
 
+    // TDD evidence 命令安全校验
+    const blockedEvidenceCommand = tddEvidence.find(
+      (e) =>
+        typeof e.command === "string" && !isCommandAllowed(e.command),
+    );
+    if (blockedEvidenceCommand) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 5,
+        error: {
+          code: "E_SECURITY_BLOCKED",
+          message: `TDD evidence 命令未在允许清单内：${String(blockedEvidenceCommand.command)}`,
+        },
+      };
+    }
+
     // verification 校验（P1-6）
     const verification =
       (resultJson.verification as
         | Array<{ command: string; passed: boolean }>
         | undefined) ?? [];
+
+    // verification 命令安全校验
+    const blockedVerificationCommand = verification.find(
+      (v) => !isCommandAllowed(v.command),
+    );
+    if (blockedVerificationCommand) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 5,
+        error: {
+          code: "E_SECURITY_BLOCKED",
+          message: `verification 命令未在允许清单内：${blockedVerificationCommand.command}`,
+        },
+      };
+    }
+
     const failedVerification = verification.filter((v) => !v.passed);
     if (failedVerification.length > 0) {
       return {
