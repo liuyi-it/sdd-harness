@@ -12,6 +12,7 @@ interface DesignInput {
   codebaseSummary: string;
   packageStructure: string;
   architecture: string;
+  existingDesign?: string;
 }
 
 type MaybePromise<T> = T | Promise<T>;
@@ -24,7 +25,7 @@ export class TddEngine {
       `${input.impact}\n${input.codebaseSummary}\n${input.architecture}`,
     );
     const requirementLines = structuredRequirementLines(input.spec);
-    return [
+    let prompt = [
       "# Design",
       "",
       "## Current Code Structure",
@@ -85,6 +86,20 @@ export class TddEngine {
       "",
       input.impact,
     ].join("\n");
+
+    if (input.existingDesign !== undefined) {
+      prompt += `
+
+## 已有设计文档
+
+以下是上次生成的设计文档。用户可能已在其上做了修改。请在已有内容基础上更新设计，遵循以下规则：
+1. 保留用户新增或修改的内容（手动添加的需求分析、约束、取舍说明等）。
+2. 仅因 spec/impact 变更而需要调整的部分才更新。
+3. 输出完整的设计文档，不要输出 diff 或标记变更。`;
+      prompt += `\n\n${input.existingDesign}`;
+    }
+
+    return prompt;
   }
 
   generatePlan(input: PlanningInput): MaybePromise<PlanArtifacts> {
