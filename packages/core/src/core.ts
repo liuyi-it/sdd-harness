@@ -14,9 +14,7 @@ import { LoopEventStore } from "./loop/loop-events.js";
 import { StateStore } from "./state/state-store.js";
 import { runStatus } from "./commands/status.js";
 import {
-  COMMANDS,
   type CommandRequest,
-  type CommandName,
   type CommandResult,
   type SddCore,
 } from "./contracts.js";
@@ -181,7 +179,6 @@ export class Core implements SddCore {
     );
     return loopEngine.run(request);
   }
-
 }
 
 function withVerboseData(
@@ -220,4 +217,3 @@ function withVerboseData(
           },
   };
 }
-

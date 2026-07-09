@@ -669,7 +669,9 @@ async function buildNextTask(
     // 如果当前已有 active waiting task，返回同一份 handoff，不重复分配
     if (state.currentPhase === "BUILD_WAITING_AGENT") {
       const activeLoop = state.activeLoop as Record<string, unknown> | null;
-      const waiting = activeLoop?.waiting as Record<string, unknown> | undefined;
+      const waiting = activeLoop?.waiting as
+        | Record<string, unknown>
+        | undefined;
       if (waiting?.taskId && waiting?.resultFile) {
         const existingTaskId = waiting.taskId as string;
         const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
@@ -681,7 +683,13 @@ async function buildNextTask(
         if (task) {
           const contextPackPath = `.sdd/context-packs/${changeId}/${existingTaskId}.md`;
           await mkdir(
-            join(root, ".sdd", "runs", state.currentRunId ?? "unknown-run", "tasks"),
+            join(
+              root,
+              ".sdd",
+              "runs",
+              state.currentRunId ?? "unknown-run",
+              "tasks",
+            ),
             { recursive: true },
           );
           const actionRequired: AgentActionRequired = {
@@ -804,8 +812,7 @@ async function buildNextTask(
       suggestedCommand: "sdd build complete",
       tasks: { ...current.tasks, [nextTask.id]: "BUILDING" },
       activeLoop:
-        current.activeLoop !== null &&
-        typeof current.activeLoop === "object"
+        current.activeLoop !== null && typeof current.activeLoop === "object"
           ? {
               ...(current.activeLoop as Record<string, unknown>),
               status: "WAITING_AGENT",
@@ -965,6 +972,26 @@ async function buildCompleteTask(
       };
     }
 
+    // v2 result 处理（选择方案 B：v2 必须包含 legacy）
+    if (
+      resultJson.schemaVersion === "1.2.0" &&
+      "fileDelta" in resultJson &&
+      !("modifiedFiles" in resultJson)
+    ) {
+      if (!resultJson.legacy) {
+        return {
+          ok: false,
+          state: "FAILED",
+          exitCode: 7,
+          error: {
+            code: "E_TDD_EVIDENCE_REQUIRED",
+            message: "v2 task execution result 必须包含 legacy TDD evidence",
+          },
+        };
+      }
+      // 使用 legacy 作为 modifiedFiles/tddEvidence/verification 的来源
+    }
+
     // 文件范围校验：统一使用 validateTaskFiles
     const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
     try {
@@ -1086,7 +1113,9 @@ async function buildCompleteTask(
     await store.update((current) => ({
       ...current,
       tasks: { ...current.tasks, [taskId]: taskStatus },
-      currentPhase: allDone ? ("BUILD_READY" as const) : ("PLAN_READY" as const),
+      currentPhase: allDone
+        ? ("BUILD_READY" as const)
+        : ("PLAN_READY" as const),
       inProgressPhase: null,
       failedCommand: null,
       failedReason: null,
@@ -1096,8 +1125,7 @@ async function buildCompleteTask(
       suggestedCommand: allDone ? "sdd verify" : "sdd build next",
       // 清除 activeLoop.waiting
       activeLoop:
-        current.activeLoop !== null &&
-        typeof current.activeLoop === "object"
+        current.activeLoop !== null && typeof current.activeLoop === "object"
           ? (() => {
               const loop = {
                 ...(current.activeLoop as Record<string, unknown>),

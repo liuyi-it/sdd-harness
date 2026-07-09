@@ -5,9 +5,7 @@ import type { LoopDecision } from "./model.js";
  * DecisionEngine：纯函数，根据 CommandResult 决策下一步动作。
  * 规则见 docs/四期需求文档.md §11.2
  */
-export function decide(input: {
-  result: CommandResult;
-}): LoopDecision {
+export function decide(input: { result: CommandResult }): LoopDecision {
   if (!input.result.ok) {
     if (input.result.error?.code === "E_VERIFY_FAILED")
       return "PAUSE_FOR_HUMAN";
@@ -22,9 +20,7 @@ export function decide(input: {
 
   if (state === "CLARIFYING") return "PAUSE_FOR_CLARIFICATION";
   if (state === "BUILD_WAITING_AGENT") return "PAUSE_FOR_AGENT";
-  if (
-    input.result.actionRequired?.type === "AGENT_TASK_EXECUTION"
-  )
+  if (input.result.actionRequired?.type === "AGENT_TASK_EXECUTION")
     return "PAUSE_FOR_AGENT";
 
   if (state === "BUILD_READY") return "CONTINUE";

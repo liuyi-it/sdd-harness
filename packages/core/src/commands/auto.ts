@@ -136,9 +136,11 @@ export async function recordAutoStep(
         step: run.steps.length + 1,
         kind: "COMMAND" as const,
         command: step.command,
-        phaseBefore: run.steps.length > 0
-          ? (run.steps[run.steps.length - 1]!.phaseAfter ?? run.steps[run.steps.length - 1]!.phaseBefore)
-          : "NOT_INITIALIZED",
+        phaseBefore:
+          run.steps.length > 0
+            ? (run.steps[run.steps.length - 1]!.phaseAfter ??
+              run.steps[run.steps.length - 1]!.phaseBefore)
+            : "NOT_INITIALIZED",
         status:
           step.status === "BLOCKED"
             ? "BLOCKED"

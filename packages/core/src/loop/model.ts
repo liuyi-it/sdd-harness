@@ -1,4 +1,8 @@
-import type { AgentActionRequired, CommandError, CliWarning } from "../contracts.js";
+import type {
+  AgentActionRequired,
+  CommandError,
+  CliWarning,
+} from "../contracts.js";
 
 /** Loop 决策类型：根据 CommandResult 和当前 phase 决定下一步动作 */
 export type LoopDecision =

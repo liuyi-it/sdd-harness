@@ -1,17 +1,19 @@
-import type { CommandRequest, CommandResult, CommandName } from "../contracts.js";
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandName,
+} from "../contracts.js";
 import { COMMANDS } from "../contracts.js";
 import { SddError } from "../errors.js";
-import { StateStore } from "../state/state-store.js";
-import { LoopStore } from "./loop-store.js";
-import { LoopEventStore } from "./loop-events.js";
+import type { StateStore } from "../state/state-store.js";
+import type { LoopStore } from "./loop-store.js";
+import type { LoopEventStore } from "./loop-events.js";
 import { decide } from "./loop-decision.js";
 import { createDefaultLoopSpec } from "./loop-spec.js";
 import { runStatus } from "../commands/status.js";
 import type { LoopDecision, LoopStep } from "./model.js";
 
-const COMMAND_BY_PHASE: Partial<
-  Record<CommandResult["state"], CommandName>
-> = {
+const COMMAND_BY_PHASE: Partial<Record<CommandResult["state"], CommandName>> = {
   INDEX_READY: "new",
   SPEC_READY: "design",
   DESIGN_READY: "plan",
@@ -33,9 +35,7 @@ export class LoopEngine {
     private readonly store: StateStore,
     private readonly loops: LoopStore,
     private readonly events: LoopEventStore,
-    private readonly execute: (
-      req: CommandRequest,
-    ) => Promise<CommandResult>,
+    private readonly execute: (req: CommandRequest) => Promise<CommandResult>,
   ) {}
 
   async run(request: CommandRequest): Promise<CommandResult> {
@@ -57,10 +57,10 @@ export class LoopEngine {
       return this.getEvents(request);
     }
     if (args.loopStatus === true) {
-      return this.getLoopStatus(request);
+      return this.getLoopStatus();
     }
     if (args.stop === true) {
-      return this.stopAuto(request);
+      return this.stopAuto();
     }
     if (args.restart === true) {
       return this.restartAuto(request);
@@ -71,9 +71,7 @@ export class LoopEngine {
     return this.runAuto(request);
   }
 
-  private async runAuto(
-    request: CommandRequest,
-  ): Promise<CommandResult> {
+  private async runAuto(request: CommandRequest): Promise<CommandResult> {
     let status = await runStatus(this.root);
     if (status.state === "NOT_INITIALIZED") {
       throw new SddError(
@@ -83,7 +81,7 @@ export class LoopEngine {
       );
     }
 
-    const loop = await this.prepareLoop(request.args);
+    const loop = await this.prepareLoop();
     await this.events.write(loop.runId, {
       loopId: loop.loopId,
       runId: loop.runId,
@@ -129,12 +127,8 @@ export class LoopEngine {
       const result = await this.execute({
         command,
         cwd: this.root,
-        ...(effectiveArgs === undefined
-          ? {}
-          : { args: effectiveArgs }),
-        ...(request.signal === undefined
-          ? {}
-          : { signal: request.signal }),
+        ...(effectiveArgs === undefined ? {} : { args: effectiveArgs }),
+        ...(request.signal === undefined ? {} : { signal: request.signal }),
       });
 
       await this.events.write(loop.runId, {
@@ -155,10 +149,7 @@ export class LoopEngine {
       });
 
       await this.recordStep(loop.runId, {
-        kind:
-          decision === "PAUSE_FOR_AGENT"
-            ? "AGENT_HANDOFF"
-            : "COMMAND",
+        kind: decision === "PAUSE_FOR_AGENT" ? "AGENT_HANDOFF" : "COMMAND",
         command,
         phaseBefore: status.state,
         phaseAfter: result.state,
@@ -213,9 +204,7 @@ export class LoopEngine {
     );
   }
 
-  async resumeAuto(
-    request: CommandRequest,
-  ): Promise<CommandResult> {
+  async resumeAuto(request: CommandRequest): Promise<CommandResult> {
     const args = request.args ?? {};
     const resumeRunId =
       typeof args.resume === "string" ? args.resume : undefined;
@@ -235,9 +224,7 @@ export class LoopEngine {
     return this.runAuto(request);
   }
 
-  async restartAuto(
-    request: CommandRequest,
-  ): Promise<CommandResult> {
+  async restartAuto(request: CommandRequest): Promise<CommandResult> {
     const state = await this.store.read();
     if (state.activeLoop !== null) {
       const activeLoop = state.activeLoop as {
@@ -266,8 +253,7 @@ export class LoopEngine {
     const spec = await this.readLoopSpec();
     const runId = `run-${Date.now()}`;
     const loopId =
-      state.activeLoop !== null &&
-      typeof state.activeLoop === "object"
+      state.activeLoop !== null && typeof state.activeLoop === "object"
         ? (state.activeLoop as { loopId: string }).loopId
         : spec.loopId;
 
@@ -300,14 +286,9 @@ export class LoopEngine {
     });
   }
 
-  async stopAuto(
-    request: CommandRequest,
-  ): Promise<CommandResult> {
+  async stopAuto(): Promise<CommandResult> {
     const state = await this.store.read();
-    if (
-      state.activeLoop === null ||
-      typeof state.activeLoop !== "object"
-    ) {
+    if (state.activeLoop === null || typeof state.activeLoop !== "object") {
       return {
         ok: false,
         state: "FAILED",
@@ -361,10 +342,7 @@ export class LoopEngine {
 
   async getEvents(request: CommandRequest): Promise<CommandResult> {
     const state = await this.store.read();
-    if (
-      state.activeLoop === null ||
-      typeof state.activeLoop !== "object"
-    ) {
+    if (state.activeLoop === null || typeof state.activeLoop !== "object") {
       return {
         ok: true,
         state: state.currentPhase,
@@ -378,9 +356,7 @@ export class LoopEngine {
       status: string;
     };
     const tail =
-      typeof request.args?.tail === "number"
-        ? request.args.tail
-        : undefined;
+      typeof request.args?.tail === "number" ? request.args.tail : undefined;
     const events = await this.events.read(
       activeLoop.runId,
       tail !== undefined ? { tail } : undefined,
@@ -393,14 +369,9 @@ export class LoopEngine {
     };
   }
 
-  async getLoopStatus(
-    request: CommandRequest,
-  ): Promise<CommandResult> {
+  async getLoopStatus(): Promise<CommandResult> {
     const state = await this.store.read();
-    if (
-      state.activeLoop === null ||
-      typeof state.activeLoop !== "object"
-    ) {
+    if (state.activeLoop === null || typeof state.activeLoop !== "object") {
       return {
         ok: true,
         state: state.currentPhase,
@@ -454,9 +425,7 @@ export class LoopEngine {
     return COMMAND_BY_PHASE[status.state];
   }
 
-  private async prepareLoop(
-    args: Record<string, unknown> | undefined,
-  ): Promise<LoopParams> {
+  private async prepareLoop(): Promise<LoopParams> {
     const state = await this.store.read();
     const spec = await this.readLoopSpec();
     const currentLoop =
@@ -471,9 +440,7 @@ export class LoopEngine {
         : null;
 
     const runId =
-      currentLoop?.runId ??
-      state.currentRunId ??
-      `run-${Date.now()}`;
+      currentLoop?.runId ?? state.currentRunId ?? `run-${Date.now()}`;
     const loopId = currentLoop?.loopId ?? spec.loopId;
 
     if (!(await this.loops.hasRun(runId))) {
@@ -523,9 +490,7 @@ export class LoopEngine {
       ...run,
       updatedAt: new Date().toISOString(),
       currentStep: run.steps.length + 1,
-      ...(step.decision !== undefined
-        ? { lastDecision: step.decision }
-        : {}),
+      ...(step.decision !== undefined ? { lastDecision: step.decision } : {}),
       steps: [
         ...run.steps,
         {
@@ -537,9 +502,7 @@ export class LoopEngine {
             ? { phaseAfter: step.phaseAfter }
             : {}),
           status: step.status,
-          ...(step.decision !== undefined
-            ? { decision: step.decision }
-            : {}),
+          ...(step.decision !== undefined ? { decision: step.decision } : {}),
           ...(step.actionRequired !== undefined
             ? { actionRequired: step.actionRequired }
             : {}),
@@ -566,9 +529,7 @@ export class LoopEngine {
         ...run,
         status,
         updatedAt: new Date().toISOString(),
-        ...(status === "ARCHIVED" ||
-        status === "FAILED" ||
-        status === "PAUSED"
+        ...(status === "ARCHIVED" || status === "FAILED" || status === "PAUSED"
           ? { endedAt: new Date().toISOString() }
           : {}),
       });
@@ -578,14 +539,12 @@ export class LoopEngine {
     await this.store.update((current) => ({
       ...current,
       activeLoop:
-        current.activeLoop === null ||
-        typeof current.activeLoop !== "object"
+        current.activeLoop === null || typeof current.activeLoop !== "object"
           ? current.activeLoop
           : {
               ...(current.activeLoop as Record<string, unknown>),
               runId,
-              status:
-                status === "ARCHIVED" ? "SUCCEEDED" : status,
+              status: status === "ARCHIVED" ? "SUCCEEDED" : status,
             },
     }));
   }
@@ -599,9 +558,7 @@ export class LoopEngine {
   }
 }
 
-function hasAnswers(
-  args: Record<string, unknown> | undefined,
-): boolean {
+function hasAnswers(args: Record<string, unknown> | undefined): boolean {
   const answers = args?.answers;
   return (
     answers !== undefined &&
@@ -615,10 +572,7 @@ function parseCommandName(
   input: string | undefined | null,
 ): CommandName | undefined {
   if (input === undefined || input === null) return undefined;
-  const normalized = input.replace(
-    /^\/?sdd[.\s]/,
-    "",
-  ) as CommandName;
+  const normalized = input.replace(/^\/?sdd[.\s]/, "") as CommandName;
   return (COMMANDS as readonly string[]).includes(normalized)
     ? normalized
     : undefined;

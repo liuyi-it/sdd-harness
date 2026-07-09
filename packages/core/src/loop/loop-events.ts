@@ -61,19 +61,14 @@ export class LoopEventStore {
     );
   }
 
-  async read(
-    runId: string,
-    opts?: { tail?: number },
-  ): Promise<LoopEvent[]> {
+  async read(runId: string, opts?: { tail?: number }): Promise<LoopEvent[]> {
     try {
       const content = await readFile(
         join(this.eventsDirectory, `${runId}.jsonl`),
         "utf8",
       );
       const lines = content.trim().split("\n").filter(Boolean);
-      const events = lines.map(
-        (line) => JSON.parse(line) as LoopEvent,
-      );
+      const events = lines.map((line) => JSON.parse(line) as LoopEvent);
       if (opts?.tail !== undefined && opts.tail > 0) {
         return events.slice(-opts.tail);
       }
