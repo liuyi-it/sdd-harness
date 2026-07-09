@@ -834,8 +834,11 @@ async function buildNextTask(
         }) ?? [],
       resultFile,
       codebase: {
-        provider: "fallback-file-scan",
-        degraded: true,
+        provider:
+          state.codebaseProvider === "codebase-memory-mcp"
+            ? ("codebase-memory-mcp" as const)
+            : ("fallback-file-scan" as const),
+        degraded: state.degraded,
       },
     };
 
@@ -900,11 +903,44 @@ async function buildCompleteTask(
     };
   }
 
+  // taskId 一致性校验
+  if (resultJson.taskId !== taskId) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: {
+        code: "E_STATE_CORRUPTED",
+        message: `result.taskId (${String(resultJson.taskId)}) 与 --task (${taskId}) 不一致`,
+      },
+    };
+  }
+
   const lock = new FileLock(root);
   await lock.acquire("sdd build complete", undefined, lockOptions(rawArgs));
   try {
     const store = new StateStore(root);
     const state = await store.read();
+
+    // 如果处于 BUILD_WAITING_AGENT，校验 complete 的是当前等待任务
+    if (state.currentPhase === "BUILD_WAITING_AGENT") {
+      const activeLoop = state.activeLoop as Record<string, unknown> | null;
+      const waiting = activeLoop?.waiting as
+        | Record<string, unknown>
+        | undefined;
+      if (waiting?.taskId && waiting.taskId !== taskId) {
+        return {
+          ok: false,
+          state: "FAILED",
+          exitCode: 4,
+          error: {
+            code: "E_STATE_CORRUPTED",
+            message: `当前等待任务为 ${String(waiting.taskId)}，不能 complete ${taskId}`,
+          },
+        };
+      }
+    }
+
     const changeId = state.currentChangeId;
     if (!changeId) {
       return {
@@ -929,27 +965,24 @@ async function buildCompleteTask(
       };
     }
 
-    // 文件范围校验（P1-4：检查 allowed + expectedNewFiles + forbiddenFiles）
+    // 文件范围校验：统一使用 validateTaskFiles
     const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
-    const allowedFiles = task.allowedFiles ?? [];
-    const expectedNewFiles = task.expectedNewFiles ?? [];
-    const forbiddenFiles = task.forbiddenFiles ?? [];
-    const outOfScope = modifiedFiles.filter(
-      (f) =>
-        !allowedFiles.includes(f) &&
-        !expectedNewFiles.includes(f) &&
-        forbiddenFiles.some((pf) => f === pf || f.startsWith(pf + "/")),
-    );
-    if (outOfScope.length > 0) {
-      return {
-        ok: false,
-        state: "FAILED",
-        exitCode: 5,
-        error: {
-          code: "E_SECURITY_BLOCKED",
-          message: `修改了不允许的文件: ${outOfScope.join(", ")}`,
-        },
-      };
+    try {
+      validateTaskFiles(modifiedFiles, {
+        allowedFiles: task.allowedFiles ?? [],
+        expectedNewFiles: task.expectedNewFiles ?? [],
+        forbiddenFiles: task.forbiddenFiles ?? [],
+      });
+    } catch (error) {
+      if (error instanceof SddError && error.code === "E_SECURITY_BLOCKED") {
+        return {
+          ok: false,
+          state: "FAILED",
+          exitCode: 5,
+          error: { code: "E_SECURITY_BLOCKED", message: error.message },
+        };
+      }
+      throw error;
     }
 
     // TDD evidence 校验（P1-6：空数组也阻断）
