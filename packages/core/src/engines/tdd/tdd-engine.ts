@@ -6,7 +6,7 @@ import type {
   TddPhase,
 } from "../superpowers/protocol.js";
 
-interface DesignInput {
+export interface DesignInput {
   spec: string;
   impact: string;
   codebaseSummary: string;

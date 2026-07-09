@@ -2,9 +2,9 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
-import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { ArtifactWriter, artifactInputHash } from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
-import type { TddEngine } from "../engines/tdd/tdd-engine.js";
+import type { DesignInput, TddEngine } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
@@ -61,7 +61,7 @@ export async function runDesign(
       lastError: null,
     }));
     started = true;
-    const input = {
+    const input: DesignInput = {
       spec: await readFile(join(change, "spec.md"), "utf8"),
       impact: await readFile(join(change, "impact.md"), "utf8"),
       codebaseSummary: await readFile(
@@ -78,18 +78,26 @@ export async function runDesign(
       ),
     };
     const writer = new ArtifactWriter();
-    const outcome = await writer.writeOrCandidate(
-      join(change, "design.md"),
-      await withTimeout(
-        Promise.resolve(engine.generateDesign(input)),
-        timeoutMilliseconds(args),
-        "sdd design",
-        signal,
-      ),
-      input,
-      { force: args?.force === true },
-    );
-    if (outcome === "unchanged") {
+    const designPath = join(change, "design.md");
+    const inputHash = artifactInputHash(input);
+    const force = args?.force === true;
+    let existingDesign: string | undefined;
+    let unchanged = false;
+
+    try {
+      const metadata = JSON.parse(
+        await readFile(`${designPath}.meta.json`, "utf8"),
+      ) as { inputHash: string };
+      if (metadata.inputHash === inputHash) {
+        unchanged = true;
+      } else {
+        existingDesign = await readFile(designPath, "utf8");
+      }
+    } catch {
+      // 文件不存在 → 正常生成
+    }
+
+    if (unchanged) {
       return {
         ok: true,
         state: "DESIGN_READY",
@@ -99,18 +107,18 @@ export async function runDesign(
         data: { alreadyReady: true },
       };
     }
-    if (outcome === "candidate") {
-      return {
-        ok: true,
-        state: "DESIGN_READY",
-        exitCode: 0,
-        changeId,
-        next: "sdd plan",
-        warnings: [
-          "design 输入已变化；已生成 design.md.candidate.md 供人工合并",
-        ],
-      };
+
+    if (!force && existingDesign !== undefined) {
+      input.existingDesign = existingDesign;
     }
+
+    const designContent = await withTimeout(
+      Promise.resolve(engine.generateDesign(input)),
+      timeoutMilliseconds(args),
+      "sdd design",
+      signal,
+    );
+    await writer.write(designPath, designContent, input);
     const ready = await store.update((current) => ({
       ...current,
       currentPhase: "DESIGN_READY",
