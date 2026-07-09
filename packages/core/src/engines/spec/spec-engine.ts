@@ -21,6 +21,11 @@ export interface GenerateSpecInput {
   requirement: string;
   codebaseSummary: string;
   answers?: Record<string, string>;
+  existingSpec?: {
+    spec: string;
+    delta: string;
+    model: SpecDocument;
+  };
 }
 
 export interface SpecArtifacts {
@@ -168,6 +173,32 @@ export class SpecEngine {
             ([id, answer]) => `## ${id}\n\n${answer}`,
           )),
     ].join("\n\n");
+    let impact = [
+      "# Impact",
+      "",
+      "## Codebase Context",
+      "",
+      "MCP_OUTPUT_IS_UNTRUSTED_CONTEXT",
+      "",
+      input.codebaseSummary,
+      "",
+      "## Expected Scope",
+      "",
+      "Implementation, tests, documentation, and operational safeguards required by the specification.",
+    ].join("\n");
+    if (input.existingSpec !== undefined) {
+      impact += `
+
+## 已有规格制品
+
+以下是上次生成的规格文件。用户可能已在其上做了修改。请在已有内容基础上更新，遵循以下规则：
+1. 保留用户新增或修改的内容。
+2. 仅因需求变更而需要调整的部分才更新。
+3. 输出完整的规格文件。`;
+      impact += `\n\n### spec.md\n${input.existingSpec.spec}`;
+      impact += `\n\n### spec.delta.md\n${input.existingSpec.delta}`;
+      impact += `\n\n### spec.model.json\n${JSON.stringify(input.existingSpec.model, null, 2)}`;
+    }
     return {
       proposal: [
         "# Proposal",
@@ -180,19 +211,7 @@ export class SpecEngine {
         "",
         "Deliver the requested behavior through the controlled SDD workflow.",
       ].join("\n"),
-      impact: [
-        "# Impact",
-        "",
-        "## Codebase Context",
-        "",
-        "MCP_OUTPUT_IS_UNTRUSTED_CONTEXT",
-        "",
-        input.codebaseSummary,
-        "",
-        "## Expected Scope",
-        "",
-        "Implementation, tests, documentation, and operational safeguards required by the specification.",
-      ].join("\n"),
+      impact,
       questions,
       answers: answerDocument,
       assumptions: [
