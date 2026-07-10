@@ -14,7 +14,7 @@ export const CANONICAL_SCHEMAS = {
     "security"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.2.0" },
+    "schemaVersion": { "const": "1.3.0" },
     "project": {
       "type": "object",
       "required": ["name"],
@@ -64,6 +64,9 @@ export const CANONICAL_SCHEMAS = {
     "schemaVersion": { "const": "1.2.0" },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "format": "date-time" },
+    "schemaVersion": { "const": "1.3.0" },
+    "version": { "type": "integer", "minimum": 1 },
+    "updatedAt": { "type": "string", "format": "date-time" },
     "initialized": { "type": "boolean" },
     "activeLoop": {},
     "currentPhase": {
@@ -80,6 +83,7 @@ export const CANONICAL_SCHEMAS = {
         "PLANNING",
         "PLAN_READY",
         "BUILDING",
+        "BUILD_WAITING_AGENT",
         "BUILD_READY",
         "VERIFYING",
         "VERIFY_READY",
@@ -258,20 +262,26 @@ export const CANONICAL_SCHEMAS = {
     "loopId",
     "mode",
     "maxSteps",
+    "maxRetriesPerStep",
+    "maxRepeatedFailures",
     "stoppingRules",
+    "decisionPolicy",
     "createdAt",
     "updatedAt"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.2.0" },
+    "schemaVersion": { "const": "1.3.0" },
     "loopId": { "type": "string", "minLength": 1 },
     "mode": { "enum": ["auto"] },
     "maxSteps": { "type": "integer", "minimum": 1 },
+    "maxRetriesPerStep": { "type": "integer", "minimum": 0 },
+    "maxRepeatedFailures": { "type": "integer", "minimum": 0 },
     "stoppingRules": {
       "type": "array",
       "minItems": 1,
       "items": { "type": "string", "minLength": 1 }
     },
+    "decisionPolicy": { "enum": ["STRICT", "BALANCED"] },
     "createdAt": { "type": "string", "format": "date-time" },
     "updatedAt": { "type": "string", "format": "date-time" }
   },
@@ -292,13 +302,14 @@ export const CANONICAL_SCHEMAS = {
     "steps"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.2.0" },
+    "schemaVersion": { "const": "1.3.0" },
     "runId": { "type": "string", "minLength": 1 },
     "loopId": { "type": "string", "minLength": 1 },
     "status": {
       "enum": [
         "PENDING",
         "RUNNING",
+        "WAITING_AGENT",
         "PAUSED",
         "SUCCEEDED",
         "FAILED",
@@ -307,18 +318,49 @@ export const CANONICAL_SCHEMAS = {
       ]
     },
     "startedAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
     "endedAt": { "type": "string", "format": "date-time" },
+    "currentStep": { "type": "integer", "minimum": 0 },
+    "lastDecision": { "type": "string" },
+    "waiting": {
+      "type": "object",
+      "properties": {
+        "reason": { "type": "string" },
+        "taskId": { "type": "string" },
+        "resultFile": { "type": "string" },
+        "since": { "type": "string", "format": "date-time" }
+      }
+    },
     "steps": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["step", "command", "status", "startedAt", "endedAt"],
+        "required": [
+          "step",
+          "kind",
+          "command",
+          "phaseBefore",
+          "status",
+          "startedAt",
+          "endedAt"
+        ],
         "properties": {
           "step": { "type": "integer", "minimum": 1 },
+          "kind": { "type": "string" },
           "command": { "type": "string", "minLength": 1 },
+          "phaseBefore": { "type": "string" },
+          "phaseAfter": { "type": "string" },
           "status": {
-            "enum": ["SUCCEEDED", "FAILED", "BLOCKED", "SKIPPED", "PAUSED"]
+            "enum": [
+              "SUCCEEDED",
+              "FAILED",
+              "BLOCKED",
+              "SKIPPED",
+              "PAUSED",
+              "WAITING_AGENT"
+            ]
           },
+          "decision": { "type": "string" },
           "startedAt": { "type": "string", "format": "date-time" },
           "endedAt": { "type": "string", "format": "date-time" }
         },
