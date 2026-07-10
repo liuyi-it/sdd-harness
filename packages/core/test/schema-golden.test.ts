@@ -128,30 +128,38 @@ function validTaskExecutionResult() {
 
 function validLoopSpec() {
   return {
-    schemaVersion: "1.2.0",
+    schemaVersion: "1.3.0",
     loopId: "auto-default",
     mode: "auto",
     maxSteps: 12,
-    stoppingRules: ["VERIFY_FAILED", "REVIEW_FAILED", "HUMAN_CLARIFICATION"],
+    maxRetriesPerStep: 0,
+    maxRepeatedFailures: 2,
+    stoppingRules: ["VERIFY_FAILED", "REVIEW_FAILED"],
+    decisionPolicy: "BALANCED" as const,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
 }
 
 function validLoopRun() {
+  const now = new Date().toISOString();
   return {
-    schemaVersion: "1.2.0",
+    schemaVersion: "1.3.0",
     runId: "RUN-20260706-001",
     loopId: "auto-default",
     status: "RUNNING",
-    startedAt: new Date().toISOString(),
+    startedAt: now,
+    updatedAt: now,
+    currentStep: 1,
     steps: [
       {
         step: 1,
+        kind: "COMMAND",
         command: "plan",
+        phaseBefore: "DESIGN_READY",
         status: "SUCCEEDED",
-        startedAt: new Date().toISOString(),
-        endedAt: new Date().toISOString(),
+        startedAt: now,
+        endedAt: now,
       },
     ],
   };
