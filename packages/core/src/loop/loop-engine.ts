@@ -70,13 +70,7 @@ export class LoopEngine {
     if (typeof args.resume === "string" || args.resume === true) {
       return this.resumeAuto(request);
     }
-    const lock = new FileLock(this.root);
-    await lock.acquire("sdd auto");
-    try {
-      return this.runAuto(request);
-    } finally {
-      await lock.release();
-    }
+    return this.runAuto(request);
   }
 
   private async runAuto(request: CommandRequest): Promise<CommandResult> {
@@ -214,29 +208,49 @@ export class LoopEngine {
   }
 
   async resumeAuto(request: CommandRequest): Promise<CommandResult> {
-    const lock = new FileLock(this.root);
-    await lock.acquire("sdd auto --resume");
-    try {
-      const args = request.args ?? {};
-      const resumeRunId =
-        typeof args.resume === "string" ? args.resume : undefined;
+    const args = request.args ?? {};
+    const resumeRunId =
+      typeof args.resume === "string" ? args.resume : undefined;
 
-      if (resumeRunId !== undefined) {
+    // 只在需要修改 state/loop run 时才持锁，释放锁后再进入 runAuto
+    if (resumeRunId !== undefined) {
+      const lock = new FileLock(this.root);
+      await lock.acquire("sdd auto --resume");
+      try {
+        const currentState = await this.store.read();
+        const currentLoop = currentState.activeLoop as {
+          loopId: string;
+          runId: string;
+          status: string;
+          waiting?: unknown;
+        } | null;
+
+        // 恢复到当前 active run 时保留 waiting
+        const keepWaiting =
+          currentLoop !== null && currentLoop.runId === resumeRunId
+            ? currentLoop.waiting
+            : undefined;
+
         const run = await this.loops.readRun(resumeRunId);
+        const activeLoop: Record<string, unknown> = {
+          loopId: run.loopId,
+          runId: run.runId,
+          status: "RUNNING",
+        };
+        if (keepWaiting !== undefined) {
+          activeLoop.waiting = keepWaiting;
+        }
+
         await this.store.update((current) => ({
           ...current,
           currentRunId: run.runId,
-          activeLoop: {
-            loopId: run.loopId,
-            runId: run.runId,
-            status: "RUNNING" as const,
-          },
+          activeLoop,
         }));
+      } finally {
+        await lock.release();
       }
-      return this.runAuto(request);
-    } finally {
-      await lock.release();
     }
+    return this.runAuto(request);
   }
 
   async restartAuto(request: CommandRequest): Promise<CommandResult> {
@@ -297,14 +311,14 @@ export class LoopEngine {
         runId,
         type: "LOOP_RESTARTED",
       });
-
-      return this.runAuto({
-        ...request,
-        args: { ...request.args, restart: undefined },
-      });
     } finally {
       await lock.release();
     }
+
+    return this.runAuto({
+      ...request,
+      args: { ...request.args, restart: undefined },
+    });
   }
 
   async stopAuto(): Promise<CommandResult> {
@@ -356,9 +370,10 @@ export class LoopEngine {
         type: "LOOP_STOPPED",
       });
 
+      const currentState = await this.store.read();
       return {
         ok: true,
-        state: "FAILED",
+        state: currentState.currentPhase,
         exitCode: 0,
         data: { loopStopped: activeLoop.runId },
       };

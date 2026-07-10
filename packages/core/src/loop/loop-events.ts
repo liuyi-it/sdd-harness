@@ -76,8 +76,16 @@ export class LoopEventStore {
         return events.slice(-opts.tail);
       }
       return events;
-    } catch {
-      return [];
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        (error as NodeJS.ErrnoException).code === "ENOENT"
+      ) {
+        return [];
+      }
+      throw error;
     }
   }
 }

@@ -32,8 +32,14 @@ export class LoopEventStore {
             }
             return events;
         }
-        catch {
-            return [];
+        catch (error) {
+            if (typeof error === "object" &&
+                error !== null &&
+                "code" in error &&
+                error.code === "ENOENT") {
+                return [];
+            }
+            throw error;
         }
     }
 }

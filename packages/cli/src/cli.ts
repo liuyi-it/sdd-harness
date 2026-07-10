@@ -41,6 +41,8 @@ const HELP_TEXT = `sdd — SDD Agent Harness CLI
   auto --restart    重启 auto run
   auto --stop       停止当前 auto run
   auto --events     查看 auto run 事件
+  auto --loop-status 查看 auto loop 状态
+  status --loop     显示 loop 状态摘要
   codebase           代码库上下文管理 (status/doctor/index/query/rebuild)
 
 通用参数:

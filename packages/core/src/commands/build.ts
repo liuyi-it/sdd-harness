@@ -910,6 +910,46 @@ async function buildCompleteTask(
     };
   }
 
+  // result 字段类型校验：防止畸形 result 引发非结构化异常
+  if (
+    "modifiedFiles" in resultJson &&
+    !Array.isArray(resultJson.modifiedFiles)
+  ) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: {
+        code: "E_MISSING_ARTIFACT",
+        message: "modifiedFiles 必须是数组",
+      },
+    };
+  }
+  if ("createdFiles" in resultJson && !Array.isArray(resultJson.createdFiles)) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: { code: "E_MISSING_ARTIFACT", message: "createdFiles 必须是数组" },
+    };
+  }
+  if ("tddEvidence" in resultJson && !Array.isArray(resultJson.tddEvidence)) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: { code: "E_MISSING_ARTIFACT", message: "tddEvidence 必须是数组" },
+    };
+  }
+  if ("verification" in resultJson && !Array.isArray(resultJson.verification)) {
+    return {
+      ok: false,
+      state: "FAILED",
+      exitCode: 4,
+      error: { code: "E_MISSING_ARTIFACT", message: "verification 必须是数组" },
+    };
+  }
+
   // taskId 一致性校验
   if (resultJson.taskId !== taskId) {
     return {
