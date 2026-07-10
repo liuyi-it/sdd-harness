@@ -1040,8 +1040,7 @@ async function buildCompleteTask(
 
     // TDD evidence 命令安全校验
     const blockedEvidenceCommand = tddEvidence.find(
-      (e) =>
-        typeof e.command === "string" && !isCommandAllowed(e.command),
+      (e) => typeof e.command === "string" && !isCommandAllowed(e.command),
     );
     if (blockedEvidenceCommand) {
       return {
