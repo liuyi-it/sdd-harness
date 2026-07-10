@@ -1,6 +1,7 @@
 ## Task 11 实现报告
 
 ### 变更范围
+
 - 文件: `packages/core/test/init-agent-selection.test.ts`
 - 文件: `packages/core/test/init-status.test.ts`
 - 文件: `packages/core/test/design-plan.test.ts`
@@ -27,6 +28,7 @@
    - "repeats structured artifact generation idempotently"：将 `.toBe(before)`（严格字符串比较含时间戳）改为 `.toMatchObject`（仅比较 key 字段）
 
 ### 验证结果
+
 - `npm run typecheck` — 通过
 - `npm run build` — 通过
 - `npm test` — **341/341 全部通过，0 失败**
@@ -34,9 +36,9 @@
 
 ### 受影响的测试文件汇总
 
-| 文件 | 修改前失败数 | 修改后 |
-|------|------------|--------|
-| init-agent-selection.test.ts | 4 | 全部通过 |
-| init-status.test.ts | 3 | 全部通过 |
-| design-plan.test.ts | 2 | 全部通过 |
-| new.test.ts | 2 | 全部通过 |
+| 文件                         | 修改前失败数 | 修改后   |
+| ---------------------------- | ------------ | -------- |
+| init-agent-selection.test.ts | 4            | 全部通过 |
+| init-status.test.ts          | 3            | 全部通过 |
+| design-plan.test.ts          | 2            | 全部通过 |
+| new.test.ts                  | 2            | 全部通过 |
