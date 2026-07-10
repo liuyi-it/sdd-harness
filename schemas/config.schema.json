@@ -13,7 +13,7 @@
     "security"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.2.0" },
+    "schemaVersion": { "const": "1.3.0" },
     "project": {
       "type": "object",
       "required": ["name"],

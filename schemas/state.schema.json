@@ -14,7 +14,7 @@
     "artifacts"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.2.0" },
+    "schemaVersion": { "const": "1.3.0" },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "format": "date-time" },
     "initialized": { "type": "boolean" },
@@ -33,6 +33,7 @@
         "PLANNING",
         "PLAN_READY",
         "BUILDING",
+        "BUILD_WAITING_AGENT",
         "BUILD_READY",
         "VERIFYING",
         "VERIFY_READY",

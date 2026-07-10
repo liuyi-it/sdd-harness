@@ -576,7 +576,7 @@ async function migrateConfigIfNeeded(
   await mkdir(join(root, ".sdd", "logs"), { recursive: true });
   await appendFile(
     join(root, ".sdd", "logs", "migration.log"),
-    `${new Date().toISOString()} 1.0.0 -> 1.2.0 (config.yml)\n`,
+    `${new Date().toISOString()} 1.0.0 -> 1.3.0 (config.yml)\n`,
     "utf8",
   );
 }

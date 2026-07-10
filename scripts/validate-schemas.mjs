@@ -285,11 +285,13 @@ async function collectSchemaContext(fixtures) {
     )
       .then((v) => JSON.parse(v))
       .catch(() => ({
-        schemaVersion: "1.2.0",
+        schemaVersion: "1.3.0",
         runId: "unknown",
         loopId: "auto-default",
         status: "ARCHIVED",
         startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        currentStep: 0,
         steps: [],
       })),
     mcpQueryResult: await new CodebaseAdapter().queryImpact(archived.root, {
