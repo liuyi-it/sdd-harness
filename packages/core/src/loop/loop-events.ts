@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Phase } from "../contracts.js";
 import type { LoopDecision } from "./model.js";
+import { SddError } from "../errors.js";
 
 /** Loop 事件类型 */
 export type LoopEventType =
@@ -47,6 +48,7 @@ export class LoopEventStore {
     runId: string,
     event: Omit<LoopEvent, "eventId" | "schemaVersion" | "createdAt">,
   ): Promise<void> {
+    assertSafeRunId(runId);
     await mkdir(this.eventsDirectory, { recursive: true });
     const fullEvent: LoopEvent = {
       schemaVersion: "1.0.0",
@@ -62,6 +64,7 @@ export class LoopEventStore {
   }
 
   async read(runId: string, opts?: { tail?: number }): Promise<LoopEvent[]> {
+    assertSafeRunId(runId);
     try {
       const content = await readFile(
         join(this.eventsDirectory, `${runId}.jsonl`),
@@ -76,5 +79,15 @@ export class LoopEventStore {
     } catch {
       return [];
     }
+  }
+}
+
+/** runId 必须仅含安全字符，防止路径穿越攻击 */
+function assertSafeRunId(runId: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new SddError(
+      "E_SECURITY_BLOCKED",
+      `runId 包含非法字符：${runId}`,
+    );
   }
 }

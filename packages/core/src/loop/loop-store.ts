@@ -2,7 +2,18 @@ import { mkdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { SddError } from "../errors.js";
 import type { LoopRun, LoopSpec } from "./model.js";
+
+/** runId 必须仅含安全字符，防止路径穿越攻击 */
+function assertSafeRunId(runId: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new SddError(
+      "E_SECURITY_BLOCKED",
+      `runId 包含非法字符：${runId}`,
+    );
+  }
+}
 
 export class LoopStore {
   readonly directory: string;
@@ -29,6 +40,7 @@ export class LoopStore {
   }
 
   async writeRun(run: LoopRun): Promise<void> {
+    assertSafeRunId(run.runId);
     await mkdir(this.runsDirectory, { recursive: true });
     await new ArtifactWriter().write(
       join(this.runsDirectory, `${run.runId}.json`),
@@ -38,12 +50,14 @@ export class LoopStore {
   }
 
   async readRun(runId: string): Promise<LoopRun> {
+    assertSafeRunId(runId);
     return JSON.parse(
       await readFile(join(this.runsDirectory, `${runId}.json`), "utf8"),
     ) as LoopRun;
   }
 
   async hasRun(runId: string): Promise<boolean> {
+    assertSafeRunId(runId);
     try {
       await stat(join(this.runsDirectory, `${runId}.json`));
       return true;

@@ -5,6 +5,7 @@ import type {
 } from "../contracts.js";
 import { COMMANDS } from "../contracts.js";
 import { SddError } from "../errors.js";
+import { FileLock } from "../state/file-lock.js";
 import type { StateStore } from "../state/state-store.js";
 import type { LoopStore } from "./loop-store.js";
 import type { LoopEventStore } from "./loop-events.js";
@@ -18,6 +19,7 @@ const COMMAND_BY_PHASE: Partial<Record<CommandResult["state"], CommandName>> = {
   SPEC_READY: "design",
   DESIGN_READY: "plan",
   PLAN_READY: "build",
+  BUILD_WAITING_AGENT: "build",
   BUILD_READY: "verify",
   VERIFY_READY: "review",
   REVIEW_READY: "archive",
@@ -68,7 +70,13 @@ export class LoopEngine {
     if (typeof args.resume === "string" || args.resume === true) {
       return this.resumeAuto(request);
     }
-    return this.runAuto(request);
+    const lock = new FileLock(this.root);
+    await lock.acquire("sdd auto");
+    try {
+      return this.runAuto(request);
+    } finally {
+      await lock.release();
+    }
   }
 
   private async runAuto(request: CommandRequest): Promise<CommandResult> {
@@ -177,11 +185,12 @@ export class LoopEngine {
         const finalStatus =
           decision === "DONE"
             ? "ARCHIVED"
-            : decision === "PAUSE_FOR_AGENT" ||
-                decision === "PAUSE_FOR_CLARIFICATION" ||
-                decision === "PAUSE_FOR_HUMAN"
-              ? "PAUSED"
-              : "FAILED";
+            : decision === "PAUSE_FOR_AGENT"
+              ? "WAITING_AGENT"
+              : decision === "PAUSE_FOR_CLARIFICATION" ||
+                  decision === "PAUSE_FOR_HUMAN"
+                ? "PAUSED"
+                : "FAILED";
 
         if (decision === "PAUSE_FOR_AGENT") {
           await this.events.write(loop.runId, {
@@ -205,39 +214,48 @@ export class LoopEngine {
   }
 
   async resumeAuto(request: CommandRequest): Promise<CommandResult> {
-    const args = request.args ?? {};
-    const resumeRunId =
-      typeof args.resume === "string" ? args.resume : undefined;
+    const lock = new FileLock(this.root);
+    await lock.acquire("sdd auto --resume");
+    try {
+      const args = request.args ?? {};
+      const resumeRunId =
+        typeof args.resume === "string" ? args.resume : undefined;
 
-    if (resumeRunId !== undefined) {
-      const run = await this.loops.readRun(resumeRunId);
-      await this.store.update((current) => ({
-        ...current,
-        currentRunId: run.runId,
-        activeLoop: {
-          loopId: run.loopId,
-          runId: run.runId,
-          status: "RUNNING" as const,
-        },
-      }));
+      if (resumeRunId !== undefined) {
+        const run = await this.loops.readRun(resumeRunId);
+        await this.store.update((current) => ({
+          ...current,
+          currentRunId: run.runId,
+          activeLoop: {
+            loopId: run.loopId,
+            runId: run.runId,
+            status: "RUNNING" as const,
+          },
+        }));
+      }
+      return this.runAuto(request);
+    } finally {
+      await lock.release();
     }
-    return this.runAuto(request);
   }
 
   async restartAuto(request: CommandRequest): Promise<CommandResult> {
-    const state = await this.store.read();
-    if (state.activeLoop !== null) {
-      const activeLoop = state.activeLoop as {
-        loopId: string;
-        runId: string;
-        status: string;
-      };
-      try {
-        const existing = await this.loops.readRun(activeLoop.runId);
-        await this.loops.writeRun({
-          ...existing,
-          status: "ABORTED",
-          endedAt: new Date().toISOString(),
+    const lock = new FileLock(this.root);
+    await lock.acquire("sdd auto --restart");
+    try {
+      const state = await this.store.read();
+      if (state.activeLoop !== null) {
+        const activeLoop = state.activeLoop as {
+          loopId: string;
+          runId: string;
+          status: string;
+        };
+        try {
+          const existing = await this.loops.readRun(activeLoop.runId);
+          await this.loops.writeRun({
+            ...existing,
+            status: "ABORTED",
+            endedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         });
       } catch {
@@ -284,9 +302,15 @@ export class LoopEngine {
       ...request,
       args: { ...request.args, restart: undefined },
     });
+    } finally {
+      await lock.release();
+    }
   }
 
   async stopAuto(): Promise<CommandResult> {
+    const lock = new FileLock(this.root);
+    await lock.acquire("sdd auto --stop");
+    try {
     const state = await this.store.read();
     if (state.activeLoop === null || typeof state.activeLoop !== "object") {
       return {
@@ -338,6 +362,9 @@ export class LoopEngine {
       exitCode: 0,
       data: { loopStopped: activeLoop.runId },
     };
+    } finally {
+      await lock.release();
+    }
   }
 
   async getEvents(request: CommandRequest): Promise<CommandResult> {
@@ -521,7 +548,7 @@ export class LoopEngine {
 
   private async finalizeLoop(
     runId: string,
-    status: "RUNNING" | "PAUSED" | "FAILED" | "ARCHIVED",
+    status: "RUNNING" | "PAUSED" | "WAITING_AGENT" | "FAILED" | "ARCHIVED",
   ) {
     try {
       const run = await this.loops.readRun(runId);
@@ -529,7 +556,10 @@ export class LoopEngine {
         ...run,
         status,
         updatedAt: new Date().toISOString(),
-        ...(status === "ARCHIVED" || status === "FAILED" || status === "PAUSED"
+        ...(status === "ARCHIVED" ||
+        status === "FAILED" ||
+        status === "PAUSED" ||
+        status === "WAITING_AGENT"
           ? { endedAt: new Date().toISOString() }
           : {}),
       });

@@ -54,7 +54,7 @@ export class Core implements SddCore {
     try {
       // status 是纯只读命令，不依赖完整的写命令分发流程。
       if (request.command === "status")
-        return withVerboseData(await runStatus(request.cwd), request);
+        return withVerboseData(await runStatus(request.cwd, request.args), request);
       // codebase 子命令：委托 CodebaseAdapter 处理
       if (request.command === "codebase")
         return withVerboseData(

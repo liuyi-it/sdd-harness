@@ -10,7 +10,10 @@ import { StateStore, type WorkflowState } from "../state/state-store.js";
  * - 未初始化时返回 NOT_INITIALIZED
  * - 已初始化时原样回报当前持久化状态和建议下一步命令
  */
-export async function runStatus(root: string): Promise<CommandResult> {
+export async function runStatus(
+  root: string,
+  args?: Record<string, unknown>,
+): Promise<CommandResult> {
   if (!(await exists(join(root, ".sdd", "state.json")))) {
     return {
       ok: true,
@@ -38,6 +41,17 @@ export async function runStatus(root: string): Promise<CommandResult> {
       `检测到执行前已有未提交修改：${git.files.slice(0, 5).join(", ")}${git.files.length > 5 ? ` 等 ${git.files.length} 个文件` : ""}`,
     );
   }
+  // --loop 时返回 activeLoop 摘要
+  let activeLoopData: unknown = undefined;
+  if (args?.loop === true && state.activeLoop !== null && typeof state.activeLoop === "object") {
+    const loop = state.activeLoop as Record<string, unknown>;
+    activeLoopData = {
+      loopId: loop.loopId,
+      runId: loop.runId,
+      status: loop.status,
+      waiting: loop.waiting,
+    };
+  }
   return {
     ok: true,
     state: state.currentPhase,
@@ -47,7 +61,10 @@ export async function runStatus(root: string): Promise<CommandResult> {
       : { changeId: state.currentChangeId }),
     ...(next === undefined ? {} : { next }),
     ...(warnings.length === 0 ? {} : { warnings }),
-    data: state,
+    data:
+      activeLoopData !== undefined
+        ? { ...state, activeLoop: activeLoopData }
+        : state,
   };
 }
 
