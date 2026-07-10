@@ -43,7 +43,11 @@ export async function runStatus(
   }
   // --loop 时返回 activeLoop 摘要
   let activeLoopData: unknown = undefined;
-  if (args?.loop === true && state.activeLoop !== null && typeof state.activeLoop === "object") {
+  if (
+    args?.loop === true &&
+    state.activeLoop !== null &&
+    typeof state.activeLoop === "object"
+  ) {
     const loop = state.activeLoop as Record<string, unknown>;
     activeLoopData = {
       loopId: loop.loopId,

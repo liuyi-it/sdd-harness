@@ -57,19 +57,37 @@ export function outputText(result: CommandResult): void {
     }
   }
   // events 输出（来自 auto --events）
-  if (result.data && typeof result.data === "object" && "events" in result.data) {
-    const events = (result.data as Record<string, unknown>).events as Array<Record<string, unknown>> | undefined;
+  if (
+    result.data &&
+    typeof result.data === "object" &&
+    "events" in result.data
+  ) {
+    const events = (result.data as Record<string, unknown>).events as
+      | Array<Record<string, unknown>>
+      | undefined;
     if (Array.isArray(events) && events.length > 0) {
       console.log(`\nLoop Events (${events.length}):`);
       for (const e of events) {
-        const time = typeof e.createdAt === "string" ? new Date(e.createdAt).toLocaleTimeString() : "";
-        console.log(`  [${time}] ${e.type}${e.command ? ` ${e.command}` : ""}${e.decision ? ` → ${e.decision}` : ""}`);
+        const time =
+          typeof e.createdAt === "string"
+            ? new Date(e.createdAt).toLocaleTimeString()
+            : "";
+        console.log(
+          `  [${time}] ${e.type}${e.command ? ` ${e.command}` : ""}${e.decision ? ` → ${e.decision}` : ""}`,
+        );
       }
     }
   }
   // activeLoop 输出（来自 auto --loop-status 或 status --loop）
-  if (result.data && typeof result.data === "object" && "activeLoop" in result.data) {
-    const loop = (result.data as Record<string, unknown>).activeLoop as Record<string, unknown> | null | undefined;
+  if (
+    result.data &&
+    typeof result.data === "object" &&
+    "activeLoop" in result.data
+  ) {
+    const loop = (result.data as Record<string, unknown>).activeLoop as
+      | Record<string, unknown>
+      | null
+      | undefined;
     if (loop && typeof loop === "object") {
       console.log(`\nActive Loop:`);
       console.log(`  Loop: ${loop.loopId}`);
@@ -77,7 +95,9 @@ export function outputText(result: CommandResult): void {
       console.log(`  Status: ${loop.status}`);
       if (loop.waiting && typeof loop.waiting === "object") {
         const w = loop.waiting as Record<string, unknown>;
-        console.log(`  Waiting: ${w.reason}${w.taskId ? ` (${w.taskId})` : ""}`);
+        console.log(
+          `  Waiting: ${w.reason}${w.taskId ? ` (${w.taskId})` : ""}`,
+        );
       }
     }
   }

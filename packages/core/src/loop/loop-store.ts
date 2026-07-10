@@ -8,10 +8,7 @@ import type { LoopRun, LoopSpec } from "./model.js";
 /** runId 必须仅含安全字符，防止路径穿越攻击 */
 function assertSafeRunId(runId: string): void {
   if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
-    throw new SddError(
-      "E_SECURITY_BLOCKED",
-      `runId 包含非法字符：${runId}`,
-    );
+    throw new SddError("E_SECURITY_BLOCKED", `runId 包含非法字符：${runId}`);
   }
 }
 

@@ -256,52 +256,52 @@ export class LoopEngine {
             ...existing,
             status: "ABORTED",
             endedAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+        } catch {
+          // run 不存在，跳过
+        }
+        await this.events.write(activeLoop.runId, {
+          loopId: activeLoop.loopId,
+          runId: activeLoop.runId,
+          type: "LOOP_STOPPED",
         });
-      } catch {
-        // run 不存在，跳过
       }
-      await this.events.write(activeLoop.runId, {
-        loopId: activeLoop.loopId,
-        runId: activeLoop.runId,
-        type: "LOOP_STOPPED",
+
+      const spec = await this.readLoopSpec();
+      const runId = `run-${Date.now()}`;
+      const loopId =
+        state.activeLoop !== null && typeof state.activeLoop === "object"
+          ? (state.activeLoop as { loopId: string }).loopId
+          : spec.loopId;
+
+      await this.loops.writeRun({
+        schemaVersion: "1.3.0",
+        runId,
+        loopId,
+        status: "RUNNING",
+        startedAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        currentStep: 0,
+        steps: [],
       });
-    }
 
-    const spec = await this.readLoopSpec();
-    const runId = `run-${Date.now()}`;
-    const loopId =
-      state.activeLoop !== null && typeof state.activeLoop === "object"
-        ? (state.activeLoop as { loopId: string }).loopId
-        : spec.loopId;
+      await this.store.update((current) => ({
+        ...current,
+        currentRunId: runId,
+        activeLoop: { loopId, runId, status: "RUNNING" as const },
+      }));
 
-    await this.loops.writeRun({
-      schemaVersion: "1.3.0",
-      runId,
-      loopId,
-      status: "RUNNING",
-      startedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      currentStep: 0,
-      steps: [],
-    });
+      await this.events.write(runId, {
+        loopId,
+        runId,
+        type: "LOOP_RESTARTED",
+      });
 
-    await this.store.update((current) => ({
-      ...current,
-      currentRunId: runId,
-      activeLoop: { loopId, runId, status: "RUNNING" as const },
-    }));
-
-    await this.events.write(runId, {
-      loopId,
-      runId,
-      type: "LOOP_RESTARTED",
-    });
-
-    return this.runAuto({
-      ...request,
-      args: { ...request.args, restart: undefined },
-    });
+      return this.runAuto({
+        ...request,
+        args: { ...request.args, restart: undefined },
+      });
     } finally {
       await lock.release();
     }
@@ -311,57 +311,57 @@ export class LoopEngine {
     const lock = new FileLock(this.root);
     await lock.acquire("sdd auto --stop");
     try {
-    const state = await this.store.read();
-    if (state.activeLoop === null || typeof state.activeLoop !== "object") {
-      return {
-        ok: false,
-        state: "FAILED",
-        exitCode: 3,
-        error: {
-          code: "E_INVALID_PHASE_COMMAND",
-          message: "没有 active loop",
-        },
+      const state = await this.store.read();
+      if (state.activeLoop === null || typeof state.activeLoop !== "object") {
+        return {
+          ok: false,
+          state: "FAILED",
+          exitCode: 3,
+          error: {
+            code: "E_INVALID_PHASE_COMMAND",
+            message: "没有 active loop",
+          },
+        };
+      }
+
+      const activeLoop = state.activeLoop as {
+        loopId: string;
+        runId: string;
+        status: string;
       };
-    }
+      try {
+        const run = await this.loops.readRun(activeLoop.runId);
+        await this.loops.writeRun({
+          ...run,
+          status: "ABORTED",
+          endedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      } catch {
+        // run 不存在，跳过
+      }
 
-    const activeLoop = state.activeLoop as {
-      loopId: string;
-      runId: string;
-      status: string;
-    };
-    try {
-      const run = await this.loops.readRun(activeLoop.runId);
-      await this.loops.writeRun({
-        ...run,
-        status: "ABORTED",
-        endedAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
-    } catch {
-      // run 不存在，跳过
-    }
+      await this.store.update((current) => ({
+        ...current,
+        activeLoop: {
+          loopId: activeLoop.loopId,
+          runId: activeLoop.runId,
+          status: "ABORTED" as const,
+        },
+      }));
 
-    await this.store.update((current) => ({
-      ...current,
-      activeLoop: {
+      await this.events.write(activeLoop.runId, {
         loopId: activeLoop.loopId,
         runId: activeLoop.runId,
-        status: "ABORTED" as const,
-      },
-    }));
+        type: "LOOP_STOPPED",
+      });
 
-    await this.events.write(activeLoop.runId, {
-      loopId: activeLoop.loopId,
-      runId: activeLoop.runId,
-      type: "LOOP_STOPPED",
-    });
-
-    return {
-      ok: true,
-      state: "FAILED",
-      exitCode: 0,
-      data: { loopStopped: activeLoop.runId },
-    };
+      return {
+        ok: true,
+        state: "FAILED",
+        exitCode: 0,
+        data: { loopStopped: activeLoop.runId },
+      };
     } finally {
       await lock.release();
     }
