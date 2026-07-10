@@ -71,6 +71,6 @@ describe("dependency integrity", () => {
     ).toBe("codebase-memory-mcp-darwin-arm64.tar.gz");
     expect(
       resolveCodebaseMemoryArtifactName({ platform: "win32", arch: "x64" }),
-    ).toBe("codebase-memory-mcp-win32-x64.tar.gz");
+    ).toBe("codebase-memory-mcp-windows-x64.zip");
   });
 });

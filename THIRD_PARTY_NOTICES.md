@@ -4,7 +4,7 @@
 
 | 项目                | 版本   | Commit                                     | 许可证 | 使用方式                                           |
 | ------------------- | ------ | ------------------------------------------ | ------ | -------------------------------------------------- |
-| codebase-memory-mcp | v0.8.1 | `f0c9be19c5d74b84f418d807bfdce7b5d6a261ff` | MIT    | 作为外部 MCP 运行时接入，不 vendor 上游源码        |
+| codebase-memory-mcp | v0.9.0 | `b637e3330c96cfe452da623db068c241aaa3ec01` | MIT    | 作为外部 MCP 运行时接入，不 vendor 上游源码        |
 | OpenSpec            | v1.4.1 | `1b06fddd59d8e592d5b5794a1970b22867e85b1f` | MIT    | 在 `vendor/openspec/upstream/` 保存完整源码快照    |
 | Superpowers         | v6.1.1 | `d884ae04edebef577e82ff7c4e143debd0bbec99` | MIT    | 在 `vendor/superpowers/upstream/` 保存完整源码快照 |
 

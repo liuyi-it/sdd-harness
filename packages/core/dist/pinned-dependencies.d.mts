@@ -2,13 +2,13 @@ export const PINNED_DEPENDENCIES: {
     readonly codebaseMemoryMcp: {
         readonly name: "codebase-memory-mcp";
         readonly repository: "https://github.com/DeusData/codebase-memory-mcp";
-        readonly version: "v0.8.1";
-        readonly commit: "f0c9be19c5d74b84f418d807bfdce7b5d6a261ff";
+        readonly version: "v0.9.0";
+        readonly commit: "b637e3330c96cfe452da623db068c241aaa3ec01";
         readonly license: "MIT";
         readonly interface: "mcp";
         readonly localModifications: "none";
-        readonly checksumManifest: "https://github.com/DeusData/codebase-memory-mcp/releases/download/v0.8.1/checksums.txt";
-        readonly checksumManifestSha256: "142399e4e552fb559ede866b2549dbacc942d56f1c8718b52bc701b21f3f94c6";
+        readonly checksumManifest: "https://github.com/DeusData/codebase-memory-mcp/releases/download/v0.9.0/checksums.txt";
+        readonly checksumManifestSha256: "b7294616f22050124c8f2cf029cc9943e0b7d6e426fb9a0b95b1de9815c76e57";
     };
     readonly openSpec: {
         readonly name: "openspec";

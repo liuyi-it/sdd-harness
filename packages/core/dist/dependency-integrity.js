@@ -22,13 +22,18 @@ export function decodeArtifactContent(base64) {
     return Buffer.from(base64, "base64");
 }
 export function resolveCodebaseMemoryArtifactName(input) {
-    const platform = input?.platform ?? process.platform;
+    const rawPlatform = input?.platform ?? process.platform;
     const arch = input?.arch ?? process.arch;
-    if ((platform !== "darwin" && platform !== "win32") ||
-        (arch !== "arm64" && arch !== "x64")) {
-        throw new SddError("E_COMPONENT_INTEGRITY_FAILED", `不支持的平台或架构：${platform}/${arch}`);
+    // v0.9.0+ 使用 "windows" 作为平台标识，且产物为 .zip 格式
+    if (rawPlatform !== "darwin" && rawPlatform !== "win32") {
+        throw new SddError("E_COMPONENT_INTEGRITY_FAILED", `不支持的平台：${rawPlatform}`);
     }
-    return `codebase-memory-mcp-${platform}-${arch}.tar.gz`;
+    if (arch !== "arm64" && arch !== "x64") {
+        throw new SddError("E_COMPONENT_INTEGRITY_FAILED", `不支持的架构：${arch}`);
+    }
+    const artifactPlatform = rawPlatform === "win32" ? "windows" : rawPlatform;
+    const ext = rawPlatform === "win32" ? "zip" : "tar.gz";
+    return `codebase-memory-mcp-${artifactPlatform}-${arch}.${ext}`;
 }
 function manifestEntry(manifestContent, artifactName) {
     for (const line of manifestContent.split(/\r?\n/)) {

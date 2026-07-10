@@ -44,8 +44,8 @@ describe("pinned dependencies", () => {
   it("uses the exact approved upstream versions and commits", () => {
     expect(PINNED_DEPENDENCIES).toMatchObject({
       codebaseMemoryMcp: {
-        version: "v0.8.1",
-        commit: "f0c9be19c5d74b84f418d807bfdce7b5d6a261ff",
+        version: "v0.9.0",
+        commit: "b637e3330c96cfe452da623db068c241aaa3ec01",
       },
       openSpec: {
         version: "v1.4.1",

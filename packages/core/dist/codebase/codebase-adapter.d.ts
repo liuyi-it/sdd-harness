@@ -1,7 +1,7 @@
 import { type ImpactPayload, type McpCapabilities, type McpQueryInput, type McpQueryResult } from "./mcp-query.js";
 /**
  * CodebaseAdapter 封装两类代码上下文来源：
- * 1. 优先使用 codebase-memory-mcp (pinned v0.8.1 / f0c9be1)
+ * 1. 优先使用 codebase-memory-mcp (pinned v0.9.0 / b637e33)
  * 2. 不可用时退回受限文件扫描
  *
  * 二期新增 V2 capability + 结构化 query 接口，所有跨 provider 一致性由本类负责。

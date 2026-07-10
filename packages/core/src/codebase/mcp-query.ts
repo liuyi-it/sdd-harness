@@ -1,12 +1,12 @@
 import type { CodebaseSummary } from "./codebase-adapter.js";
 
 /**
- * 二期 MCP 查询固定版本约束：仅允许 codebase-memory-mcp v0.8.1 (commit f0c9be1)。
+ * 二期 MCP 查询固定版本约束：仅允许 codebase-memory-mcp v0.9.0 (commit b637e33)。
  * 任何其它 MCP provider 都不进入 Core 路径，由 Core 经统一 V2 transport 进行查询或降级。
  */
 export const MCP_PINNED_PROVIDER = "codebase-memory-mcp";
-export const MCP_PINNED_VERSION = "0.8.1";
-export const MCP_PINNED_COMMIT = "f0c9be1";
+export const MCP_PINNED_VERSION = "0.9.0";
+export const MCP_PINNED_COMMIT = "b637e33";
 export const MCP_FALLBACK_PROVIDER = "fallback-file-scan";
 
 /**

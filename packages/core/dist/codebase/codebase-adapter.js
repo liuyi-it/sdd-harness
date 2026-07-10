@@ -102,7 +102,7 @@ export class CodebaseAdapter {
             return {
                 provider: MCP_PINNED_PROVIDER,
                 version: "0.0.0",
-                commit: "f0c9be1",
+                commit: "b637e33",
                 officialUrl: CODEBASE_MEMORY_MCP_URL,
                 availableTools: [],
                 supportedIntents: [
