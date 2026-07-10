@@ -32,27 +32,27 @@ Core.runAuto() ──薄封装 (~5行)──→ LoopEngine.run(request)
 
 ### 2.3 新增/修改文件清单
 
-| 文件 | 操作 | Milestone |
-|------|------|-----------|
-| `packages/core/src/contracts.ts` | 修改：PHASES 新增 `BUILD_WAITING_AGENT` | M1 |
-| `packages/core/src/commands/build.ts` | 修改：buildNextTask/buildCompleteTask 状态写入 | M1, M2 |
-| `packages/core/src/state/state-store.ts` | 确认 normalizeTransientState 不漏处理 BUILD_WAITING_AGENT | M1 |
-| `packages/core/src/state/schema-migration.ts` | 修改：升级 CURRENT_SCHEMA_VERSION 到 1.3.0，增加 BUILDING→BUILD_WAITING_AGENT 迁移 | M1 |
-| `packages/core/src/commands/design.ts` | 修改：unchanged 早退时写回 DESIGN_READY | M1 |
-| `packages/core/src/commands/plan.ts` | 修改：unchanged 早退时写回 PLAN_READY | M1 |
-| `packages/core/src/commands/status.ts` | 修改：PLAN_READY next 改为 `sdd build next` | M1 |
-| `packages/core/src/loop/model.ts` | 修改：LoopSpec/ActiveLoop/LoopRun/LoopStep 升级到 1.3.0 | M3 |
-| `packages/core/src/loop/loop-spec.ts` | 修改：createDefaultLoopSpec 升级到 1.3.0 | M3 |
-| `packages/core/src/loop/loop-store.ts` | 修改：新增 events 读写方法 | M3 |
-| `packages/core/src/loop/loop-engine.ts` | **新增**：LoopEngine 主类 | M3 |
-| `packages/core/src/loop/loop-decision.ts` | **新增**：DecisionEngine 纯函数 | M3 |
-| `packages/core/src/loop/loop-events.ts` | **新增**：LoopEventStore JSONL | M3 |
-| `packages/core/src/commands/auto.ts` | 修改：功能迁入 LoopEngine，保留兼容层 | M3 |
-| `packages/core/src/core.ts` | 修改：runAuto() 改为薄封装 | M3 |
-| `packages/cli/src/cli.ts` | 修改：新增 flags + help 更新 | M4 |
-| `packages/cli/src/commands/auto.ts` | 修改：支持新 flags 透传 | M4 |
-| `packages/cli/src/commands/status.ts` | 修改：支持 --loop | M4 |
-| `packages/cli/src/json-output.ts` | 修改：outputText 显示 actionRequired | M4 |
+| 文件                                          | 操作                                                                               | Milestone |
+| --------------------------------------------- | ---------------------------------------------------------------------------------- | --------- |
+| `packages/core/src/contracts.ts`              | 修改：PHASES 新增 `BUILD_WAITING_AGENT`                                            | M1        |
+| `packages/core/src/commands/build.ts`         | 修改：buildNextTask/buildCompleteTask 状态写入                                     | M1, M2    |
+| `packages/core/src/state/state-store.ts`      | 确认 normalizeTransientState 不漏处理 BUILD_WAITING_AGENT                          | M1        |
+| `packages/core/src/state/schema-migration.ts` | 修改：升级 CURRENT_SCHEMA_VERSION 到 1.3.0，增加 BUILDING→BUILD_WAITING_AGENT 迁移 | M1        |
+| `packages/core/src/commands/design.ts`        | 修改：unchanged 早退时写回 DESIGN_READY                                            | M1        |
+| `packages/core/src/commands/plan.ts`          | 修改：unchanged 早退时写回 PLAN_READY                                              | M1        |
+| `packages/core/src/commands/status.ts`        | 修改：PLAN_READY next 改为 `sdd build next`                                        | M1        |
+| `packages/core/src/loop/model.ts`             | 修改：LoopSpec/ActiveLoop/LoopRun/LoopStep 升级到 1.3.0                            | M3        |
+| `packages/core/src/loop/loop-spec.ts`         | 修改：createDefaultLoopSpec 升级到 1.3.0                                           | M3        |
+| `packages/core/src/loop/loop-store.ts`        | 修改：新增 events 读写方法                                                         | M3        |
+| `packages/core/src/loop/loop-engine.ts`       | **新增**：LoopEngine 主类                                                          | M3        |
+| `packages/core/src/loop/loop-decision.ts`     | **新增**：DecisionEngine 纯函数                                                    | M3        |
+| `packages/core/src/loop/loop-events.ts`       | **新增**：LoopEventStore JSONL                                                     | M3        |
+| `packages/core/src/commands/auto.ts`          | 修改：功能迁入 LoopEngine，保留兼容层                                              | M3        |
+| `packages/core/src/core.ts`                   | 修改：runAuto() 改为薄封装                                                         | M3        |
+| `packages/cli/src/cli.ts`                     | 修改：新增 flags + help 更新                                                       | M4        |
+| `packages/cli/src/commands/auto.ts`           | 修改：支持新 flags 透传                                                            | M4        |
+| `packages/cli/src/commands/status.ts`         | 修改：支持 --loop                                                                  | M4        |
+| `packages/cli/src/json-output.ts`             | 修改：outputText 显示 actionRequired                                               | M4        |
 
 ---
 
@@ -71,12 +71,14 @@ Core.runAuto() ──薄封装 (~5行)──→ LoopEngine.run(request)
 **变更位置**：`packages/core/src/commands/build.ts` → `buildNextTask()`
 
 当前行为（第 745-753 行）：
+
 - `currentPhase = "BUILDING"`
 - `inProgressPhase = "BUILDING"`
 - `suggestedCommand = "sdd build next"`
 - 返回 `state: "BUILDING"`
 
 目标行为：
+
 - `currentPhase = "BUILD_WAITING_AGENT"`
 - `inProgressPhase = null`（不再标记为进行中）
 - `suggestedCommand = "sdd build complete"`
@@ -95,10 +97,12 @@ Core.runAuto() ──薄封装 (~5行)──→ LoopEngine.run(request)
 **变更位置**：`packages/core/src/commands/build.ts` → `buildCompleteTask()`
 
 当前行为（第 986-997 行）：
+
 - 还有任务未完成 → `currentPhase = "BUILDING"`，`suggestedCommand = "sdd build next"`
 - 全部完成 → `currentPhase = "BUILD_READY"`，`suggestedCommand = "sdd verify"`
 
 目标行为：
+
 - 还有任务 → `currentPhase = "PLAN_READY"`，`suggestedCommand = "sdd build next"`
 - 全部完成 → `currentPhase = "BUILD_READY"`，`suggestedCommand = "sdd verify"`
 - 清除 `activeLoop.waiting`
@@ -131,6 +135,7 @@ export const CURRENT_SCHEMA_VERSION = "1.3.0";
 当前（第 103-112 行）：unchanged 时直接 `return { state: "DESIGN_READY" }`，不写 store。
 
 改为在 return 前调用 `store.update()`：
+
 ```ts
 if (unchanged) {
   await store.update((current) => ({
@@ -154,9 +159,9 @@ if (unchanged) {
 
 ```ts
 // 从:
-PLAN_READY: "sdd build"
+PLAN_READY: "sdd build";
 // 改为:
-PLAN_READY: "sdd build next"
+PLAN_READY: "sdd build next";
 ```
 
 **涉及测试用例（M1）**：AC-006, AC-007, AC-008, AC-015, AC-016, AC-017, AC-018, AC-020, AC-033
@@ -182,12 +187,14 @@ PLAN_READY: "sdd build next"
 删除当前 out-of-scope 手动判断逻辑（第 867-886 行），统一调用 `validateTaskFiles(modifiedFiles, task)`。
 
 `validateTaskFiles()` 的正确逻辑（来自 `security/task-scope.ts`）：
+
 1. 命中 `forbiddenFiles` → `E_SECURITY_BLOCKED`
 2. 不在 `allowedFiles + expectedNewFiles` → `E_SECURITY_BLOCKED`
 
 ### 4.4 TDD evidence 校验加强
 
 在 `build complete` 的 evidence 校验中增加：
+
 - 每项的 `command` 必须通过 `isCommandAllowed` 校验
 - 与 `task.phase` 不匹配时失败
 
@@ -196,11 +203,13 @@ PLAN_READY: "sdd build next"
 **变更位置**：`packages/core/src/commands/build.ts` → `buildNextTask()`
 
 当前硬编码：
+
 ```ts
 codebase: { provider: "fallback-file-scan", degraded: true }
 ```
 
 改为：
+
 ```ts
 codebase: {
   provider: state.codebaseProvider === "codebase-memory-mcp"
@@ -239,10 +248,10 @@ export class LoopEngine {
 
   async run(request: CommandRequest): Promise<CommandResult> {
     // 分发
-    if (args.resume)    return this.resume(args.resume);
-    if (args.restart)   return this.restart();
-    if (args.stop)      return this.stop();
-    if (args.events)    return this.getEvents(args.tail);
+    if (args.resume) return this.resume(args.resume);
+    if (args.restart) return this.restart();
+    if (args.stop) return this.stop();
+    if (args.events) return this.getEvents(args.tail);
     if (args.loopStatus) return this.getLoopStatus();
     return this.runAuto(request);
   }
@@ -253,11 +262,21 @@ export class LoopEngine {
     // 增加：LoopEventStore 写入（run started / command started / command finished / decision made）
   }
 
-  async resume(runId?: string): Promise<CommandResult>  { /* 新实现 */ }
-  async restart(): Promise<CommandResult>                { /* 迁移自 prepareAutoLoop */ }
-  async stop(): Promise<CommandResult>                   { /* 新实现 */ }
-  async getEvents(opts?: { tail?: number }): Promise<CommandResult> { /* 新实现 */ }
-  async getLoopStatus(): Promise<CommandResult>          { /* 新实现 */ }
+  async resume(runId?: string): Promise<CommandResult> {
+    /* 新实现 */
+  }
+  async restart(): Promise<CommandResult> {
+    /* 迁移自 prepareAutoLoop */
+  }
+  async stop(): Promise<CommandResult> {
+    /* 新实现 */
+  }
+  async getEvents(opts?: { tail?: number }): Promise<CommandResult> {
+    /* 新实现 */
+  }
+  async getLoopStatus(): Promise<CommandResult> {
+    /* 新实现 */
+  }
 }
 ```
 
@@ -271,18 +290,19 @@ export function decide(input: {
 }): LoopDecision {
   if (!input.result.ok) {
     if (input.result.error?.code === "E_SECURITY_BLOCKED") return "FAIL";
-    if (input.result.error?.code === "E_STATE_CORRUPTED")  return "FAIL";
+    if (input.result.error?.code === "E_STATE_CORRUPTED") return "FAIL";
     return "FAIL";
   }
-  if (input.result.state === "CLARIFYING")              return "PAUSE_FOR_CLARIFICATION";
-  if (input.result.actionRequired?.type === "AGENT_TASK_EXECUTION") return "PAUSE_FOR_AGENT";
-  if (input.result.state === "BUILD_WAITING_AGENT")     return "PAUSE_FOR_AGENT";
-  if (input.result.state === "BUILD_READY")             return "CONTINUE";
-  if (input.result.state === "VERIFY_READY")            return "CONTINUE";
-  if (input.result.state === "REVIEW_READY")            return "CONTINUE";
-  if (input.result.state === "ARCHIVED")                return "DONE";
-  if (input.result.error?.code === "E_VERIFY_FAILED")   return "PAUSE_FOR_HUMAN";
-  if (input.result.error?.code === "E_REVIEW_FAILED")   return "PAUSE_FOR_HUMAN";
+  if (input.result.state === "CLARIFYING") return "PAUSE_FOR_CLARIFICATION";
+  if (input.result.actionRequired?.type === "AGENT_TASK_EXECUTION")
+    return "PAUSE_FOR_AGENT";
+  if (input.result.state === "BUILD_WAITING_AGENT") return "PAUSE_FOR_AGENT";
+  if (input.result.state === "BUILD_READY") return "CONTINUE";
+  if (input.result.state === "VERIFY_READY") return "CONTINUE";
+  if (input.result.state === "REVIEW_READY") return "CONTINUE";
+  if (input.result.state === "ARCHIVED") return "DONE";
+  if (input.result.error?.code === "E_VERIFY_FAILED") return "PAUSE_FOR_HUMAN";
+  if (input.result.error?.code === "E_REVIEW_FAILED") return "PAUSE_FOR_HUMAN";
   return "CONTINUE";
 }
 ```
@@ -342,6 +362,7 @@ run:        { type: "string" },
 ```
 
 `case "auto"` 分支将新 flags 映射到 `extraArgs`：
+
 - `--resume` → `extraArgs.resume = values.run ?? true`
 - `--restart` → `extraArgs.restart = true`
 - `--stop` → `extraArgs.stop = true`
@@ -359,6 +380,7 @@ run:        { type: "string" },
 **变更位置**：`packages/cli/src/json-output.ts` → `outputText()`
 
 当 `result.actionRequired` 存在时，打印：
+
 ```
 Action Required: <type>
 Task: <taskId>
@@ -406,6 +428,7 @@ auto --status      查看 auto run 状态
 ### 7.2 集成测试补齐
 
 重点覆盖：
+
 1. `init → auto → build next → build complete → auto --resume → archive` 端到端
 2. Schema 迁移幂等性
 3. CLI golden output 测试
@@ -440,22 +463,22 @@ auto --status      查看 auto run 状态
 
 ## 9. 验收摘要
 
-| AC | 描述 | Milestone |
-|----|------|-----------|
-| AC-001 | 不新增 `loop` 命令 | M3 |
-| AC-002-005 | Auto 作为唯一 Loop 入口，可从各阶段推进 | M3 |
-| AC-006-008 | `build next` 返回 BUILD_WAITING_AGENT，重复不重复分配 | M1 |
-| AC-009 | `auto --resume` 在等待 Agent 时返回同一 handoff | M4 |
-| AC-010-014 | `build complete` 安全校验 | M2 |
-| AC-015-016 | 任务完成后正确切换到 BUILD_READY / PLAN_READY | M1 |
-| AC-017-018 | design/plan unchanged 状态收敛 | M1 |
-| AC-019 | 文本输出显示 actionRequired | M4 |
-| AC-020 | PLAN_READY 的 next 为 `sdd build next` | M1 |
-| AC-021 | codebase 信息从 state 读取 | M2 |
-| AC-022-024 | LoopStep / Event 记录 | M3 |
-| AC-025-027 | `auto --events/--status` 和 `status --loop` | M4 |
-| AC-028-030 | verify/review 失败后 auto 停止；archive 成功完成 run | M4 |
-| AC-031 | `auto --stop` 不破坏 change | M4 |
-| AC-032 | Schema 迁移幂等 | M5 |
-| AC-033 | 旧 BUILDING 等待状态迁移 | M1 |
-| AC-034 | v2 result 行为明确 | M5 |
+| AC         | 描述                                                  | Milestone |
+| ---------- | ----------------------------------------------------- | --------- |
+| AC-001     | 不新增 `loop` 命令                                    | M3        |
+| AC-002-005 | Auto 作为唯一 Loop 入口，可从各阶段推进               | M3        |
+| AC-006-008 | `build next` 返回 BUILD_WAITING_AGENT，重复不重复分配 | M1        |
+| AC-009     | `auto --resume` 在等待 Agent 时返回同一 handoff       | M4        |
+| AC-010-014 | `build complete` 安全校验                             | M2        |
+| AC-015-016 | 任务完成后正确切换到 BUILD_READY / PLAN_READY         | M1        |
+| AC-017-018 | design/plan unchanged 状态收敛                        | M1        |
+| AC-019     | 文本输出显示 actionRequired                           | M4        |
+| AC-020     | PLAN_READY 的 next 为 `sdd build next`                | M1        |
+| AC-021     | codebase 信息从 state 读取                            | M2        |
+| AC-022-024 | LoopStep / Event 记录                                 | M3        |
+| AC-025-027 | `auto --events/--status` 和 `status --loop`           | M4        |
+| AC-028-030 | verify/review 失败后 auto 停止；archive 成功完成 run  | M4        |
+| AC-031     | `auto --stop` 不破坏 change                           | M4        |
+| AC-032     | Schema 迁移幂等                                       | M5        |
+| AC-033     | 旧 BUILDING 等待状态迁移                              | M1        |
+| AC-034     | v2 result 行为明确                                    | M5        |

@@ -24,9 +24,11 @@
 ### Task 1.1: 新增 BUILD_WAITING_AGENT Phase 到 contracts
 
 **Files:**
+
 - Modify: `packages/core/src/contracts.ts`
 
 **Interfaces:**
+
 - Consumes: 现有 `PHASES` 数组
 - Produces: `PHASES` 包含 `"BUILD_WAITING_AGENT"`，`Phase` 类型自动扩展
 
@@ -48,7 +50,7 @@ export const PHASES = [
   "PLANNING",
   "PLAN_READY",
   "BUILDING",
-  "BUILD_WAITING_AGENT",  // ← 新增
+  "BUILD_WAITING_AGENT", // ← 新增
   "BUILD_READY",
   "VERIFYING",
   "VERIFY_READY",
@@ -79,9 +81,11 @@ git commit -m "feat: contracts PHASES 新增 BUILD_WAITING_AGENT 阶段"
 ### Task 1.2: 修改 build next 返回 BUILD_WAITING_AGENT
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildNextTask 函数)
 
 **Interfaces:**
+
 - Consumes: `StateStore`, `BUILD_WAITING_AGENT` phase
 - Produces: `buildNextTask()` 返回 `state: "BUILD_WAITING_AGENT"`，写入 `activeLoop.waiting`
 
@@ -90,6 +94,7 @@ git commit -m "feat: contracts PHASES 新增 BUILD_WAITING_AGENT 阶段"
 定位到 `packages/core/src/commands/build.ts` 的 `buildNextTask()` 函数中 `await new StateStore(root).update(...)` 调用（约第 745 行）。
 
 当前代码：
+
 ```ts
 await new StateStore(root).update((current) => ({
   ...current,
@@ -103,6 +108,7 @@ await new StateStore(root).update((current) => ({
 ```
 
 替换为：
+
 ```ts
 await new StateStore(root).update((current) => ({
   ...current,
@@ -112,18 +118,19 @@ await new StateStore(root).update((current) => ({
   lastError: null,
   suggestedCommand: "sdd build complete",
   tasks: { ...current.tasks, [nextTask.id]: "BUILDING" },
-  activeLoop: current.activeLoop !== null && typeof current.activeLoop === "object"
-    ? {
-        ...(current.activeLoop as Record<string, unknown>),
-        status: "WAITING_AGENT",
-        waiting: {
-          reason: "AGENT_TASK_EXECUTION",
-          taskId: nextTask.id,
-          resultFile,
-          since: new Date().toISOString(),
-        },
-      }
-    : current.activeLoop,
+  activeLoop:
+    current.activeLoop !== null && typeof current.activeLoop === "object"
+      ? {
+          ...(current.activeLoop as Record<string, unknown>),
+          status: "WAITING_AGENT",
+          waiting: {
+            reason: "AGENT_TASK_EXECUTION",
+            taskId: nextTask.id,
+            resultFile,
+            since: new Date().toISOString(),
+          },
+        }
+      : current.activeLoop,
 }));
 ```
 
@@ -134,7 +141,7 @@ await new StateStore(root).update((current) => ({
 ```ts
 return {
   ok: true,
-  state: "BUILD_WAITING_AGENT",  // 从 "BUILDING" 改为 "BUILD_WAITING_AGENT"
+  state: "BUILD_WAITING_AGENT", // 从 "BUILDING" 改为 "BUILD_WAITING_AGENT"
   exitCode: 0,
   actionRequired,
   next: "sdd build complete",
@@ -146,6 +153,7 @@ return {
 ```bash
 npm run typecheck
 ```
+
 Expected: PASS，无类型错误。
 
 - [ ] **Step 4: 更新 build.test.ts 中相关断言**
@@ -157,6 +165,7 @@ Expected: PASS，无类型错误。
 ```bash
 npm test
 ```
+
 Expected: 全部通过。
 
 - [ ] **Step 6: 提交**
@@ -171,9 +180,11 @@ git commit -m "feat: build next 返回 BUILD_WAITING_AGENT 状态，写入 activ
 ### Task 1.3: 重复 build next 不重复分配任务
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildNextTask 函数开头)
 
 **Interfaces:**
+
 - Consumes: 现有 `buildNextTask()` 逻辑
 - Produces: 当处于 BUILD_WAITING_AGENT 时返回同一 handoff
 
@@ -198,9 +209,18 @@ if (state.currentPhase === "BUILD_WAITING_AGENT") {
     if (task) {
       const contextPackPath = `.sdd/context-packs/${changeId}/${existingTaskId}.md`;
       // 确保 result 目录存在
-      await mkdir(join(root, ".sdd", "runs", state.currentRunId ?? "unknown-run", "tasks"), {
-        recursive: true,
-      });
+      await mkdir(
+        join(
+          root,
+          ".sdd",
+          "runs",
+          state.currentRunId ?? "unknown-run",
+          "tasks",
+        ),
+        {
+          recursive: true,
+        },
+      );
       const actionRequired: AgentActionRequired = {
         type: "AGENT_TASK_EXECUTION",
         taskId: existingTaskId,
@@ -216,9 +236,10 @@ if (state.currentPhase === "BUILD_WAITING_AGENT") {
           }) ?? [],
         resultFile: existingResultFile,
         codebase: {
-          provider: state.codebaseProvider === "codebase-memory-mcp"
-            ? "codebase-memory-mcp" as const
-            : "fallback-file-scan" as const,
+          provider:
+            state.codebaseProvider === "codebase-memory-mcp"
+              ? ("codebase-memory-mcp" as const)
+              : ("fallback-file-scan" as const),
           degraded: state.degraded,
         },
       };
@@ -243,6 +264,7 @@ npm run typecheck
 - [ ] **Step 3: 编写测试：重复 build next 返回一致 handoff**
 
 在 `packages/core/test/build.test.ts` 中新增测试：
+
 ```ts
 it("重复 build next 不重复分配任务，返回同一 taskId/contextPack/resultFile", async () => {
   // 设置状态为 PLAN_READY + tasks.json 包含待执行任务
@@ -269,9 +291,11 @@ git commit -m "feat: build next 在 BUILD_WAITING_AGENT 时返回同一 handoff�
 ### Task 1.4: 修改 build complete 完成后状态
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildCompleteTask 末尾 state.update)
 
 **Interfaces:**
+
 - Consumes: 当前 `buildCompleteTask()` 状态更新逻辑
 - Produces: 还有任务→PLAN_READY，全部完成→BUILD_READY，清除 activeLoop.waiting
 
@@ -280,6 +304,7 @@ git commit -m "feat: build next 在 BUILD_WAITING_AGENT 时返回同一 handoff�
 定位到 `buildCompleteTask()` 末尾的 `store.update()` 调用（约第 986 行）。
 
 当前代码：
+
 ```ts
 await store.update((current) => ({
   ...current,
@@ -296,6 +321,7 @@ await store.update((current) => ({
 ```
 
 替换为：
+
 ```ts
 await store.update((current) => ({
   ...current,
@@ -309,14 +335,15 @@ await store.update((current) => ({
   lastError: null,
   suggestedCommand: allDone ? "sdd verify" : "sdd build next",
   // 清除 activeLoop.waiting
-  activeLoop: current.activeLoop !== null && typeof current.activeLoop === "object"
-    ? (() => {
-        const loop = { ...(current.activeLoop as Record<string, unknown>) };
-        loop.status = "RUNNING";
-        delete loop.waiting;
-        return loop;
-      })()
-    : current.activeLoop,
+  activeLoop:
+    current.activeLoop !== null && typeof current.activeLoop === "object"
+      ? (() => {
+          const loop = { ...(current.activeLoop as Record<string, unknown>) };
+          loop.status = "RUNNING";
+          delete loop.waiting;
+          return loop;
+        })()
+      : current.activeLoop,
 }));
 ```
 
@@ -356,10 +383,12 @@ git commit -m "fix: build complete 完成后正确切换到 PLAN_READY 而非 BU
 ### Task 1.5: 修复 design/plan unchanged 状态收敛
 
 **Files:**
+
 - Modify: `packages/core/src/commands/design.ts` (unchanged 早退逻辑)
 - Modify: `packages/core/src/commands/plan.ts` (unchanged 早退逻辑)
 
 **Interfaces:**
+
 - Consumes: 现有 `runDesign()` / `runPlan()` unchanged 分支
 - Produces: unchanged 时写回 state.json，不再不一致
 
@@ -368,6 +397,7 @@ git commit -m "fix: build complete 完成后正确切换到 PLAN_READY 而非 BU
 定位到 `packages/core/src/commands/design.ts` 第 103-112 行。
 
 当前代码：
+
 ```ts
 if (unchanged) {
   return {
@@ -382,6 +412,7 @@ if (unchanged) {
 ```
 
 替换为：
+
 ```ts
 if (unchanged) {
   await store.update((current) => ({
@@ -407,6 +438,7 @@ if (unchanged) {
 定位到 `packages/core/src/commands/plan.ts` 第 124-133 行。
 
 当前代码：
+
 ```ts
 if (unchanged) {
   return {
@@ -421,6 +453,7 @@ if (unchanged) {
 ```
 
 替换为：
+
 ```ts
 if (unchanged) {
   await store.update((current) => ({
@@ -483,6 +516,7 @@ git commit -m "fix: design/plan unchanged 时写回收敛后的 state，消除�
 ### Task 1.6: 修复 PLAN_READY 的 status next
 
 **Files:**
+
 - Modify: `packages/core/src/commands/status.ts` (NEXT_BY_PHASE)
 - Modify: `packages/core/src/state/state-store.ts` (suggestedCommand 函数)
 
@@ -530,6 +564,7 @@ git commit -m "fix: PLAN_READY 的 next 从 sdd build 改为 sdd build next"
 ### Task 1.7: Schema 迁移 1.2.0 → 1.3.0
 
 **Files:**
+
 - Modify: `packages/core/src/state/schema-migration.ts`
 - Modify: `packages/core/src/state/state-store.ts` (read 方法增加 1.2.0→1.3.0 迁移)
 
@@ -672,9 +707,11 @@ git commit -m "feat: schema 1.2.0→1.3.0 迁移，支持旧 BUILDING 等待状�
 ### Task 2.1: build complete taskId 一致性校验
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildCompleteTask)
 
 **Interfaces:**
+
 - Consumes: `buildCompleteTask` 现有逻辑
 - Produces: taskId 不一致时返回错误
 
@@ -724,6 +761,7 @@ git commit -m "fix: build complete 校验 result.taskId 与 --task 一致"
 ### Task 2.2: build complete 当前等待任务校验
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildCompleteTask)
 
 - [ ] **Step 1: 增加等待任务校验**
@@ -771,6 +809,7 @@ git commit -m "fix: build complete 校验只能 complete 当前等待任务"
 ### Task 2.3: build complete 改用 validateTaskFiles
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildCompleteTask)
 
 - [ ] **Step 1: 删除旧 out-of-scope 逻辑，改用 validateTaskFiles**
@@ -844,6 +883,7 @@ git commit -m "fix: build complete 统一使用 validateTaskFiles 进行文件�
 ### Task 2.4: TDD evidence 命令安全校验加强
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildCompleteTask)
 
 - [ ] **Step 1: 在 evidence 校验中增加命令安全检查**
@@ -874,6 +914,7 @@ if (blockedEvidence) {
 - [ ] **Step 2: 确认 isCommandAllowed 已 import**
 
 文件顶部已 import（第 26 行 `isCommandAllowed` 来自 `shell-policy`？），如果没有则新增 import：
+
 ```ts
 import { isCommandAllowed } from "../security/shell-policy.js";
 ```
@@ -902,6 +943,7 @@ git commit -m "fix: build complete 加强 TDD evidence/verification 命令安全
 ### Task 2.5: AgentActionRequired.codebase 从 state 读取
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildNextTask)
 
 - [ ] **Step 1: 修改 codebase 构建逻辑**
@@ -949,6 +991,7 @@ git commit -m "fix: AgentActionRequired.codebase 从 state 读取而非硬编码
 ### Task 3.1: 升级 Loop 数据模型到 1.3.0
 
 **Files:**
+
 - Modify: `packages/core/src/loop/model.ts`
 - Modify: `packages/core/src/loop/loop-spec.ts`
 
@@ -975,7 +1018,13 @@ export type LoopDecisionPolicy = "STRICT" | "BALANCED";
 export interface ActiveLoop {
   loopId: string;
   runId: string;
-  status: "RUNNING" | "WAITING_AGENT" | "PAUSED" | "FAILED" | "SUCCEEDED" | "ABORTED";
+  status:
+    | "RUNNING"
+    | "WAITING_AGENT"
+    | "PAUSED"
+    | "FAILED"
+    | "SUCCEEDED"
+    | "ABORTED";
   waiting?: {
     reason: "AGENT_TASK_EXECUTION" | "CLARIFICATION" | "HUMAN_REVIEW";
     taskId?: string;
@@ -988,11 +1037,23 @@ export interface ActiveLoop {
 // LoopStep
 export interface LoopStep {
   step: number;
-  kind: "COMMAND" | "AGENT_HANDOFF" | "DECISION" | "VERIFY" | "REVIEW" | "ARCHIVE";
+  kind:
+    | "COMMAND"
+    | "AGENT_HANDOFF"
+    | "DECISION"
+    | "VERIFY"
+    | "REVIEW"
+    | "ARCHIVE";
   command: string;
   phaseBefore: string;
   phaseAfter?: string;
-  status: "SUCCEEDED" | "FAILED" | "BLOCKED" | "SKIPPED" | "PAUSED" | "WAITING_AGENT";
+  status:
+    | "SUCCEEDED"
+    | "FAILED"
+    | "BLOCKED"
+    | "SKIPPED"
+    | "PAUSED"
+    | "WAITING_AGENT";
   decision?: LoopDecision;
   actionRequired?: import("../contracts.js").AgentActionRequired;
   error?: import("../contracts.js").CommandError;
@@ -1026,7 +1087,15 @@ export interface LoopRun {
   runId: string;
   loopId: string;
   changeId?: string;
-  status: "PENDING" | "RUNNING" | "WAITING_AGENT" | "PAUSED" | "SUCCEEDED" | "FAILED" | "ABORTED" | "ARCHIVED";
+  status:
+    | "PENDING"
+    | "RUNNING"
+    | "WAITING_AGENT"
+    | "PAUSED"
+    | "SUCCEEDED"
+    | "FAILED"
+    | "ABORTED"
+    | "ARCHIVED";
   startedAt: string;
   updatedAt: string;
   endedAt?: string;
@@ -1086,6 +1155,7 @@ git commit -m "feat: Loop 数据模型升级到 1.3.0，新增 decision/waiting/
 ### Task 3.2: 新增 LoopDecisionEngine
 
 **Files:**
+
 - Create: `packages/core/src/loop/loop-decision.ts`
 - Create: `packages/core/test/loop-decision.test.ts`
 
@@ -1099,12 +1169,12 @@ import type { LoopDecision } from "./model.js";
  * DecisionEngine：纯函数，根据 CommandResult 和当前 Phase 决策下一步动作。
  * 规则见 docs/四期需求文档.md §11.2
  */
-export function decide(input: {
-  result: CommandResult;
-}): LoopDecision {
+export function decide(input: { result: CommandResult }): LoopDecision {
   if (!input.result.ok) {
-    if (input.result.error?.code === "E_VERIFY_FAILED") return "PAUSE_FOR_HUMAN";
-    if (input.result.error?.code === "E_REVIEW_FAILED") return "PAUSE_FOR_HUMAN";
+    if (input.result.error?.code === "E_VERIFY_FAILED")
+      return "PAUSE_FOR_HUMAN";
+    if (input.result.error?.code === "E_REVIEW_FAILED")
+      return "PAUSE_FOR_HUMAN";
     if (input.result.error?.code === "E_SECURITY_BLOCKED") return "FAIL";
     if (input.result.error?.code === "E_STATE_CORRUPTED") return "FAIL";
     return "FAIL";
@@ -1114,7 +1184,8 @@ export function decide(input: {
 
   if (state === "CLARIFYING") return "PAUSE_FOR_CLARIFICATION";
   if (state === "BUILD_WAITING_AGENT") return "PAUSE_FOR_AGENT";
-  if (input.result.actionRequired?.type === "AGENT_TASK_EXECUTION") return "PAUSE_FOR_AGENT";
+  if (input.result.actionRequired?.type === "AGENT_TASK_EXECUTION")
+    return "PAUSE_FOR_AGENT";
 
   if (state === "BUILD_READY") return "CONTINUE";
   if (state === "VERIFY_READY") return "CONTINUE";
@@ -1135,38 +1206,85 @@ import { decide } from "../src/loop/loop-decision.js";
 
 describe("DecisionEngine", () => {
   it("ok=false → FAIL", () => {
-    expect(decide({ result: { ok: false, state: "PLAN_READY", exitCode: 1 } })).toBe("FAIL");
+    expect(
+      decide({ result: { ok: false, state: "PLAN_READY", exitCode: 1 } }),
+    ).toBe("FAIL");
   });
 
   it("CLARIFYING → PAUSE_FOR_CLARIFICATION", () => {
-    expect(decide({ result: { ok: true, state: "CLARIFYING", exitCode: 0 } })).toBe("PAUSE_FOR_CLARIFICATION");
+    expect(
+      decide({ result: { ok: true, state: "CLARIFYING", exitCode: 0 } }),
+    ).toBe("PAUSE_FOR_CLARIFICATION");
   });
 
   it("BUILD_WAITING_AGENT → PAUSE_FOR_AGENT", () => {
-    expect(decide({ result: { ok: true, state: "BUILD_WAITING_AGENT", exitCode: 0 } })).toBe("PAUSE_FOR_AGENT");
+    expect(
+      decide({
+        result: { ok: true, state: "BUILD_WAITING_AGENT", exitCode: 0 },
+      }),
+    ).toBe("PAUSE_FOR_AGENT");
   });
 
   it("actionRequired AGENT_TASK_EXECUTION → PAUSE_FOR_AGENT", () => {
-    expect(decide({ result: {
-      ok: true, state: "PLAN_READY", exitCode: 0,
-      actionRequired: { type: "AGENT_TASK_EXECUTION", taskId: "T-1", changeId: "c1", contextPack: "", allowedFiles: [], expectedNewFiles: [], forbiddenFiles: [], verification: [], resultFile: "", codebase: { provider: "fallback-file-scan", degraded: true } },
-    } })).toBe("PAUSE_FOR_AGENT");
+    expect(
+      decide({
+        result: {
+          ok: true,
+          state: "PLAN_READY",
+          exitCode: 0,
+          actionRequired: {
+            type: "AGENT_TASK_EXECUTION",
+            taskId: "T-1",
+            changeId: "c1",
+            contextPack: "",
+            allowedFiles: [],
+            expectedNewFiles: [],
+            forbiddenFiles: [],
+            verification: [],
+            resultFile: "",
+            codebase: { provider: "fallback-file-scan", degraded: true },
+          },
+        },
+      }),
+    ).toBe("PAUSE_FOR_AGENT");
   });
 
   it("BUILD_READY → CONTINUE", () => {
-    expect(decide({ result: { ok: true, state: "BUILD_READY", exitCode: 0 } })).toBe("CONTINUE");
+    expect(
+      decide({ result: { ok: true, state: "BUILD_READY", exitCode: 0 } }),
+    ).toBe("CONTINUE");
   });
 
   it("ARCHIVED → DONE", () => {
-    expect(decide({ result: { ok: true, state: "ARCHIVED", exitCode: 0 } })).toBe("DONE");
+    expect(
+      decide({ result: { ok: true, state: "ARCHIVED", exitCode: 0 } }),
+    ).toBe("DONE");
   });
 
   it("E_VERIFY_FAILED → PAUSE_FOR_HUMAN", () => {
-    expect(decide({ result: { ok: false, state: "BUILD_READY", exitCode: 7, error: { code: "E_VERIFY_FAILED", message: "" } } })).toBe("PAUSE_FOR_HUMAN");
+    expect(
+      decide({
+        result: {
+          ok: false,
+          state: "BUILD_READY",
+          exitCode: 7,
+          error: { code: "E_VERIFY_FAILED", message: "" },
+        },
+      }),
+    ).toBe("PAUSE_FOR_HUMAN");
   });
 
   it("E_REVIEW_FAILED → PAUSE_FOR_HUMAN", () => {
-    expect(decide({ result: { ok: false, state: "VERIFY_READY", exitCode: 8, error: { code: "E_REVIEW_FAILED", message: "" } } })).toBe("PAUSE_FOR_HUMAN");
+    expect(
+      decide({
+        result: {
+          ok: false,
+          state: "VERIFY_READY",
+          exitCode: 8,
+          error: { code: "E_REVIEW_FAILED", message: "" },
+        },
+      }),
+    ).toBe("PAUSE_FOR_HUMAN");
   });
 });
 ```
@@ -1191,6 +1309,7 @@ git commit -m "feat: 新增 LoopDecisionEngine 纯函数，实现 7 种决策规
 ### Task 3.3: 新增 LoopEventStore
 
 **Files:**
+
 - Create: `packages/core/src/loop/loop-events.ts`
 - Create: `packages/core/test/loop-events.test.ts`
 
@@ -1239,7 +1358,10 @@ export class LoopEventStore {
     this.eventsDirectory = join(root, ".sdd", "loop", "events");
   }
 
-  async write(runId: string, event: Omit<LoopEvent, "eventId" | "schemaVersion" | "createdAt">): Promise<void> {
+  async write(
+    runId: string,
+    event: Omit<LoopEvent, "eventId" | "schemaVersion" | "createdAt">,
+  ): Promise<void> {
     await mkdir(this.eventsDirectory, { recursive: true });
     const fullEvent: LoopEvent = {
       schemaVersion: "1.0.0",
@@ -1294,8 +1416,17 @@ describe("LoopEventStore", () => {
     const root = await mkdtemp(join(tmpdir(), "sdd-events-"));
     roots.push(root);
     const store = new LoopEventStore(root);
-    await store.write("run-1", { loopId: "auto-default", runId: "run-1", type: "LOOP_STARTED" });
-    await store.write("run-1", { loopId: "auto-default", runId: "run-1", type: "COMMAND_STARTED", command: "sdd new" });
+    await store.write("run-1", {
+      loopId: "auto-default",
+      runId: "run-1",
+      type: "LOOP_STARTED",
+    });
+    await store.write("run-1", {
+      loopId: "auto-default",
+      runId: "run-1",
+      type: "COMMAND_STARTED",
+      command: "sdd new",
+    });
     const events = await store.read("run-1");
     expect(events).toHaveLength(2);
     expect(events[0]!.type).toBe("LOOP_STARTED");
@@ -1307,7 +1438,11 @@ describe("LoopEventStore", () => {
     roots.push(root);
     const store = new LoopEventStore(root);
     for (const type of ["a", "b", "c"] as const) {
-      await store.write("run-1", { loopId: "auto-default", runId: "run-1", type: "LOOP_STARTED" });
+      await store.write("run-1", {
+        loopId: "auto-default",
+        runId: "run-1",
+        type: "LOOP_STARTED",
+      });
     }
     const events = await store.read("run-1", { tail: 2 });
     expect(events).toHaveLength(2);
@@ -1342,6 +1477,7 @@ git commit -m "feat: 新增 LoopEventStore，支持 JSONL 事件写入和读取�
 ### Task 3.4: 新增 LoopEngine 主类并简化 Core
 
 **Files:**
+
 - Create: `packages/core/src/loop/loop-engine.ts`
 - Modify: `packages/core/src/core.ts` (runAuto → 薄封装)
 - Modify: `packages/core/src/commands/auto.ts` (prepareAutoLoop 保留为内部方法，由 LoopEngine 调用)
@@ -1349,6 +1485,7 @@ git commit -m "feat: 新增 LoopEventStore，支持 JSONL 事件写入和读取�
 - [ ] **Step 1: 创建 loop-engine.ts**
 
 完整的 LoopEngine 类，包含：
+
 - `run()` 入口（分发 resume/restart/stop/events/status/runAuto）
 - `runAuto()` 核心循环（迁移自 Core.runAuto()，增加 DecisionEngine + EventStore）
 - `resume()` 恢复逻辑
@@ -1360,7 +1497,13 @@ git commit -m "feat: 新增 LoopEventStore，支持 JSONL 事件写入和读取�
 ```ts
 import { SddError } from "../errors.js";
 import type { LoopDecision } from "./model.js";
-import type { CommandRequest, CommandResult, CommandName, Phase, AgentActionRequired } from "../contracts.js";
+import type {
+  CommandRequest,
+  CommandResult,
+  CommandName,
+  Phase,
+  AgentActionRequired,
+} from "../contracts.js";
 import { COMMANDS } from "../contracts.js";
 import { StateStore } from "../state/state-store.js";
 import { LoopStore } from "./loop-store.js";
@@ -1392,7 +1535,10 @@ export class LoopEngine {
     const args = request.args ?? {};
 
     if (args.events === true) {
-      return this.getEvents(request, typeof args.tail === "number" ? args.tail : undefined);
+      return this.getEvents(
+        request,
+        typeof args.tail === "number" ? args.tail : undefined,
+      );
     }
     if (args.loopStatus === true) {
       return this.getLoopStatus(request);
@@ -1412,7 +1558,11 @@ export class LoopEngine {
   private async runAuto(request: CommandRequest): Promise<CommandResult> {
     let status = await runStatus(this.root);
     if (status.state === "NOT_INITIALIZED") {
-      throw new SddError("E_NOT_INITIALIZED", "请先运行 sdd init 再执行 sdd auto", "sdd init");
+      throw new SddError(
+        "E_NOT_INITIALIZED",
+        "请先运行 sdd init 再执行 sdd auto",
+        "sdd init",
+      );
     }
 
     const loop = await this.prepareLoop(request.args);
@@ -1427,27 +1577,35 @@ export class LoopEngine {
       if (status.state === "ARCHIVED") {
         await this.finalizeLoop(loop.runId, "ARCHIVED");
         await this.events.write(loop.runId, {
-          loopId: loop.loopId, runId: loop.runId,
-          type: "LOOP_ARCHIVED", phase: "ARCHIVED",
+          loopId: loop.loopId,
+          runId: loop.runId,
+          type: "LOOP_ARCHIVED",
+          phase: "ARCHIVED",
         });
         return status;
       }
 
       const command = this.autoCommand(status, request.args);
       if (command === undefined) {
-        await this.finalizeLoop(loop.runId,
-          status.state === "CLARIFYING" ? "PAUSED" : "RUNNING");
+        await this.finalizeLoop(
+          loop.runId,
+          status.state === "CLARIFYING" ? "PAUSED" : "RUNNING",
+        );
         return status;
       }
 
       const startedAt = new Date().toISOString();
-      const effectiveArgs = command === "build"
-        ? { ...request.args, subcommand: "next" }
-        : request.args;
+      const effectiveArgs =
+        command === "build"
+          ? { ...request.args, subcommand: "next" }
+          : request.args;
 
       await this.events.write(loop.runId, {
-        loopId: loop.loopId, runId: loop.runId,
-        type: "COMMAND_STARTED", phase: status.state, command,
+        loopId: loop.loopId,
+        runId: loop.runId,
+        type: "COMMAND_STARTED",
+        phase: status.state,
+        command,
       });
 
       const result = await this.execute({
@@ -1458,14 +1616,20 @@ export class LoopEngine {
       });
 
       await this.events.write(loop.runId, {
-        loopId: loop.loopId, runId: loop.runId,
-        type: "COMMAND_FINISHED", phase: result.state, command,
+        loopId: loop.loopId,
+        runId: loop.runId,
+        type: "COMMAND_FINISHED",
+        phase: result.state,
+        command,
       });
 
       const decision = decide({ result });
       await this.events.write(loop.runId, {
-        loopId: loop.loopId, runId: loop.runId,
-        type: "DECISION_MADE", decision, phase: result.state,
+        loopId: loop.loopId,
+        runId: loop.runId,
+        type: "DECISION_MADE",
+        decision,
+        phase: result.state,
       });
 
       await this.recordStep(loop.runId, {
@@ -1473,24 +1637,40 @@ export class LoopEngine {
         command,
         phaseBefore: status.state,
         phaseAfter: result.state,
-        status: !result.ok ? "FAILED"
-          : decision === "PAUSE_FOR_AGENT" ? "WAITING_AGENT"
-          : decision === "DONE" ? "SUCCEEDED"
-          : "SUCCEEDED",
+        status: !result.ok
+          ? "FAILED"
+          : decision === "PAUSE_FOR_AGENT"
+            ? "WAITING_AGENT"
+            : decision === "DONE"
+              ? "SUCCEEDED"
+              : "SUCCEEDED",
         decision,
         actionRequired: result.actionRequired,
         startedAt,
         endedAt: new Date().toISOString(),
       });
 
-      if (!result.ok || decision === "PAUSE_FOR_AGENT" || decision === "PAUSE_FOR_CLARIFICATION" || decision === "PAUSE_FOR_HUMAN" || decision === "FAIL" || decision === "DONE") {
-        const finalStatus = decision === "DONE" ? "ARCHIVED"
-          : decision === "PAUSE_FOR_AGENT" || decision === "PAUSE_FOR_CLARIFICATION" || decision === "PAUSE_FOR_HUMAN" ? "PAUSED"
-          : "FAILED";
+      if (
+        !result.ok ||
+        decision === "PAUSE_FOR_AGENT" ||
+        decision === "PAUSE_FOR_CLARIFICATION" ||
+        decision === "PAUSE_FOR_HUMAN" ||
+        decision === "FAIL" ||
+        decision === "DONE"
+      ) {
+        const finalStatus =
+          decision === "DONE"
+            ? "ARCHIVED"
+            : decision === "PAUSE_FOR_AGENT" ||
+                decision === "PAUSE_FOR_CLARIFICATION" ||
+                decision === "PAUSE_FOR_HUMAN"
+              ? "PAUSED"
+              : "FAILED";
 
         if (decision === "PAUSE_FOR_AGENT") {
           await this.events.write(loop.runId, {
-            loopId: loop.loopId, runId: loop.runId,
+            loopId: loop.loopId,
+            runId: loop.runId,
             type: "LOOP_PAUSED",
           });
         }
@@ -1502,12 +1682,16 @@ export class LoopEngine {
       status = result;
     }
 
-    throw new SddError("E_STATE_CORRUPTED", "auto 流程超过了允许的最大阶段推进次数");
+    throw new SddError(
+      "E_STATE_CORRUPTED",
+      "auto 流程超过了允许的最大阶段推进次数",
+    );
   }
 
   async resumeAuto(request: CommandRequest): Promise<CommandResult> {
     const args = request.args ?? {};
-    const resumeRunId = typeof args.resume === "string" ? args.resume : undefined;
+    const resumeRunId =
+      typeof args.resume === "string" ? args.resume : undefined;
     const state = await this.store.read();
 
     if (resumeRunId !== undefined) {
@@ -1531,7 +1715,11 @@ export class LoopEngine {
   async restartAuto(request: CommandRequest): Promise<CommandResult> {
     const state = await this.store.read();
     if (state.activeLoop !== null) {
-      const activeLoop = state.activeLoop as { loopId: string; runId: string; status: string };
+      const activeLoop = state.activeLoop as {
+        loopId: string;
+        runId: string;
+        status: string;
+      };
       const existing = await this.loops.readRun(activeLoop.runId);
       await this.loops.writeRun({
         ...existing,
@@ -1539,16 +1727,18 @@ export class LoopEngine {
         endedAt: new Date().toISOString(),
       });
       await this.events.write(activeLoop.runId, {
-        loopId: activeLoop.loopId, runId: activeLoop.runId,
+        loopId: activeLoop.loopId,
+        runId: activeLoop.runId,
         type: "LOOP_STOPPED",
       });
     }
 
     const spec = await this.readLoopSpec();
     const runId = `run-${Date.now()}`;
-    const loopId = state.activeLoop !== null && typeof state.activeLoop === "object"
-      ? (state.activeLoop as { loopId: string }).loopId
-      : spec.loopId;
+    const loopId =
+      state.activeLoop !== null && typeof state.activeLoop === "object"
+        ? (state.activeLoop as { loopId: string }).loopId
+        : spec.loopId;
 
     await this.loops.writeRun({
       schemaVersion: "1.3.0",
@@ -1568,19 +1758,33 @@ export class LoopEngine {
     }));
 
     await this.events.write(runId, {
-      loopId, runId, type: "LOOP_RESTARTED",
+      loopId,
+      runId,
+      type: "LOOP_RESTARTED",
     });
 
-    return this.runAuto({ ...request, args: { ...request.args, restart: undefined } });
+    return this.runAuto({
+      ...request,
+      args: { ...request.args, restart: undefined },
+    });
   }
 
   async stopAuto(request: CommandRequest): Promise<CommandResult> {
     const state = await this.store.read();
     if (state.activeLoop === null || typeof state.activeLoop !== "object") {
-      return { ok: false, state: "FAILED", exitCode: 3, error: { code: "E_INVALID_PHASE_COMMAND", message: "没有 active loop" } };
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 3,
+        error: { code: "E_INVALID_PHASE_COMMAND", message: "没有 active loop" },
+      };
     }
 
-    const activeLoop = state.activeLoop as { loopId: string; runId: string; status: string };
+    const activeLoop = state.activeLoop as {
+      loopId: string;
+      runId: string;
+      status: string;
+    };
     const run = await this.loops.readRun(activeLoop.runId);
     await this.loops.writeRun({
       ...run,
@@ -1595,31 +1799,61 @@ export class LoopEngine {
     }));
 
     await this.events.write(activeLoop.runId, {
-      loopId: activeLoop.loopId, runId: activeLoop.runId,
+      loopId: activeLoop.loopId,
+      runId: activeLoop.runId,
       type: "LOOP_STOPPED",
     });
 
-    return { ok: true, state: "FAILED", exitCode: 0, data: { loopStopped: activeLoop.runId } };
+    return {
+      ok: true,
+      state: "FAILED",
+      exitCode: 0,
+      data: { loopStopped: activeLoop.runId },
+    };
   }
 
-  async getEvents(request: CommandRequest, tail?: number): Promise<CommandResult> {
+  async getEvents(
+    request: CommandRequest,
+    tail?: number,
+  ): Promise<CommandResult> {
     const state = await this.store.read();
     if (state.activeLoop === null || typeof state.activeLoop !== "object") {
-      return { ok: true, state: state.currentPhase, exitCode: 0, data: { events: [] } };
+      return {
+        ok: true,
+        state: state.currentPhase,
+        exitCode: 0,
+        data: { events: [] },
+      };
     }
-    const activeLoop = state.activeLoop as { loopId: string; runId: string; status: string };
+    const activeLoop = state.activeLoop as {
+      loopId: string;
+      runId: string;
+      status: string;
+    };
     const events = await this.events.read(activeLoop.runId, { tail });
-    return { ok: true, state: state.currentPhase, exitCode: 0, data: { events } };
+    return {
+      ok: true,
+      state: state.currentPhase,
+      exitCode: 0,
+      data: { events },
+    };
   }
 
   async getLoopStatus(request: CommandRequest): Promise<CommandResult> {
     const state = await this.store.read();
     if (state.activeLoop === null || typeof state.activeLoop !== "object") {
-      return { ok: true, state: state.currentPhase, exitCode: 0, data: { activeLoop: null } };
+      return {
+        ok: true,
+        state: state.currentPhase,
+        exitCode: 0,
+        data: { activeLoop: null },
+      };
     }
     const activeLoop = state.activeLoop as Record<string, unknown>;
     return {
-      ok: true, state: state.currentPhase, exitCode: 0,
+      ok: true,
+      state: state.currentPhase,
+      exitCode: 0,
       data: {
         activeLoop: {
           loopId: activeLoop.loopId,
@@ -1642,13 +1876,18 @@ export class LoopEngine {
       return hasAnswers(args) ? "new" : undefined;
     }
     if (status.state === "FAILED" || status.state === "PAUSED") {
-      const state = status.data as {
-        failedCommand?: string | null;
-        interruptedCommand?: string | null;
-        suggestedCommand?: string | null;
-      } | undefined;
+      const state = status.data as
+        | {
+            failedCommand?: string | null;
+            interruptedCommand?: string | null;
+            suggestedCommand?: string | null;
+          }
+        | undefined;
       return parseCommandName(
-        state?.interruptedCommand ?? state?.failedCommand ?? state?.suggestedCommand ?? status.next,
+        state?.interruptedCommand ??
+          state?.failedCommand ??
+          state?.suggestedCommand ??
+          status.next,
       );
     }
     return COMMAND_BY_PHASE[status.state];
@@ -1657,11 +1896,19 @@ export class LoopEngine {
   private async prepareLoop(args: Record<string, unknown> | undefined) {
     const state = await this.store.read();
     const spec = await this.readLoopSpec();
-    const currentLoop = state.activeLoop !== null && typeof state.activeLoop === "object" && "runId" in state.activeLoop
-      ? (state.activeLoop as { loopId: string; runId: string; status: string })
-      : null;
+    const currentLoop =
+      state.activeLoop !== null &&
+      typeof state.activeLoop === "object" &&
+      "runId" in state.activeLoop
+        ? (state.activeLoop as {
+            loopId: string;
+            runId: string;
+            status: string;
+          })
+        : null;
 
-    const runId = currentLoop?.runId ?? state.currentRunId ?? `run-${Date.now()}`;
+    const runId =
+      currentLoop?.runId ?? state.currentRunId ?? `run-${Date.now()}`;
     const loopId = currentLoop?.loopId ?? spec.loopId;
 
     if (!(await this.loops.hasRun(runId))) {
@@ -1688,42 +1935,54 @@ export class LoopEngine {
     return { loopId, runId, maxSteps: spec.maxSteps };
   }
 
-  private async recordStep(runId: string, step: {
-    kind: "COMMAND" | "AGENT_HANDOFF";
-    command: string;
-    phaseBefore: string;
-    phaseAfter?: string;
-    status: "SUCCEEDED" | "FAILED" | "WAITING_AGENT";
-    decision?: LoopDecision;
-    actionRequired?: AgentActionRequired;
-    startedAt: string;
-    endedAt: string;
-  }) {
+  private async recordStep(
+    runId: string,
+    step: {
+      kind: "COMMAND" | "AGENT_HANDOFF";
+      command: string;
+      phaseBefore: string;
+      phaseAfter?: string;
+      status: "SUCCEEDED" | "FAILED" | "WAITING_AGENT";
+      decision?: LoopDecision;
+      actionRequired?: AgentActionRequired;
+      startedAt: string;
+      endedAt: string;
+    },
+  ) {
     const run = await this.loops.readRun(runId);
     await this.loops.writeRun({
       ...run,
       updatedAt: new Date().toISOString(),
       currentStep: run.steps.length + 1,
       lastDecision: step.decision,
-      steps: [...run.steps, {
-        step: run.steps.length + 1,
-        kind: step.kind,
-        command: step.command,
-        phaseBefore: step.phaseBefore,
-        phaseAfter: step.phaseAfter,
-        status: step.status,
-        decision: step.decision,
-        actionRequired: step.actionRequired,
-        startedAt: step.startedAt,
-        endedAt: step.endedAt,
-      }],
-      status: step.status === "FAILED" ? "FAILED"
-        : step.status === "WAITING_AGENT" ? "WAITING_AGENT"
-        : "RUNNING",
+      steps: [
+        ...run.steps,
+        {
+          step: run.steps.length + 1,
+          kind: step.kind,
+          command: step.command,
+          phaseBefore: step.phaseBefore,
+          phaseAfter: step.phaseAfter,
+          status: step.status,
+          decision: step.decision,
+          actionRequired: step.actionRequired,
+          startedAt: step.startedAt,
+          endedAt: step.endedAt,
+        },
+      ],
+      status:
+        step.status === "FAILED"
+          ? "FAILED"
+          : step.status === "WAITING_AGENT"
+            ? "WAITING_AGENT"
+            : "RUNNING",
     });
   }
 
-  private async finalizeLoop(runId: string, status: "RUNNING" | "PAUSED" | "FAILED" | "ARCHIVED") {
+  private async finalizeLoop(
+    runId: string,
+    status: "RUNNING" | "PAUSED" | "FAILED" | "ARCHIVED",
+  ) {
     const run = await this.loops.readRun(runId);
     await this.loops.writeRun({
       ...run,
@@ -1735,27 +1994,44 @@ export class LoopEngine {
     });
     await this.store.update((current) => ({
       ...current,
-      activeLoop: current.activeLoop === null || typeof current.activeLoop !== "object"
-        ? current.activeLoop
-        : { ...(current.activeLoop as Record<string, unknown>), runId, status: status === "ARCHIVED" ? "SUCCEEDED" : status },
+      activeLoop:
+        current.activeLoop === null || typeof current.activeLoop !== "object"
+          ? current.activeLoop
+          : {
+              ...(current.activeLoop as Record<string, unknown>),
+              runId,
+              status: status === "ARCHIVED" ? "SUCCEEDED" : status,
+            },
     }));
   }
 
   private async readLoopSpec() {
-    try { return await this.loops.readSpec(); }
-    catch { return createDefaultLoopSpec(); }
+    try {
+      return await this.loops.readSpec();
+    } catch {
+      return createDefaultLoopSpec();
+    }
   }
 }
 
 function hasAnswers(args: Record<string, unknown> | undefined): boolean {
   const answers = args?.answers;
-  return answers !== undefined && typeof answers === "object" && answers !== null && Object.keys(answers).length > 0;
+  return (
+    answers !== undefined &&
+    typeof answers === "object" &&
+    answers !== null &&
+    Object.keys(answers).length > 0
+  );
 }
 
-function parseCommandName(input: string | undefined | null): CommandName | undefined {
+function parseCommandName(
+  input: string | undefined | null,
+): CommandName | undefined {
   if (input === undefined || input === null) return undefined;
   const normalized = input.replace(/^\/?sdd[.\s]/, "") as CommandName;
-  return (COMMANDS as readonly string[]).includes(normalized) ? normalized : undefined;
+  return (COMMANDS as readonly string[]).includes(normalized)
+    ? normalized
+    : undefined;
 }
 ```
 
@@ -1776,12 +2052,14 @@ private async runAuto(request: CommandRequest): Promise<CommandResult> {
 ```
 
 import 需要新增：
+
 ```ts
 import { LoopEngine } from "./loop/loop-engine.js";
 import { LoopEventStore } from "./loop/loop-events.js";
 ```
 
 删除不再直接使用的 import：
+
 - `prepareAutoLoop`, `recordAutoStep`, `finalizeAutoLoop`（从 `./commands/auto.js` 的 import）
 - `autoCommand` 函数（Core 内的 private 函数）
 - `hasAnswers`, `parseCommandName`（Core 内的 private 函数）
@@ -1793,6 +2071,7 @@ npm run typecheck && npm test
 ```
 
 需要修复：
+
 - 现有 `auto.ts` 的 prepareAutoLoop/recordAutoStep/finalizeAutoLoop 如果还有外部引用，确认兼容
 - 确保 `auto.test.ts` 中的测试仍然通过（prepareAutoLoop 等的调用链变化）
 
@@ -1810,6 +2089,7 @@ git commit -m "feat: 新增 LoopEngine，Core.runAuto() 改为薄封装"
 ### Task 4.1: CLI 新 flags 解析和路由
 
 **Files:**
+
 - Modify: `packages/cli/src/cli.ts`
 
 - [ ] **Step 1: 新增 parseArgs options**
@@ -1907,6 +2187,7 @@ git commit -m "feat: CLI 新增 --resume/--restart/--stop/--events/--status/--lo
 ### Task 4.2: 文本输出显示 actionRequired
 
 **Files:**
+
 - Modify: `packages/cli/src/json-output.ts`
 
 - [ ] **Step 1: 修改 outputText()**
@@ -1934,7 +2215,8 @@ if (result.actionRequired) {
   }
   if (ar.verification.length > 0) {
     console.log(`\nVerification:`);
-    for (const v of ar.verification) console.log(`  - ${v.command} ${v.args.join(" ")}`);
+    for (const v of ar.verification)
+      console.log(`  - ${v.command} ${v.args.join(" ")}`);
   }
 }
 ```
@@ -1956,6 +2238,7 @@ git commit -m "feat: CLI 文本输出显示 actionRequired 详细信息"
 ### Task 4.3: status --loop 支持
 
 **Files:**
+
 - Modify: `packages/core/src/commands/status.ts`
 - Modify: `packages/cli/src/commands/status.ts`
 
@@ -1964,6 +2247,7 @@ git commit -m "feat: CLI 文本输出显示 actionRequired 详细信息"
 在 `packages/core/src/commands/status.ts` 的 `runStatus()` 函数中，在返回结果中增加 `activeLoop` 信息：
 
 在现有 `return` 之前：
+
 ```ts
 let loopData: unknown = undefined;
 if (args.loop === true) {
@@ -1981,13 +2265,18 @@ if (args.loop === true) {
 ```
 
 在返回对象中增加：
+
 ```ts
 data: { ...state, activeLoop: loopData },
 ```
 
 函数签名需要改为接收 args：
+
 ```ts
-export async function runStatus(root: string, args?: Record<string, unknown>): Promise<CommandResult>
+export async function runStatus(
+  root: string,
+  args?: Record<string, unknown>,
+): Promise<CommandResult>;
 ```
 
 同步更新调用方 `core.ts` 中的 `runStatus(request.cwd)` → `runStatus(request.cwd, request.args)`。
@@ -2007,6 +2296,7 @@ git commit -m "feat: status --loop 返回 activeLoop 摘要信息"
 ### Task 5.1: build complete 支持 v2 result
 
 **Files:**
+
 - Modify: `packages/core/src/commands/build.ts` (buildCompleteTask)
 
 - [ ] **Step 1: 在 buildCompleteTask 中增加 v2 result 判断**
@@ -2057,6 +2347,7 @@ git commit -m "feat: build complete 支持 v2 result（要求必须含 legacy ev
 ### Task 5.2: 集成测试补齐
 
 **Files:**
+
 - Modify: `packages/core/test/auto.test.ts`
 - Modify: `packages/core/test/state.test.ts`
 - Create: `packages/core/test/integration.test.ts` (可选)
