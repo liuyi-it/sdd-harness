@@ -1,0 +1,1 @@
+{"version":3,"file":"shell-policy.d.ts","sourceRoot":"","sources":["../../src/security/shell-policy.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,cAAc,EAAE,MAAM,2BAA2B,CAAC;AAgBhE,wBAAgB,gBAAgB,CAAC,OAAO,EAAE,MAAM,GAAG,OAAO,CAMzD;AAED,wBAAgB,mBAAmB,CAAC,OAAO,EAAE,MAAM,GAAG,cAAc,CAenE;AAED,wBAAgB,gBAAgB,CAAC,OAAO,EAAE,cAAc,GAAG,OAAO,CAOjE"}
