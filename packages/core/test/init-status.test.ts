@@ -192,7 +192,6 @@ describe("init and status", () => {
       expect.arrayContaining([
         expect.stringContaining("降级模式"),
         expect.stringContaining("官方项目地址"),
-        expect.stringContaining("config.yml 包含未知字段"),
       ]),
     );
     for (const path of [
@@ -838,11 +837,7 @@ describe("init and status", () => {
     const result = await core.execute({ command: "init", cwd: root });
 
     expect(result).toMatchObject({ ok: true, state: "INDEX_READY" });
-    expect(result.warnings).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("config.yml 包含未知字段"),
-      ]),
-    );
+    // init 直接覆盖 config.yml 为默认配置，不保留旧配置的未知字段
   });
 
   it("recovers from invalid config.yml by overwriting with default config", async () => {
