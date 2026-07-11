@@ -25,7 +25,7 @@ import {
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import {
-  CURRENT_SCHEMA_VERSION,
+  CURRENT_CONFIG_SCHEMA_VERSION,
   migrateConfigDocument,
 } from "../state/schema-migration.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
@@ -66,7 +66,7 @@ const REQUIRED_DIRECTORIES = [
 
 const configSchema = z
   .object({
-    schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
+    schemaVersion: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
     project: z.object({ name: z.string().min(1) }).passthrough(),
     plugins: z.object({}).passthrough(),
     codebase: z.object({}).passthrough(),
@@ -291,7 +291,7 @@ function defaultConfig(
     }
   }
   return {
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
     project: {
       name: root.split(/[\\/]/).filter(Boolean).at(-1) ?? "auto-detect",
     },
@@ -569,7 +569,7 @@ async function migrateConfigIfNeeded(
     );
   }
   const document = raw as Record<string, unknown>;
-  if (document.schemaVersion === CURRENT_SCHEMA_VERSION) return;
+  if (document.schemaVersion === CURRENT_CONFIG_SCHEMA_VERSION) return;
   const migrated = migrateConfigDocument(document);
   await copyFile(path, `${path}.migration.bak`);
   await writeFile(path, stringify(migrated), "utf8");

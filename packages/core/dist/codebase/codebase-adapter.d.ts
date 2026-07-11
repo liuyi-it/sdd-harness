@@ -37,7 +37,10 @@ export interface McpTransport {
     summarize(root: string): Promise<CodebaseSummary>;
     inspect?(root: string): Promise<Partial<McpDiagnostics>>;
     /** V2: 返回 MCP 暴露的工具集合，缺失时按空集合处理并写入 partial。 */
-    capabilities?(root: string): Promise<string[]>;
+    capabilities?(root: string): Promise<{
+        availableTools: string[];
+        supportedIntents: McpQueryInput["intent"][];
+    }>;
     /**
      * V2: 结构化查询；缺失时 Core 自动以 fallback-file-scan 返回
      * degraded=true 的同结构结果，禁止调用方自定义 payload shape。

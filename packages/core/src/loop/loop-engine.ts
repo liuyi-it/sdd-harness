@@ -6,6 +6,8 @@ import type {
 import { COMMANDS } from "../contracts.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { StateStore, WorkflowState } from "../state/state-store.js";
 import type { LoopStore } from "./loop-store.js";
 import type { LoopEventStore } from "./loop-events.js";
@@ -84,6 +86,9 @@ export class LoopEngine {
     }
 
     const loop = await this.prepareLoop();
+    const spec = await this.readLoopSpec();
+    const retries = new Map<string, number>();
+    let noProgressCount = 0;
     await this.events.write(loop.runId, {
       loopId: loop.loopId,
       runId: loop.runId,
@@ -168,6 +173,22 @@ export class LoopEngine {
         endedAt: new Date().toISOString(),
       });
 
+      noProgressCount = result.state === status.state ? noProgressCount + 1 : 0;
+      if (noProgressCount > spec.maxRepeatedFailures)
+        throw new SddError(
+          "E_STATE_CORRUPTED",
+          `auto 检测到连续 ${noProgressCount} 次无阶段进展，已停止以避免无限循环`,
+          "sdd status",
+        );
+      if (!result.ok) {
+        const attempts = (retries.get(command) ?? 0) + 1;
+        retries.set(command, attempts);
+        if (attempts <= spec.maxRetriesPerStep) {
+          status = result;
+          continue;
+        }
+      }
+
       if (
         !result.ok ||
         decision === "PAUSE_FOR_AGENT" ||
@@ -225,8 +246,9 @@ export class LoopEngine {
           waiting?: unknown;
         } | null;
 
-        // 恢复到当前 active run 时保留 waiting
-        const keepWaiting =
+        // 恢复到当前 active run 时保留 waiting；历史 waiting 必须从持久化
+        // handoff 恢复，不能把一个没有 pending 的 run 静默标记为 RUNNING。
+        let keepWaiting =
           currentLoop !== null && currentLoop.runId === resumeRunId
             ? currentLoop.waiting
             : undefined;
@@ -236,6 +258,24 @@ export class LoopEngine {
           throw new SddError(
             "E_INVALID_PHASE_COMMAND",
             "已终止的 run 不能恢复，请使用 sdd auto --restart",
+            "sdd auto --restart",
+          );
+        const recoveredPending =
+          keepWaiting === undefined
+            ? await this.recoverHistoricalHandoff(run)
+            : undefined;
+        if (recoveredPending !== undefined) {
+          keepWaiting = {
+            reason: "AGENT_TASK_EXECUTION",
+            taskId: recoveredPending.taskId,
+            resultFile: recoveredPending.resultFile,
+            since: recoveredPending.since,
+          };
+        }
+        if (run.status === "WAITING_AGENT" && keepWaiting === undefined)
+          throw new SddError(
+            "E_STATE_CORRUPTED",
+            `无法恢复历史 waiting run ${run.runId} 的 handoff`,
             "sdd auto --restart",
           );
         const resumedRun = { ...run };
@@ -260,6 +300,17 @@ export class LoopEngine {
           ...current,
           currentRunId: run.runId,
           activeLoop,
+          ...(recoveredPending === undefined
+            ? {}
+            : {
+                currentPhase: "BUILD_WAITING_AGENT" as const,
+                pendingAgentTask: recoveredPending,
+                tasks: {
+                  ...current.tasks,
+                  [recoveredPending.taskId]: "BUILDING" as const,
+                },
+                suggestedCommand: "sdd build complete",
+              }),
         }));
         await this.events.write(run.runId, {
           loopId: run.loopId,
@@ -324,6 +375,17 @@ export class LoopEngine {
         ...current,
         currentRunId: runId,
         activeLoop: { loopId, runId, status: "RUNNING" as const },
+        ...(current.pendingAgentTask === null
+          ? {}
+          : {
+              pendingAgentTask: null,
+              currentPhase: "PLAN_READY" as const,
+              tasks: {
+                ...current.tasks,
+                [current.pendingAgentTask.taskId]: "PENDING" as const,
+              },
+              suggestedCommand: "sdd build next",
+            }),
       }));
 
       await this.events.write(runId, {
@@ -382,6 +444,17 @@ export class LoopEngine {
           runId: activeLoop.runId,
           status: "ABORTED" as const,
         },
+        ...(current.pendingAgentTask === null
+          ? {}
+          : {
+              pendingAgentTask: null,
+              currentPhase: "PLAN_READY" as const,
+              tasks: {
+                ...current.tasks,
+                [current.pendingAgentTask.taskId]: "PENDING" as const,
+              },
+              suggestedCommand: "sdd build next",
+            }),
       }));
 
       await this.events.write(activeLoop.runId, {
@@ -623,6 +696,49 @@ export class LoopEngine {
     } catch {
       return createDefaultLoopSpec();
     }
+  }
+
+  private async recoverHistoricalHandoff(run: {
+    runId: string;
+    status: string;
+    steps: LoopStep[];
+  }): Promise<NonNullable<WorkflowState["pendingAgentTask"]> | undefined> {
+    if (run.status !== "WAITING_AGENT") return undefined;
+    const handoff = [...run.steps]
+      .reverse()
+      .find(
+        (step) =>
+          step.kind === "AGENT_HANDOFF" &&
+          step.status === "WAITING_AGENT" &&
+          step.actionRequired?.type === "AGENT_TASK_EXECUTION",
+      );
+    const taskId = handoff?.actionRequired?.taskId;
+    const resultFile = handoff?.actionRequired?.resultFile;
+    if (taskId === undefined || resultFile === undefined) return undefined;
+    try {
+      const raw = JSON.parse(
+        await readFile(
+          join(
+            this.root,
+            ".sdd",
+            "runs",
+            run.runId,
+            "tasks",
+            `${taskId}.handoff.json`,
+          ),
+          "utf8",
+        ),
+      ) as NonNullable<WorkflowState["pendingAgentTask"]>;
+      if (
+        raw.taskId === taskId &&
+        raw.resultFile === resultFile &&
+        raw.gitBaseline.available
+      )
+        return raw;
+    } catch {
+      return undefined;
+    }
+    return undefined;
   }
 }
 

@@ -36,7 +36,7 @@ describe("StateStore", () => {
     expect(
       JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
     ).toMatchObject({
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       version: 2,
       updatedAt: expect.any(String),
     });
@@ -71,7 +71,7 @@ describe("StateStore", () => {
     expect(recovered.recoveredFromBackup).toBe(true);
   });
 
-  it("migrates a version 1.0.0 state to 1.3.0 and preserves backups", async () => {
+  it("migrates a version 1.0.0 state to 1.4.0 and preserves backups", async () => {
     const root = await temporaryRoot();
     const store = new StateStore(root);
     await store.write(createInitialState());
@@ -96,7 +96,7 @@ describe("StateStore", () => {
 
     const migrated = await store.read();
 
-    expect(migrated.schemaVersion).toBe("1.3.0");
+    expect(migrated.schemaVersion).toBe("1.4.0");
     expect(migrated.version).toBe(8);
     expect(migrated.activeLoop).toBeNull();
     expect(
@@ -106,10 +106,10 @@ describe("StateStore", () => {
     ).toMatchObject({ schemaVersion: "1.0.0", version: 7 });
     expect(
       await readFile(join(root, ".sdd/logs/migration.log"), "utf8"),
-    ).toContain("1.0.0 -> 1.3.0");
+    ).toContain("1.0.0 -> 1.4.0");
     expect(
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
-    ).toContain("目标 schemaVersion：1.3.0");
+    ).toContain("目标 schemaVersion：1.4.0");
     expect(
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
     ).toContain(".sdd/state.json.migration.bak");
@@ -136,6 +136,57 @@ describe("StateStore", () => {
         "utf8",
       ),
     ).resolves.toContain("# Legacy spec");
+  });
+
+  it("将缺少 Git baseline 的 1.3.0 waiting state 显式迁移为 FAILED", async () => {
+    const root = await temporaryRoot();
+    const store = new StateStore(root);
+    await mkdir(join(root, ".sdd"), { recursive: true });
+    const oldState = {
+      ...createInitialState(),
+      schemaVersion: "1.3.0",
+      initialized: true,
+      currentRunId: "run-old",
+      currentPhase: "BUILD_WAITING_AGENT",
+      tasks: { "TASK-RED": "BUILDING" },
+      pendingAgentTask: {
+        taskId: "TASK-RED",
+        resultFile: ".sdd/runs/run-old/tasks/TASK-RED.result.json",
+        since: "2026-07-11T00:00:00.000Z",
+      },
+      activeLoop: {
+        loopId: "auto-default",
+        runId: "run-old",
+        status: "WAITING_AGENT",
+        waiting: {
+          reason: "AGENT_TASK_EXECUTION",
+          taskId: "TASK-RED",
+          resultFile: ".sdd/runs/run-old/tasks/TASK-RED.result.json",
+          since: "2026-07-11T00:00:00.000Z",
+        },
+      },
+    };
+    await writeFile(
+      join(root, ".sdd/state.json"),
+      `${JSON.stringify(oldState)}\n`,
+      "utf8",
+    );
+
+    const migrated = await store.read();
+
+    expect(migrated).toMatchObject({
+      schemaVersion: "1.4.0",
+      currentPhase: "FAILED",
+      pendingAgentTask: null,
+      suggestedCommand: "sdd build next",
+      tasks: { "TASK-RED": "PENDING" },
+      activeLoop: { status: "RUNNING" },
+    });
+    expect(migrated.activeLoop?.waiting).toBeUndefined();
+    expect(migrated.failedReason).toContain("可信 Git baseline");
+    await expect(
+      readFile(join(root, ".sdd/migration-report.md"), "utf8"),
+    ).resolves.toContain("源 schemaVersion：1.3.0");
   });
 
   it("rejects unsupported state schema versions", async () => {

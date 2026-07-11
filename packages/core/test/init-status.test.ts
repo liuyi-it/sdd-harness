@@ -691,7 +691,7 @@ describe("init and status", () => {
     expect(
       JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
     ).toMatchObject({
-      schemaVersion: "1.3.0",
+      schemaVersion: "1.4.0",
       activeLoop: null,
     });
     expect(await readFile(join(root, ".sdd/config.yml"), "utf8")).toContain(
@@ -699,7 +699,7 @@ describe("init and status", () => {
     );
     expect(
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
-    ).toContain("目标 schemaVersion：1.3.0");
+    ).toContain("目标 schemaVersion：1.4.0");
   });
 
   it("writes integration files with line-dedup merge for manually edited files", async () => {

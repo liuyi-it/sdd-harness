@@ -25,6 +25,7 @@ export declare const ERROR_EXIT_CODES: {
     readonly E_VERIFY_FAILED: 7;
     readonly E_TDD_EVIDENCE_REQUIRED: 7;
     readonly E_AGENT_TASK_FAILED: 7;
+    readonly E_UNDECLARED_FILE_CHANGE: 10;
     readonly E_REVIEW_FAILED: 8;
     readonly E_ARCHIVED_READONLY: 3;
     readonly E_CONCURRENT_RUN: 9;

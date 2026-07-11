@@ -15,7 +15,7 @@ export class GitInspector {
     }
     async snapshot() {
         if (!(await isGitRepository(this.root))) {
-            return { available: false, files: [], hashes: {} };
+            return { available: false, files: [], hashes: {}, tracked: [] };
         }
         try {
             const { stdout } = await executeFile("git", ["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd: this.root, encoding: "utf8" });
@@ -23,17 +23,24 @@ export class GitInspector {
                 .filter((file) => !isInternal(file))
                 .sort();
             const hashes = Object.fromEntries(await Promise.all(files.map(async (file) => [file, await fileHash(join(this.root, file))])));
-            return { available: true, files, hashes };
+            const { stdout: trackedOutput } = await executeFile("git", ["ls-files", "-z"], { cwd: this.root, encoding: "utf8" });
+            const tracked = trackedOutput
+                .split("\0")
+                .filter(Boolean)
+                .map((file) => file.replaceAll("\\", "/"))
+                .filter((file) => !isInternal(file))
+                .sort();
+            return { available: true, files, hashes, tracked };
         }
         catch {
-            return { available: false, files: [], hashes: {} };
+            return { available: false, files: [], hashes: {}, tracked: [] };
         }
     }
     delta(before, after) {
         if (!before.available || !after.available)
             return [];
-        return after.files.filter((file) => before.hashes[file] === undefined ||
-            before.hashes[file] !== after.hashes[file]);
+        return [...new Set([...before.files, ...after.files])].filter((file) => before.hashes[file] !== after.hashes[file] ||
+            before.files.includes(file) !== after.files.includes(file));
     }
 }
 export function snapshotFromJson(input) {
@@ -59,6 +66,9 @@ export function snapshotFromJson(input) {
         available: candidate.available,
         files: candidate.files,
         hashes: candidate.hashes,
+        tracked: Array.isArray(candidate.tracked)
+            ? candidate.tracked.filter((file) => typeof file === "string")
+            : [],
     };
 }
 function parsePorcelain(output) {

@@ -24,9 +24,10 @@ export class CodebaseMemoryTransport implements McpTransport {
 
   /** 只有 initialize 已完成且未降级时才报告 MCP 可用。 */
   async isAvailable(): Promise<boolean> {
-    return (
-      this.initialization === null || this.initialization.degraded === false
-    );
+    return this.initialization === null
+      ? true
+      : this.initialization.status === "AVAILABLE" &&
+          (await this.manager.isAvailable());
   }
 
   async index(
@@ -67,16 +68,34 @@ export class CodebaseMemoryTransport implements McpTransport {
     };
   }
 
-  async capabilities(root: string): Promise<string[]> {
+  async capabilities(root: string): Promise<{
+    availableTools: string[];
+    supportedIntents: McpQueryInput["intent"][];
+  }> {
     void root;
     const caps = await this.manager.getCapabilities();
-    return caps.supportedIntents;
+    return {
+      availableTools: caps.availableTools,
+      supportedIntents: caps.supportedIntents.filter(
+        (intent): intent is McpQueryInput["intent"] =>
+          [
+            "impact",
+            "related-files",
+            "symbols",
+            "callers",
+            "callees",
+            "routes",
+            "tests",
+            "architecture",
+          ].includes(intent),
+      ),
+    };
   }
 
   async query(root: string, input: McpQueryInput): Promise<unknown> {
     const result = await this.manager.query({
       intent: input.intent,
-      query: input.requirement ?? input.intent,
+      query: input.query,
       root,
     });
     if (result.degraded) {
@@ -86,25 +105,33 @@ export class CodebaseMemoryTransport implements McpTransport {
         degraded: true,
         reason: "MCP unavailable, using fallback",
         confidence: 0.3,
-        payload: { files: [], symbols: [], tests: [], risks: [] },
+        payload: toPayload(result.items),
       };
     }
     return {
       provider: result.provider,
       intent: result.intent,
       degraded: false,
-      payload: {
-        files: result.items
-          .filter((i) => i.type === "file")
-          .map((i) => i.path ?? ""),
-        symbols: result.items
-          .filter((i) => i.type === "symbol")
-          .map((i) => i.symbol ?? ""),
-        tests: result.items
-          .filter((i) => i.type === "test")
-          .map((i) => i.path ?? ""),
-        risks: [],
-      },
+      payload: toPayload(result.items),
     };
   }
+}
+
+function toPayload(
+  items: Awaited<ReturnType<CodebaseMemoryManager["query"]>>["items"],
+) {
+  return {
+    files: items
+      .filter((item) => item.type === "file")
+      .map((item) => item.path ?? ""),
+    symbols: items
+      .filter((item) => item.type === "symbol")
+      .map((item) => item.symbol ?? ""),
+    tests: items
+      .filter((item) => item.type === "test")
+      .map((item) => item.path ?? ""),
+    risks: items
+      .filter((item) => item.type === "risk")
+      .map((item) => item.symbol ?? item.path ?? item.reason ?? ""),
+  };
 }

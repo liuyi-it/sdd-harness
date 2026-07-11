@@ -14,6 +14,7 @@ export declare const MCP_FALLBACK_PROVIDER = "fallback-file-scan";
 export type McpQueryIntent = "impact" | "related-files" | "symbols" | "callers" | "callees" | "routes" | "tests" | "architecture";
 export interface McpQueryInput {
     intent: McpQueryIntent;
+    query: string;
     changeId?: string;
     requirement?: string;
     hint?: {
@@ -48,7 +49,7 @@ export interface McpCapabilities {
     generatedAt: string;
 }
 export interface McpQueryBuilder {
-    capabilitiesFrom(tools: string[]): McpCapabilities;
+    capabilitiesFrom(tools: string[], supportedIntents?: readonly McpQueryIntent[]): McpCapabilities;
     summarizeCodebase(summary: CodebaseSummary): McpQueryResult<CodebaseSummary>;
     buildImpactResult(input: McpQueryInput, payload: ImpactPayload): McpQueryResult<ImpactPayload>;
     buildFallback<T>(intent: McpQueryIntent, reason: string, payload: T): McpQueryResult<T>;

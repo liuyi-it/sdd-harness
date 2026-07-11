@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -21,6 +22,15 @@ async function seedProject(root: string): Promise<void> {
   );
   await writeFile(join(root, "src/order.ts"), "export const order = {};\n");
   await writeFile(join(root, "test/order.test.ts"), "// order tests\n");
+  execFileSync("git", ["init", "-b", "main"], { cwd: root });
+  execFileSync("git", ["config", "user.email", "test@example.com"], {
+    cwd: root,
+  });
+  execFileSync("git", ["config", "user.name", "SDD Harness Test"], {
+    cwd: root,
+  });
+  execFileSync("git", ["add", "."], { cwd: root });
+  execFileSync("git", ["commit", "-m", "init"], { cwd: root });
 }
 
 /** 基础 Core：只有 init，没有 new/design/plan 制品 */
@@ -211,6 +221,44 @@ describe("sdd auto", () => {
       expect(state.activeLoop.runId).not.toBe("run-1");
     },
   );
+
+  it("restart 会撤销旧 pending handoff 并为新 run 重新分配结果路径", async () => {
+    const { root, core } = await plannedCore();
+    const first = await core.execute({ command: "auto", cwd: root });
+    const oldResultFile = first.actionRequired?.resultFile;
+
+    const restarted = await core.execute({
+      command: "auto",
+      cwd: root,
+      args: { restart: true },
+    });
+
+    expect(restarted).toMatchObject({
+      ok: true,
+      state: "BUILD_WAITING_AGENT",
+      actionRequired: { type: "AGENT_TASK_EXECUTION" },
+    });
+    expect(restarted.actionRequired?.resultFile).not.toBe(oldResultFile);
+    const state = await new StateStore(root).read();
+    expect(state.pendingAgentTask?.resultFile).toBe(
+      restarted.actionRequired?.resultFile,
+    );
+    expect(state.pendingAgentTask?.resultFile).not.toContain("run-1/");
+  });
+
+  it("stop 会清除 pending handoff 并把 BUILDING 任务恢复为 PENDING", async () => {
+    const { root, core } = await plannedCore();
+    const first = await core.execute({ command: "auto", cwd: root });
+    const taskId = first.actionRequired!.taskId;
+
+    await expect(
+      core.execute({ command: "auto", cwd: root, args: { stop: true } }),
+    ).resolves.toMatchObject({ ok: true, state: "PLAN_READY" });
+    const state = await new StateStore(root).read();
+    expect(state.pendingAgentTask).toBeNull();
+    expect(state.tasks[taskId]).toBe("PENDING");
+    expect(state.activeLoop?.status).toBe("ABORTED");
+  });
 
   // 无 answers → new 进入 CLARIFYING → auto 正确停止
   (process.platform === "win32" ? it.skip : it)(

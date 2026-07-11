@@ -54,7 +54,10 @@ export interface McpTransport {
   summarize(root: string): Promise<CodebaseSummary>;
   inspect?(root: string): Promise<Partial<McpDiagnostics>>;
   /** V2: 返回 MCP 暴露的工具集合，缺失时按空集合处理并写入 partial。 */
-  capabilities?(root: string): Promise<string[]>;
+  capabilities?(root: string): Promise<{
+    availableTools: string[];
+    supportedIntents: McpQueryInput["intent"][];
+  }>;
   /**
    * V2: 结构化查询；缺失时 Core 自动以 fallback-file-scan 返回
    * degraded=true 的同结构结果，禁止调用方自定义 payload shape。
@@ -198,22 +201,18 @@ export class CodebaseAdapter {
         commit: "b637e33",
         officialUrl: CODEBASE_MEMORY_MCP_URL,
         availableTools: [],
-        supportedIntents: [
-          "impact",
-          "related-files",
-          "symbols",
-          "callers",
-          "callees",
-          "routes",
-          "tests",
-          "architecture",
-        ],
+        supportedIntents: [],
         generatedAt: new Date().toISOString(),
       };
     }
-    const tools =
-      (await this.transport.capabilities?.(root).catch(() => [])) ?? [];
-    return builder.capabilitiesFrom(tools);
+    const capability = await this.transport.capabilities?.(root).catch(() => ({
+      availableTools: [],
+      supportedIntents: [],
+    }));
+    return builder.capabilitiesFrom(
+      capability?.availableTools ?? [],
+      capability?.supportedIntents ?? [],
+    );
   }
 
   /**
@@ -314,57 +313,11 @@ export class CodebaseAdapter {
     if (input.intent !== "impact") {
       throw new Error("queryImpact only supports intent=impact");
     }
-    const builder = createMcpQueryBuilder();
-    if (this.transport === undefined) {
-      return builder.buildFallback<ImpactPayload>(
-        "impact",
-        MCP_QUERY_UNAVAILABLE,
-        {
-          files: [],
-          symbols: [],
-          tests: [],
-          risks: [],
-        },
-      );
-    }
-    const available = await this.transport.isAvailable().catch(() => false);
-    if (available === false || this.transport.query === undefined) {
-      return builder.buildFallback<ImpactPayload>(
-        "impact",
-        MCP_QUERY_UNAVAILABLE,
-        {
-          files: [],
-          symbols: [],
-          tests: [],
-          risks: [],
-        },
-      );
-    }
-    try {
-      const raw = await this.transport.query(root, input);
-      if (raw === null || typeof raw !== "object") {
-        return builder.buildFallback<ImpactPayload>(
-          "impact",
-          MCP_QUERY_UNAVAILABLE,
-          {
-            files: [],
-            symbols: [],
-            tests: [],
-            risks: [],
-          },
-        );
-      }
-      const payload = coerceImpactPayload(
-        (raw as { payload?: unknown }).payload,
-      );
-      return builder.buildImpactResult(input, payload);
-    } catch (error) {
-      return builder.buildFallback<ImpactPayload>(
-        "impact",
-        `MCP impact query failed: ${error instanceof Error ? error.message : String(error)}`,
-        { files: [], symbols: [], tests: [], risks: [] },
-      );
-    }
+    const result = await this.query<unknown>(input, root);
+    return {
+      ...result,
+      payload: coerceImpactPayload(result.payload),
+    };
   }
 
   private async inspectDiagnostics(root: string): Promise<McpDiagnostics> {
@@ -500,10 +453,14 @@ function coerceImpactPayload(input: unknown): ImpactPayload {
 
 function toStringArray(input: unknown): string[] {
   if (!Array.isArray(input)) return [];
-  return input
-    .filter((value): value is string => typeof value === "string")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  return [
+    ...new Set(
+      input
+        .filter((value): value is string => typeof value === "string")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    ),
+  ];
 }
 
 async function scanFiles(root: string, limit = 2_000): Promise<string[]> {

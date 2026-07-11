@@ -21,23 +21,14 @@ export function isSupportedIntent(intent) {
 }
 export function createMcpQueryBuilder(now = () => new Date()) {
     return {
-        capabilitiesFrom(tools) {
+        capabilitiesFrom(tools, supportedIntents) {
             return {
                 provider: MCP_PINNED_PROVIDER,
                 version: MCP_PINNED_VERSION,
                 commit: MCP_PINNED_COMMIT,
                 officialUrl: "https://github.com/DeusData/codebase-memory-mcp",
                 availableTools: [...tools].sort(),
-                supportedIntents: [
-                    "impact",
-                    "related-files",
-                    "symbols",
-                    "callers",
-                    "callees",
-                    "routes",
-                    "tests",
-                    "architecture",
-                ],
+                supportedIntents: supportedIntents ?? [],
                 generatedAt: now().toISOString(),
             };
         },

@@ -1,8 +1,9 @@
-export declare const CURRENT_SCHEMA_VERSION = "1.3.0";
+export declare const CURRENT_SCHEMA_VERSION = "1.4.0";
+export declare const CURRENT_CONFIG_SCHEMA_VERSION = "1.3.0";
 export declare const LEGACY_SCHEMA_VERSION = "1.0.0";
 export interface MigrationResult {
     from: "1.0.0";
-    to: "1.3.0";
+    to: "1.4.0";
     state: Record<string, unknown>;
     backupPaths: string[];
 }

@@ -1,5 +1,6 @@
 import type { CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import type { CommandResult } from "../contracts.js";
+import { isSupportedIntent } from "../codebase/mcp-query.js";
 
 /** codebase 子命令分发：status / doctor / index / query / rebuild */
 export async function runCodebaseCommand(
@@ -52,7 +53,7 @@ export async function runCodebaseCommand(
       const result: CommandResult = {
         ok: failed.length === 0,
         state: "INDEX_READY",
-        exitCode: 0,
+        exitCode: failed.length === 0 ? 0 : 5,
         data: {
           checks,
           failedCount: failed.length,
@@ -60,6 +61,11 @@ export async function runCodebaseCommand(
         },
       };
       if (failed.length > 0) {
+        result.error = {
+          code: "E_COMPONENT_UNAVAILABLE",
+          message: `${failed.length} 项 MCP 检查未通过`,
+          next: "sdd codebase doctor",
+        };
         result.warnings = [
           {
             code: "W_CODEBASE_MEMORY_UNAVAILABLE",
@@ -99,10 +105,17 @@ export async function runCodebaseCommand(
     case "query": {
       const query = (args?.query as string) || "";
       const intent = (args?.intent as string) || "impact";
-      const result = await codebase.query(
-        { intent, query } as Parameters<typeof codebase.query>[0],
-        root,
-      );
+      if (!isSupportedIntent(intent))
+        return {
+          ok: false,
+          state: "FAILED",
+          exitCode: 2,
+          error: {
+            code: "E_INVALID_PHASE_COMMAND",
+            message: `不支持的 codebase query intent：${intent}`,
+          },
+        };
+      const result = await codebase.query({ intent, query }, root);
       return {
         ok: true,
         state: "INDEX_READY",

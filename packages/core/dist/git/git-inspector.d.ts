@@ -2,6 +2,7 @@ export interface GitSnapshot {
     available: boolean;
     files: string[];
     hashes: Record<string, string>;
+    tracked: string[];
 }
 export declare class GitInspector {
     private readonly root;

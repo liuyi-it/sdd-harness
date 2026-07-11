@@ -1,11 +1,12 @@
 import { SddError } from "../errors.js";
 
-export const CURRENT_SCHEMA_VERSION = "1.3.0";
+export const CURRENT_SCHEMA_VERSION = "1.4.0";
+export const CURRENT_CONFIG_SCHEMA_VERSION = "1.3.0";
 export const LEGACY_SCHEMA_VERSION = "1.0.0";
 
 export interface MigrationResult {
   from: "1.0.0";
-  to: "1.3.0";
+  to: "1.4.0";
   state: Record<string, unknown>;
   backupPaths: string[];
 }
@@ -38,7 +39,7 @@ export function migrateWorkflowState(
 export function migrateConfigDocument(
   raw: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (raw.schemaVersion === CURRENT_SCHEMA_VERSION) return raw;
+  if (raw.schemaVersion === CURRENT_CONFIG_SCHEMA_VERSION) return raw;
   if (raw.schemaVersion !== LEGACY_SCHEMA_VERSION) {
     throw new SddError(
       "E_STATE_CORRUPTED",
@@ -48,6 +49,6 @@ export function migrateConfigDocument(
   }
   return {
     ...raw,
-    schemaVersion: CURRENT_SCHEMA_VERSION,
+    schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
   };
 }

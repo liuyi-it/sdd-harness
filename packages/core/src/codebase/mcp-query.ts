@@ -25,6 +25,7 @@ export type McpQueryIntent =
 
 export interface McpQueryInput {
   intent: McpQueryIntent;
+  query: string;
   changeId?: string;
   requirement?: string;
   hint?: { file?: string; symbol?: string; path?: string };
@@ -58,7 +59,10 @@ export interface McpCapabilities {
 }
 
 export interface McpQueryBuilder {
-  capabilitiesFrom(tools: string[]): McpCapabilities;
+  capabilitiesFrom(
+    tools: string[],
+    supportedIntents?: readonly McpQueryIntent[],
+  ): McpCapabilities;
   summarizeCodebase(summary: CodebaseSummary): McpQueryResult<CodebaseSummary>;
   buildImpactResult(
     input: McpQueryInput,
@@ -100,23 +104,14 @@ export function createMcpQueryBuilder(
   now: () => Date = () => new Date(),
 ): McpQueryBuilder {
   return {
-    capabilitiesFrom(tools) {
+    capabilitiesFrom(tools, supportedIntents) {
       return {
         provider: MCP_PINNED_PROVIDER,
         version: MCP_PINNED_VERSION,
         commit: MCP_PINNED_COMMIT,
         officialUrl: "https://github.com/DeusData/codebase-memory-mcp",
         availableTools: [...tools].sort(),
-        supportedIntents: [
-          "impact",
-          "related-files",
-          "symbols",
-          "callers",
-          "callees",
-          "routes",
-          "tests",
-          "architecture",
-        ],
+        supportedIntents: supportedIntents ?? [],
         generatedAt: now().toISOString(),
       };
     },

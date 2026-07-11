@@ -28,7 +28,8 @@ const DEFAULT_CONFIG: CodebaseConfig = {
   storageDir: ".sdd/index/codebase-memory",
   diagnosticsFile: ".sdd/adapters/codebase-memory-mcp/diagnostics.json",
   capabilitiesFile: ".sdd/adapters/codebase-memory-mcp/capabilities.json",
-  timeoutMs: 30000,
+  // 请求超时而非进程生命周期超时；默认值保证 CLI 在 MCP 不可达时快速降级。
+  timeoutMs: 5000,
   fallback: {
     enabled: true,
     provider: "fallback-file-scan",
@@ -91,14 +92,17 @@ export class CodebaseMemoryManager {
       if (result.status === "STARTED" || result.status === "ALREADY_RUNNING") {
         if (result.session === undefined)
           return this.handleUnavailable(root, "MCP 会话未建立", "initialize");
-        await result.session.call("tools/call", {
-          name: "index_repository",
-          arguments: {
-            repo_path: root,
-            name: basename(root),
-            mode: "fast",
-          },
-        });
+        await this.callWithTimeout(
+          result.session.call("tools/call", {
+            name: "index_repository",
+            arguments: {
+              repo_path: root,
+              name: basename(root),
+              mode: "fast",
+            },
+          }),
+          "index_repository",
+        );
         const diag = createDiagnostics({
           version: this.config.version,
           lastStartedAt: new Date().toISOString(),
@@ -137,15 +141,22 @@ export class CodebaseMemoryManager {
       return fallbackQuery(input);
     }
     const session = this.lifecycleResult?.session;
-    if (session === undefined) return fallbackQuery(input);
+    if (session === undefined || !session.isAlive()) {
+      if (this.lifecycleResult !== null) this.lifecycleResult.status = "FAILED";
+      return fallbackQuery(input);
+    }
     try {
       const name = toolForIntent(input.intent);
       if (!(this.lifecycleResult?.tools ?? []).includes(name))
         throw new Error(`MCP 未暴露 ${name}`);
-      const result = await session.call("tools/call", {
-        name,
-        arguments: toolArguments(name, input),
-      });
+      const responses = await collectPaginatedToolResults(
+        (argumentsValue) =>
+          this.callWithTimeout(
+            session.call("tools/call", { name, arguments: argumentsValue }),
+            name,
+          ),
+        toolArguments(name, input),
+      );
       return {
         schemaVersion: "1.0.0",
         provider: "codebase-memory-mcp",
@@ -153,7 +164,11 @@ export class CodebaseMemoryManager {
         degraded: false,
         intent: input.intent,
         query: input.query,
-        items: extractItems(result),
+        items: dedupeItems(
+          responses.flatMap((response) =>
+            decodeToolResult(input.intent, response),
+          ),
+        ),
       };
     } catch {
       return fallbackQuery(input);
@@ -165,13 +180,15 @@ export class CodebaseMemoryManager {
     const mcpAlive =
       this.lifecycleResult !== null &&
       (this.lifecycleResult.status === "STARTED" ||
-        this.lifecycleResult.status === "ALREADY_RUNNING");
+        this.lifecycleResult.status === "ALREADY_RUNNING") &&
+      this.lifecycleResult.session?.isAlive() === true;
     const degraded = this.config.mode === "fallback" || !mcpAlive;
     const tools = this.lifecycleResult?.tools ?? [];
     const supported = supportedIntents(tools);
     return {
       schemaVersion: "1.0.0",
       provider: degraded ? "fallback-file-scan" : "codebase-memory-mcp",
+      availableTools: degraded ? [] : [...tools],
       supportedIntents: degraded ? ["impact", "related-files"] : supported,
       supportsIndex: !degraded && tools.includes("index_repository"),
       supportsGraphQuery: !degraded && tools.includes("query_graph"),
@@ -183,6 +200,38 @@ export class CodebaseMemoryManager {
     if (this.lifecycleResult) {
       stopManagedMcp(this.lifecycleResult);
       this.lifecycleResult = null;
+    }
+  }
+
+  async isAvailable(): Promise<boolean> {
+    return (
+      this.lifecycleResult !== null &&
+      (this.lifecycleResult.status === "STARTED" ||
+        this.lifecycleResult.status === "ALREADY_RUNNING") &&
+      this.lifecycleResult.session?.isAlive() === true
+    );
+  }
+
+  private async callWithTimeout<T>(
+    promise: Promise<T>,
+    operation: string,
+  ): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new Error(`MCP ${operation} 超时 (${this.config.timeoutMs}ms)`),
+              ),
+            this.config.timeoutMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -295,44 +344,163 @@ function supportedIntents(
   return intents;
 }
 
-function extractItems(value: unknown): McpQueryResult["items"] {
-  const text = Array.isArray((value as { content?: unknown })?.content)
-    ? (value as { content: Array<{ text?: unknown }> }).content
-        .map((item) => item.text)
-        .filter((item): item is string => typeof item === "string")
-        .join("\n")
-    : "";
-  let payload: unknown = value;
+export function decodeToolResult(
+  intent: McpQueryInput["intent"],
+  value: unknown,
+): McpQueryResult["items"] {
+  const envelope = value as {
+    isError?: unknown;
+    structuredContent?: unknown;
+    content?: unknown;
+  };
+  if (envelope?.isError === true) throw new Error("MCP tools/call 返回错误");
+  const payload = unwrapToolPayload(value);
+  const records = collectRecords(payload);
+  const items = records.flatMap((record) => decodeRecord(intent, record));
+  if (items.length === 0 && records.length > 0)
+    throw new Error(`无法解码 ${intent} MCP 响应`);
+  return dedupeItems(items);
+}
+
+function unwrapToolPayload(value: unknown): unknown {
+  const envelope = value as { structuredContent?: unknown; content?: unknown };
+  if (envelope?.structuredContent !== undefined)
+    return envelope.structuredContent;
+  if (!Array.isArray(envelope?.content)) return value;
+  const text = (envelope.content as Array<{ text?: unknown }>)
+    .map((item) => item.text)
+    .filter((item): item is string => typeof item === "string")
+    .join("\n");
+  if (text.length === 0) return value;
   try {
-    payload = text.length === 0 ? value : JSON.parse(text);
+    return JSON.parse(text);
   } catch {
-    return [{ type: "module", confidence: 0.5, reason: text.slice(0, 500) }];
+    throw new Error("MCP tools/call 文本响应不是有效 JSON");
   }
-  const record = payload as Record<string, unknown>;
-  const results = Array.isArray(record.results)
-    ? record.results
-    : Array.isArray(record.items)
-      ? record.items
+}
+
+export async function collectPaginatedToolResults(
+  callPage: (argumentsValue: Record<string, unknown>) => Promise<unknown>,
+  initialArguments: Record<string, unknown>,
+): Promise<unknown[]> {
+  const responses: unknown[] = [];
+  let argumentsValue = initialArguments;
+  for (let pageIndex = 0; pageIndex < 100; pageIndex += 1) {
+    const response = await callPage(argumentsValue);
+    responses.push(response);
+    const page = pagination(response);
+    if (!page.hasMore) break;
+    argumentsValue = {
+      ...argumentsValue,
+      offset:
+        (typeof argumentsValue.offset === "number"
+          ? argumentsValue.offset
+          : 0) + Math.max(page.count, 1),
+    };
+  }
+  return responses;
+}
+
+function pagination(value: unknown): { hasMore: boolean; count: number } {
+  const payload = unwrapToolPayload(value) as Record<string, unknown>;
+  if (typeof payload !== "object" || payload === null)
+    return { hasMore: false, count: 0 };
+  const results = Array.isArray(payload.results)
+    ? payload.results
+    : Array.isArray(payload.items)
+      ? payload.items
       : [];
-  return results.flatMap((entry) => {
-    if (typeof entry !== "object" || entry === null) return [];
-    const item = entry as Record<string, unknown>;
-    const path =
-      typeof item.file_path === "string" ? item.file_path : item.path;
-    const symbol =
-      typeof item.qualified_name === "string"
-        ? item.qualified_name
-        : typeof item.name === "string"
-          ? item.name
-          : undefined;
-    return [
-      {
-        type: typeof symbol === "string" ? "symbol" : "file",
-        ...(typeof path === "string" ? { path } : {}),
-        ...(typeof symbol === "string" ? { symbol } : {}),
-        confidence: 0.9,
-        reason: "codebase-memory-mcp 查询结果",
-      },
-    ];
+  return { hasMore: payload.has_more === true, count: results.length };
+}
+
+function collectRecords(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.flatMap(collectRecords);
+  if (typeof value !== "object" || value === null) return [];
+  const record = value as Record<string, unknown>;
+  const containers: Array<[string, unknown]> = [
+    ["results", record.results],
+    ["items", record.items],
+    ["files", record.files],
+    ["changed_files", record.changed_files],
+    ["affected_files", record.affected_files],
+    ["symbols", record.symbols],
+    ["affected_symbols", record.affected_symbols],
+    ["routes", record.routes],
+    ["tests", record.tests],
+    ["nodes", record.nodes],
+    ["paths", record.paths],
+    ["packages", record.packages],
+    ["entry_points", record.entry_points],
+    ["risks", record.risks],
+  ];
+  const hasRecognizedContainer = containers.some(
+    ([, child]) => child !== undefined,
+  );
+  const nested = containers.flatMap(([key, child]) => {
+    if (!Array.isArray(child)) return collectRecords(child);
+    return child.flatMap((entry) => {
+      if (typeof entry !== "string") return collectRecords(entry);
+      if (key.includes("symbol") || key === "entry_points" || key === "risks")
+        return [{ symbol: entry, type: key }];
+      return [{ path: entry, type: key }];
+    });
+  });
+  // MCP 的合法空查询通常是 `{ results: [] }`。它不是未知响应，也不能
+  // 触发 fallback；只有完全没有可识别容器时才把对象本身交给 decoder。
+  return hasRecognizedContainer ? nested : [record];
+}
+
+function decodeRecord(
+  intent: McpQueryInput["intent"],
+  record: Record<string, unknown>,
+): McpQueryResult["items"] {
+  const path = firstString(record, ["file_path", "path", "file", "source"]);
+  const symbol = firstString(record, [
+    "qualified_name",
+    "symbol",
+    "function_name",
+    "name",
+  ]);
+  const label = firstString(record, ["label", "type", "kind"]);
+  if (path === undefined && symbol === undefined) return [];
+  const inferredType = /risk/i.test(label ?? "")
+    ? "risk"
+    : intent === "tests" || /test/i.test(label ?? "")
+      ? "test"
+      : intent === "routes" || /route/i.test(label ?? "")
+        ? "route"
+        : intent === "architecture"
+          ? "module"
+          : symbol !== undefined
+            ? "symbol"
+            : "file";
+  return [
+    {
+      type: inferredType,
+      ...(path === undefined ? {} : { path }),
+      ...(symbol === undefined ? {} : { symbol }),
+      confidence: 0.9,
+      reason: `codebase-memory-mcp ${intent} 查询结果`,
+    },
+  ];
+}
+
+function firstString(
+  record: Record<string, unknown>,
+  keys: string[],
+): string | undefined {
+  for (const key of keys)
+    if (typeof record[key] === "string" && record[key].length > 0)
+      return record[key];
+  return undefined;
+}
+
+function dedupeItems(items: McpQueryResult["items"]): McpQueryResult["items"] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.type}\0${item.path ?? ""}\0${item.symbol ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }

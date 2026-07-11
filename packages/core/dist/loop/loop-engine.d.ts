@@ -21,5 +21,6 @@ export declare class LoopEngine {
     private recordStep;
     private finalizeLoop;
     private readLoopSpec;
+    private recoverHistoricalHandoff;
 }
 //# sourceMappingURL=loop-engine.d.ts.map

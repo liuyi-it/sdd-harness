@@ -294,6 +294,7 @@ async function renderImpactWithMcp(baseImpact, codebase, root, changeId, require
     try {
         result = await codebase.queryImpact(root, {
             intent: "impact",
+            query: requirement,
             changeId,
             requirement,
         });

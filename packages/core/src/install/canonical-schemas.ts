@@ -64,7 +64,7 @@ export const CANONICAL_SCHEMAS = {
     "schemaVersion": { "const": "1.2.0" },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "format": "date-time" },
-    "schemaVersion": { "const": "1.3.0" },
+    "schemaVersion": { "const": "1.4.0" },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "format": "date-time" },
     "initialized": { "type": "boolean" },

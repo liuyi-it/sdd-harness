@@ -1,5 +1,5 @@
 import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
@@ -21,7 +21,7 @@ import { assertRecoverableCommandState, canResumeCommand } from "./recovery.js";
 import { type AgentActionRequired, type CommandResult } from "../contracts.js";
 import { type TaskDefinition } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
-import { GitInspector } from "../git/git-inspector.js";
+import { GitInspector, type GitSnapshot } from "../git/git-inspector.js";
 import { isCommandAllowed } from "../security/shell-policy.js";
 import { buildTaskConstraints } from "../security/untrusted-content.js";
 import { validateTaskFiles } from "../security/task-scope.js";
@@ -100,6 +100,7 @@ export async function runBuild(
     await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
     const previousResults = await readResults(
       join(change, "task-results.json"),
+      { ignoreInvalid: state.currentPhase === "FAILED" },
     );
     const trustedPreviousResults = previousResults.filter((result) => {
       const task = tasks.find((candidate) => candidate.id === result.taskId);
@@ -561,7 +562,27 @@ function fileFitsTask(file: string, task: TaskDefinition): boolean {
   }
 }
 
-async function readResults(path: string): Promise<TaskResult[]> {
+function classifyFileDelta(
+  before: GitSnapshot,
+  after: GitSnapshot,
+  files: string[],
+): { added: string[]; modified: string[]; deleted: string[] } {
+  const added: string[] = [];
+  const modified: string[] = [];
+  const deleted: string[] = [];
+  for (const file of files) {
+    if (!after.files.includes(file) || after.hashes[file] === "deleted")
+      deleted.push(file);
+    else if (!before.tracked.includes(file)) added.push(file);
+    else modified.push(file);
+  }
+  return { added, modified, deleted };
+}
+
+async function readResults(
+  path: string,
+  options: { ignoreInvalid?: boolean } = {},
+): Promise<TaskResult[]> {
   try {
     const parsed = parseTaskResults(await readFile(path, "utf8"));
     return parsed.map((result) => {
@@ -574,6 +595,7 @@ async function readResults(path: string): Promise<TaskResult[]> {
     });
   } catch (error) {
     if (isMissingFile(error)) return [];
+    if (options.ignoreInvalid && error instanceof SddError) return [];
     if (error instanceof SddError) throw error;
     throw new SddError("E_STATE_CORRUPTED", "task-results.json 无法解析");
   }
@@ -831,6 +853,14 @@ async function buildNextTask(
 
     // 标记任务为 BUILDING + 更新状态（P1-2）
     const since = new Date().toISOString();
+    const gitBaseline = await new GitInspector(
+      resolveBusinessRoot(root, state),
+    ).snapshot();
+    if (!gitBaseline.available)
+      throw new SddError(
+        "E_SECURITY_BLOCKED",
+        "外部 Agent handoff 需要可用的 Git 仓库以建立文件变更基线",
+      );
     await new StateStore(root).update((current) => ({
       ...current,
       currentPhase: "BUILD_WAITING_AGENT",
@@ -839,7 +869,12 @@ async function buildNextTask(
       lastError: null,
       suggestedCommand: "sdd build complete",
       tasks: { ...current.tasks, [nextTask.id]: "BUILDING" },
-      pendingAgentTask: { taskId: nextTask.id, resultFile, since },
+      pendingAgentTask: {
+        taskId: nextTask.id,
+        resultFile,
+        since,
+        gitBaseline: { ...gitBaseline, available: true as const },
+      },
       activeLoop:
         current.activeLoop !== null
           ? {
@@ -854,6 +889,22 @@ async function buildNextTask(
             }
           : current.activeLoop,
     }));
+    // 历史 waiting run 的恢复不能猜测 Git 基线。将本次 handoff 的可信
+    // 基线与结果文件一起落盘，resume 才能重新建立同一个 pendingAgentTask。
+    await writeFile(
+      join(root, ".sdd", "runs", runId, "tasks", `${nextTask.id}.handoff.json`),
+      `${JSON.stringify(
+        {
+          taskId: nextTask.id,
+          resultFile,
+          since,
+          gitBaseline: { ...gitBaseline, available: true },
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
 
     const actionRequired: AgentActionRequired = {
       type: "AGENT_TASK_EXECUTION",
@@ -1070,8 +1121,42 @@ async function buildCompleteTask(
       };
     }
 
-    // 文件范围校验：统一使用 validateTaskFiles
-    const modifiedFiles = (resultJson.modifiedFiles as string[]) ?? [];
+    // 外部 Agent 的文件声明不是安全事实源，必须以 handoff 前后的真实 Git delta 为准。
+    const git = new GitInspector(resolveBusinessRoot(root, state));
+    const gitAfter = await git.snapshot();
+    if (!gitAfter.available)
+      throw new SddError(
+        "E_SECURITY_BLOCKED",
+        "无法读取 Git 状态，拒绝验收外部 Agent 结果",
+      );
+    const modifiedFiles = git.delta(pending.gitBaseline, gitAfter);
+    const declaredFiles = [...new Set(resultJson.modifiedFiles)];
+    const undeclaredFiles = modifiedFiles.filter(
+      (file) => !declaredFiles.includes(file),
+    );
+    const nonexistentClaims = declaredFiles.filter(
+      (file) => !modifiedFiles.includes(file),
+    );
+    if (undeclaredFiles.length > 0 || nonexistentClaims.length > 0) {
+      return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 10,
+        error: {
+          code: "E_UNDECLARED_FILE_CHANGE",
+          message: [
+            undeclaredFiles.length === 0
+              ? null
+              : `存在未申报修改：${undeclaredFiles.join(", ")}`,
+            nonexistentClaims.length === 0
+              ? null
+              : `申报文件与真实 Git delta 不一致：${nonexistentClaims.join(", ")}`,
+          ]
+            .filter((message): message is string => message !== null)
+            .join("；"),
+        },
+      };
+    }
     try {
       validateTaskFiles(modifiedFiles, {
         allowedFiles: task.allowedFiles ?? [],
@@ -1178,22 +1263,29 @@ async function buildCompleteTask(
     );
     await rename(temporaryResultsPath, resultsPath);
 
-    // 写入 run result artifact
-    const runId = state.currentRunId ?? "unknown-run";
-    const resultFilePath = join(
-      root,
-      ".sdd",
-      "runs",
-      runId,
-      "tasks",
-      `${taskId}.result.json`,
-    );
-    await mkdir(join(root, ".sdd", "runs", runId, "tasks"), {
-      recursive: true,
-    });
+    // run artifact 保留完整 V2 envelope，并用真实 Git delta 覆盖 Agent 自报 fileDelta。
+    const resultFilePath = join(root, pending.resultFile);
+    const originalArtifact = rawResult as Record<string, unknown>;
+    const persistedArtifact =
+      originalArtifact.schemaVersion === "1.2.0" &&
+      typeof originalArtifact.fileDelta === "object"
+        ? {
+            ...originalArtifact,
+            fileDelta: classifyFileDelta(
+              pending.gitBaseline,
+              gitAfter,
+              modifiedFiles,
+            ),
+            legacy: {
+              ...(originalArtifact.legacy as Record<string, unknown>),
+              modifiedFiles,
+            },
+          }
+        : { ...resultJson, modifiedFiles };
+    await mkdir(dirname(resultFilePath), { recursive: true });
     await writeFile(
       resultFilePath,
-      JSON.stringify(resultJson, null, 2),
+      JSON.stringify(persistedArtifact, null, 2),
       "utf8",
     );
 

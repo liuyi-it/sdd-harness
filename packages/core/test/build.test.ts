@@ -143,6 +143,55 @@ describe("sdd build", () => {
         args: { subcommand: "complete", taskId, result: artifact },
       }),
     ).toMatchObject({ ok: true, state: "PLAN_READY" });
+    const persisted = JSON.parse(
+      await readFile(join(root, first.actionRequired!.resultFile), "utf8"),
+    );
+    expect(persisted).toMatchObject({
+      schemaVersion: "1.2.0",
+      taskId,
+      summary: artifact.summary,
+      commandEvidence: artifact.commandEvidence,
+      timestamps: artifact.timestamps,
+      mode: artifact.mode,
+      fileDelta: { added: [], modified: [], deleted: [] },
+      legacy: { modifiedFiles: [] },
+    });
+  });
+
+  it("外部 Agent 隐瞒越权文件修改时按真实 Git delta 阻断", async () => {
+    const { core, root } = await plannedProject({ execute: vi.fn() });
+    const handoff = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
+    const taskId = handoff.actionRequired!.taskId;
+    await writeFile(join(root, ".env"), "SECRET=hidden\n", "utf8");
+
+    const result = await core.execute({
+      command: "build",
+      cwd: root,
+      args: {
+        subcommand: "complete",
+        taskId,
+        result: {
+          schemaVersion: "1.0.0",
+          taskId,
+          status: "SUCCEEDED",
+          modifiedFiles: [],
+          ...evidenceFor("RED"),
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      exitCode: 10,
+      error: {
+        code: "E_UNDECLARED_FILE_CHANGE",
+        message: expect.stringContaining(".env"),
+      },
+    });
   });
 
   it("Agent 返回非成功状态时终止 handoff 而不是把失败当作成功", async () => {
@@ -893,7 +942,7 @@ describe("sdd build", () => {
         phase,
         status: "PENDING" as const,
         requirements: ["REQ-002"],
-        scenarios: ["SCN-001"],
+        scenarios: ["REQ-002-SC-001"],
         dependsOn: index === 0 ? [] : [`TASK-001-${phases[index - 1]}`],
         allowedFiles: ["src/orders/**"],
         expectedNewFiles: ["src/orders/**"],
@@ -907,7 +956,7 @@ describe("sdd build", () => {
         phase,
         status: "PENDING" as const,
         requirements: ["REQ-001"],
-        scenarios: ["SCN-002"],
+        scenarios: ["REQ-001-SC-001"],
         dependsOn: index === 0 ? [] : [`TASK-002-${phases[index - 1]}`],
         allowedFiles: ["src/audit/**"],
         expectedNewFiles: ["src/audit/**"],

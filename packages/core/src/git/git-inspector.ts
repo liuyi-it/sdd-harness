@@ -14,6 +14,7 @@ export interface GitSnapshot {
   available: boolean;
   files: string[];
   hashes: Record<string, string>;
+  tracked: string[];
 }
 
 export class GitInspector {
@@ -21,7 +22,7 @@ export class GitInspector {
 
   async snapshot(): Promise<GitSnapshot> {
     if (!(await isGitRepository(this.root))) {
-      return { available: false, files: [], hashes: {} };
+      return { available: false, files: [], hashes: {}, tracked: [] };
     }
     try {
       const { stdout } = await executeFile(
@@ -40,18 +41,29 @@ export class GitInspector {
           ),
         ),
       );
-      return { available: true, files, hashes };
+      const { stdout: trackedOutput } = await executeFile(
+        "git",
+        ["ls-files", "-z"],
+        { cwd: this.root, encoding: "utf8" },
+      );
+      const tracked = trackedOutput
+        .split("\0")
+        .filter(Boolean)
+        .map((file) => file.replaceAll("\\", "/"))
+        .filter((file) => !isInternal(file))
+        .sort();
+      return { available: true, files, hashes, tracked };
     } catch {
-      return { available: false, files: [], hashes: {} };
+      return { available: false, files: [], hashes: {}, tracked: [] };
     }
   }
 
   delta(before: GitSnapshot, after: GitSnapshot): string[] {
     if (!before.available || !after.available) return [];
-    return after.files.filter(
+    return [...new Set([...before.files, ...after.files])].filter(
       (file) =>
-        before.hashes[file] === undefined ||
-        before.hashes[file] !== after.hashes[file],
+        before.hashes[file] !== after.hashes[file] ||
+        before.files.includes(file) !== after.files.includes(file),
     );
   }
 }
@@ -70,6 +82,7 @@ export function snapshotFromJson(input: unknown): GitSnapshot | null {
     available?: unknown;
     files?: unknown;
     hashes?: unknown;
+    tracked?: unknown;
   };
   if (
     typeof candidate.available !== "boolean" ||
@@ -89,6 +102,11 @@ export function snapshotFromJson(input: unknown): GitSnapshot | null {
     available: candidate.available,
     files: candidate.files,
     hashes: candidate.hashes as Record<string, string>,
+    tracked: Array.isArray(candidate.tracked)
+      ? candidate.tracked.filter(
+          (file): file is string => typeof file === "string",
+        )
+      : [],
   };
 }
 

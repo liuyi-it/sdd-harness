@@ -8,7 +8,7 @@ import { PINNED_DEPENDENCIES } from "../dependencies.js";
 import { decodeArtifactContent, resolveCodebaseMemoryArtifactName, verifyChecksumManifest, } from "../dependency-integrity.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
-import { CURRENT_SCHEMA_VERSION, migrateConfigDocument, } from "../state/schema-migration.js";
+import { CURRENT_CONFIG_SCHEMA_VERSION, migrateConfigDocument, } from "../state/schema-migration.js";
 import { createInitialState, StateStore } from "../state/state-store.js";
 import { installProjectIntegration } from "../install/project-installer.js";
 import { createDefaultLoopSpec } from "../loop/loop-spec.js";
@@ -36,7 +36,7 @@ const REQUIRED_DIRECTORIES = [
 ];
 const configSchema = z
     .object({
-    schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
+    schemaVersion: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
     project: z.object({ name: z.string().min(1) }).passthrough(),
     plugins: z.object({}).passthrough(),
     codebase: z.object({}).passthrough(),
@@ -212,7 +212,7 @@ function defaultConfig(root, agentNames) {
         }
     }
     return {
-        schemaVersion: CURRENT_SCHEMA_VERSION,
+        schemaVersion: CURRENT_CONFIG_SCHEMA_VERSION,
         project: {
             name: root.split(/[\\/]/).filter(Boolean).at(-1) ?? "auto-detect",
         },
@@ -404,7 +404,7 @@ async function migrateConfigIfNeeded(root, path) {
         throw new SddError("E_STATE_CORRUPTED", "config.yml 必须是对象", "sdd init");
     }
     const document = raw;
-    if (document.schemaVersion === CURRENT_SCHEMA_VERSION)
+    if (document.schemaVersion === CURRENT_CONFIG_SCHEMA_VERSION)
         return;
     const migrated = migrateConfigDocument(document);
     await copyFile(path, `${path}.migration.bak`);

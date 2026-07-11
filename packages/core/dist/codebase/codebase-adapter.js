@@ -133,21 +133,15 @@ export class CodebaseAdapter {
                 commit: "b637e33",
                 officialUrl: CODEBASE_MEMORY_MCP_URL,
                 availableTools: [],
-                supportedIntents: [
-                    "impact",
-                    "related-files",
-                    "symbols",
-                    "callers",
-                    "callees",
-                    "routes",
-                    "tests",
-                    "architecture",
-                ],
+                supportedIntents: [],
                 generatedAt: new Date().toISOString(),
             };
         }
-        const tools = (await this.transport.capabilities?.(root).catch(() => [])) ?? [];
-        return builder.capabilitiesFrom(tools);
+        const capability = await this.transport.capabilities?.(root).catch(() => ({
+            availableTools: [],
+            supportedIntents: [],
+        }));
+        return builder.capabilitiesFrom(capability?.availableTools ?? [], capability?.supportedIntents ?? []);
     }
     /**
      * V2 query：唯一允许通过 Core 访问代码库上下文的入口。任何 transport.query
@@ -208,40 +202,11 @@ export class CodebaseAdapter {
         if (input.intent !== "impact") {
             throw new Error("queryImpact only supports intent=impact");
         }
-        const builder = createMcpQueryBuilder();
-        if (this.transport === undefined) {
-            return builder.buildFallback("impact", MCP_QUERY_UNAVAILABLE, {
-                files: [],
-                symbols: [],
-                tests: [],
-                risks: [],
-            });
-        }
-        const available = await this.transport.isAvailable().catch(() => false);
-        if (available === false || this.transport.query === undefined) {
-            return builder.buildFallback("impact", MCP_QUERY_UNAVAILABLE, {
-                files: [],
-                symbols: [],
-                tests: [],
-                risks: [],
-            });
-        }
-        try {
-            const raw = await this.transport.query(root, input);
-            if (raw === null || typeof raw !== "object") {
-                return builder.buildFallback("impact", MCP_QUERY_UNAVAILABLE, {
-                    files: [],
-                    symbols: [],
-                    tests: [],
-                    risks: [],
-                });
-            }
-            const payload = coerceImpactPayload(raw.payload);
-            return builder.buildImpactResult(input, payload);
-        }
-        catch (error) {
-            return builder.buildFallback("impact", `MCP impact query failed: ${error instanceof Error ? error.message : String(error)}`, { files: [], symbols: [], tests: [], risks: [] });
-        }
+        const result = await this.query(input, root);
+        return {
+            ...result,
+            payload: coerceImpactPayload(result.payload),
+        };
     }
     async inspectDiagnostics(root) {
         const fallback = {
@@ -362,10 +327,12 @@ function coerceImpactPayload(input) {
 function toStringArray(input) {
     if (!Array.isArray(input))
         return [];
-    return input
-        .filter((value) => typeof value === "string")
-        .map((s) => s.trim())
-        .filter((s) => s.length > 0);
+    return [
+        ...new Set(input
+            .filter((value) => typeof value === "string")
+            .map((s) => s.trim())
+            .filter((s) => s.length > 0)),
+    ];
 }
 async function scanFiles(root, limit = 2_000) {
     const absoluteRoot = resolve(root);

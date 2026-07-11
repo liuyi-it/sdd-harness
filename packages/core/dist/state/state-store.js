@@ -29,6 +29,12 @@ const pendingAgentTaskSchema = z.object({
     taskId: safeIdSchema,
     resultFile: safeRelativePathSchema,
     since: z.string().datetime(),
+    gitBaseline: z.object({
+        available: z.literal(true),
+        files: z.array(safeRelativePathSchema),
+        hashes: z.record(z.string(), z.string()),
+        tracked: z.array(safeRelativePathSchema),
+    }),
 });
 const activeLoopSchema = z
     .object({
@@ -208,7 +214,16 @@ export class StateStore {
                 return migrated;
             }
             if (raw.schemaVersion === "1.2.0") {
+                const backupDirectory = await backupSddDirectory(this.root);
                 const migrated = migrateFrom120(raw);
+                await this.writeMigrationRecord(raw, "1.2.0", migrated, backupDirectory);
+                await this.write(migrated);
+                return migrated;
+            }
+            if (raw.schemaVersion === "1.3.0") {
+                const backupDirectory = await backupSddDirectory(this.root);
+                const migrated = migrateFrom130(raw);
+                await this.writeMigrationRecord(raw, "1.3.0", migrated, backupDirectory);
                 await this.write(migrated);
                 return migrated;
             }
@@ -283,6 +298,22 @@ export class StateStore {
         });
         await this.write(updated);
         return updated;
+    }
+    async writeMigrationRecord(raw, from, migrated, backupDirectory) {
+        const backupPath = `${this.path}.migration.bak`;
+        await writeFile(backupPath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
+        await mkdir(join(this.root, ".sdd", "logs"), { recursive: true });
+        await appendFile(join(this.root, ".sdd", "logs", "migration.log"), `${new Date().toISOString()} ${from} -> ${CURRENT_SCHEMA_VERSION}\n`, "utf8");
+        await new ArtifactWriter().write(join(this.root, ".sdd", "migration-report.md"), migrationReport({
+            fromSchemaVersion: from,
+            toSchemaVersion: CURRENT_SCHEMA_VERSION,
+            nextVersion: migrated.version,
+            backupPaths: [backupPath],
+            backupDirectory,
+            ...(typeof raw.version === "number"
+                ? { previousVersion: raw.version }
+                : {}),
+        }), { fromSchemaVersion: from, toSchemaVersion: CURRENT_SCHEMA_VERSION });
     }
     async validateChangeReference(state) {
         if (state.currentChangeId === null)
@@ -526,29 +557,15 @@ function migrateFrom120(raw) {
         const buildingTasks = Object.entries(tasks).filter(([, status]) => status === "BUILDING");
         if (buildingTasks.length === 1) {
             const [taskId] = buildingTasks[0];
-            const runId = raw.currentRunId ?? `run-${Date.now()}`;
-            const resultFile = `.sdd/runs/${runId}/tasks/${taskId}.result.json`;
             return workflowStateSchema.parse({
                 ...raw,
-                schemaVersion: "1.3.0",
-                currentPhase: "BUILD_WAITING_AGENT",
+                schemaVersion: CURRENT_SCHEMA_VERSION,
+                currentPhase: "PLAN_READY",
                 inProgressPhase: null,
-                activeLoop: {
-                    loopId: "auto-default",
-                    runId,
-                    status: "WAITING_AGENT",
-                    waiting: {
-                        reason: "AGENT_TASK_EXECUTION",
-                        taskId,
-                        resultFile,
-                        since: raw.updatedAt ?? new Date().toISOString(),
-                    },
-                },
-                pendingAgentTask: {
-                    taskId,
-                    resultFile,
-                    since: raw.updatedAt ?? new Date().toISOString(),
-                },
+                tasks: { ...tasks, [taskId]: "PENDING" },
+                activeLoop: null,
+                pendingAgentTask: null,
+                suggestedCommand: "sdd build next",
                 version: typeof raw.version === "number" ? raw.version + 1 : 1,
                 updatedAt: new Date().toISOString(),
             });
@@ -556,7 +573,7 @@ function migrateFrom120(raw) {
         // 无法确定唯一 taskId → 标记 FAILED
         return workflowStateSchema.parse({
             ...raw,
-            schemaVersion: "1.3.0",
+            schemaVersion: CURRENT_SCHEMA_VERSION,
             currentPhase: "FAILED",
             failedReason: "旧 BUILDING 等待状态迁移失败：无法确定唯一 taskId，请人工检查",
             version: typeof raw.version === "number" ? raw.version + 1 : 1,
@@ -566,9 +583,47 @@ function migrateFrom120(raw) {
     // 其他 1.2.0 → 1.3.0：仅升级 schemaVersion
     return workflowStateSchema.parse({
         ...raw,
-        schemaVersion: "1.3.0",
+        schemaVersion: CURRENT_SCHEMA_VERSION,
         version: typeof raw.version === "number" ? raw.version + 1 : 1,
         updatedAt: new Date().toISOString(),
+    });
+}
+/** 1.3.0 未保存可信 Git baseline，升级时不能伪造可提交的 handoff。 */
+function migrateFrom130(raw) {
+    const tasks = raw.tasks ?? {};
+    const pending = raw.pendingAgentTask;
+    const waiting = raw.activeLoop
+        ?.waiting;
+    const taskId = typeof pending?.taskId === "string"
+        ? pending.taskId
+        : typeof waiting?.taskId === "string"
+            ? waiting.taskId
+            : undefined;
+    const hadHandoff = raw.currentPhase === "BUILD_WAITING_AGENT" || taskId !== undefined;
+    const nextTasks = taskId === undefined
+        ? Object.fromEntries(Object.entries(tasks).map(([id, status]) => [
+            id,
+            hadHandoff && status === "BUILDING" ? "PENDING" : status,
+        ]))
+        : { ...tasks, [taskId]: "PENDING" };
+    const activeLoop = raw.activeLoop;
+    return workflowStateSchema.parse({
+        ...raw,
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        version: typeof raw.version === "number" ? raw.version + 1 : 1,
+        updatedAt: new Date().toISOString(),
+        tasks: nextTasks,
+        pendingAgentTask: null,
+        currentPhase: hadHandoff ? "FAILED" : raw.currentPhase,
+        failedCommand: hadHandoff ? "sdd build complete" : raw.failedCommand,
+        failedReason: hadHandoff
+            ? "旧 1.3.0 handoff 缺少可信 Git baseline，已拒绝恢复；请检查改动后重新执行 sdd build next"
+            : raw.failedReason,
+        lastError: hadHandoff ? "E_STATE_CORRUPTED" : raw.lastError,
+        suggestedCommand: hadHandoff ? "sdd build next" : raw.suggestedCommand,
+        activeLoop: activeLoop === null || !hadHandoff
+            ? activeLoop
+            : { ...activeLoop, status: "RUNNING", waiting: undefined },
     });
 }
 //# sourceMappingURL=state-store.js.map

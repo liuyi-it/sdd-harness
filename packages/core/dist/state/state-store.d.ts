@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { type Phase } from "../contracts.js";
 export declare const workflowStateSchema: z.ZodObject<{
-    schemaVersion: z.ZodLiteral<"1.3.0">;
+    schemaVersion: z.ZodLiteral<"1.4.0">;
     version: z.ZodNumber;
     updatedAt: z.ZodString;
     initialized: z.ZodBoolean;
@@ -36,6 +36,12 @@ export declare const workflowStateSchema: z.ZodObject<{
         taskId: z.ZodString;
         resultFile: z.ZodString;
         since: z.ZodString;
+        gitBaseline: z.ZodObject<{
+            available: z.ZodLiteral<true>;
+            files: z.ZodArray<z.ZodString>;
+            hashes: z.ZodRecord<z.ZodString, z.ZodString>;
+            tracked: z.ZodArray<z.ZodString>;
+        }, z.core.$strip>;
     }, z.core.$strip>>>;
     currentPhase: z.ZodEnum<{
         PAUSED: "PAUSED";
@@ -156,6 +162,7 @@ export declare class StateStore {
     read(): Promise<WorkflowState>;
     write(state: WorkflowState): Promise<void>;
     update(updater: (state: WorkflowState) => WorkflowState): Promise<WorkflowState>;
+    private writeMigrationRecord;
     private validateChangeReference;
     private normalizeTransientState;
     private recoverFromArtifacts;

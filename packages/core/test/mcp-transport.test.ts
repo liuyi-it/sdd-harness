@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   CodebaseAdapter,
@@ -13,7 +13,9 @@ import {
   MCP_PINNED_COMMIT,
   MCP_QUERY_UNAVAILABLE,
   isSupportedIntent,
+  type McpQueryInput,
 } from "../src/codebase/mcp-query.js";
+import { runCodebaseCommand } from "../src/commands/codebase.js";
 
 class MemoryTransport implements McpTransport {
   public indexed = 0;
@@ -74,7 +76,19 @@ class MemoryTransport implements McpTransport {
   }
   async capabilities() {
     this.capabilitiesCalls += 1;
-    return [...this.capabilityTools];
+    return {
+      availableTools: [...this.capabilityTools],
+      supportedIntents: [
+        "impact",
+        "related-files",
+        "symbols",
+        "callers",
+        "callees",
+        "routes",
+        "tests",
+        "architecture",
+      ] as McpQueryInput["intent"][],
+    };
   }
   async query(_root: string, input: unknown): Promise<unknown> {
     this.queryCalls += 1;
@@ -83,6 +97,19 @@ class MemoryTransport implements McpTransport {
 }
 
 describe("MCP transport v2", () => {
+  it("codebase query 将 CLI query 文本原样传给 adapter", async () => {
+    const query = vi.fn().mockResolvedValue({ provider: MCP_PINNED_PROVIDER });
+    await runCodebaseCommand("/repo", { query } as unknown as CodebaseAdapter, {
+      subcommand: "query",
+      intent: "symbols",
+      query: "OrderService",
+    });
+    expect(query).toHaveBeenCalledWith(
+      { intent: "symbols", query: "OrderService" },
+      "/repo",
+    );
+  });
+
   it("capability discover reports fixed provider + version + commit", async () => {
     const adapter = new CodebaseAdapter(new MemoryTransport());
     const capabilities = await adapter.capabilities();
@@ -135,7 +162,7 @@ describe("MCP transport v2", () => {
 
   it("query() returns degraded fallback when transport is missing", async () => {
     const adapter = new CodebaseAdapter();
-    const result = await adapter.query({ intent: "impact" });
+    const result = await adapter.query({ intent: "impact", query: "orders" });
     expect(result).toMatchObject({
       schemaVersion: "1.2.0",
       intent: "impact",
@@ -148,7 +175,7 @@ describe("MCP transport v2", () => {
 
   it("query() returns precise result when transport is available", async () => {
     const adapter = new CodebaseAdapter(new MemoryTransport());
-    const result = await adapter.query({ intent: "impact" });
+    const result = await adapter.query({ intent: "impact", query: "orders" });
     expect(result).toMatchObject({
       schemaVersion: "1.2.0",
       intent: "impact",
@@ -168,7 +195,7 @@ describe("MCP transport v2", () => {
         }),
       }),
     );
-    const result = await adapter.query({ intent: "impact" });
+    const result = await adapter.query({ intent: "impact", query: "orders" });
     expect(result.confidence).toBeLessThanOrEqual(0.99);
   });
 
@@ -178,7 +205,7 @@ describe("MCP transport v2", () => {
         impactHandler: () => ({ wrong: "shape" }),
       }),
     );
-    const result = await adapter.query({ intent: "impact" });
+    const result = await adapter.query({ intent: "impact", query: "orders" });
     expect(result.provider).toBe(MCP_FALLBACK_PROVIDER);
     expect(result.degraded).toBe(true);
   });
@@ -194,7 +221,7 @@ describe("MCP transport v2", () => {
         }),
       }),
     );
-    const result = await adapter.query({ intent: "impact" });
+    const result = await adapter.query({ intent: "impact", query: "orders" });
     expect(result.confidence).toBe(0.01);
   });
 
@@ -213,7 +240,10 @@ describe("MCP transport v2", () => {
         }),
       }),
     );
-    const result = await adapter.queryImpact("/repo", { intent: "impact" });
+    const result = await adapter.queryImpact("/repo", {
+      intent: "impact",
+      query: "orders",
+    });
     expect(result.payload.files).toEqual(["src/orders/index.ts"]);
     expect(result.payload.symbols).toEqual(["OrdersService"]);
     expect(result.payload.risks).toEqual(["x"]);
@@ -222,13 +252,41 @@ describe("MCP transport v2", () => {
 
   it("queryImpact() returns empty ImpactPayload when degraded", async () => {
     const adapter = new CodebaseAdapter();
-    const result = await adapter.queryImpact("/repo", { intent: "impact" });
+    const result = await adapter.queryImpact("/repo", {
+      intent: "impact",
+      query: "orders",
+    });
     expect(result.provider).toBe(MCP_FALLBACK_PROVIDER);
     expect(result.payload).toEqual({
       files: [],
       symbols: [],
       tests: [],
       risks: [],
+    });
+  });
+
+  it("queryImpact() 保留 transport 的 fallback provider 与 degraded 状态", async () => {
+    const adapter = new CodebaseAdapter(
+      new MemoryTransport({
+        impactHandler: () => ({
+          schemaVersion: "1.2.0",
+          provider: MCP_FALLBACK_PROVIDER,
+          intent: "impact",
+          degraded: true,
+          reason: "detect_changes unavailable",
+          confidence: 0.3,
+          payload: { files: [], symbols: [], tests: [], risks: [] },
+        }),
+      }),
+    );
+
+    await expect(
+      adapter.queryImpact("/repo", { intent: "impact", query: "orders" }),
+    ).resolves.toMatchObject({
+      provider: MCP_FALLBACK_PROVIDER,
+      degraded: true,
+      reason: "detect_changes unavailable",
+      confidence: 0.3,
     });
   });
 
@@ -269,14 +327,14 @@ describe("MCP transport v2", () => {
   it("queryImpact() rejects non-impact intents", async () => {
     const adapter = new CodebaseAdapter(new MemoryTransport());
     await expect(
-      adapter.queryImpact("/repo", { intent: "symbols" }),
+      adapter.queryImpact("/repo", { intent: "symbols", query: "orders" }),
     ).rejects.toThrow(/impact/);
   });
 
   it("query() rejects unsupported intents", async () => {
     const adapter = new CodebaseAdapter(new MemoryTransport());
     await expect(
-      adapter.query({ intent: "execute_command" as never }),
+      adapter.query({ intent: "execute_command" as never, query: "orders" }),
     ).rejects.toThrow(/unsupported intent/);
   });
 });

@@ -35,6 +35,7 @@ export interface McpDiagnosticError {
 export interface McpCapabilities {
   schemaVersion: "1.0.0";
   provider: "codebase-memory-mcp" | "fallback-file-scan";
+  availableTools: string[];
   supportedIntents: CodebaseQueryIntent[];
   supportsIndex: boolean;
   supportsGraphQuery: boolean;
@@ -56,6 +57,8 @@ export interface McpSession {
   call(method: string, params?: Record<string, unknown>): Promise<unknown>;
   notify(method: string, params?: Record<string, unknown>): void;
   close(): void;
+  isAlive(): boolean;
+  onExit(listener: () => void): void;
 }
 
 export interface McpIndexInput {
@@ -89,7 +92,7 @@ export interface McpQueryResult {
 }
 
 export interface McpQueryItem {
-  type: "file" | "symbol" | "route" | "test" | "module" | "config";
+  type: "file" | "symbol" | "route" | "test" | "module" | "config" | "risk";
   path?: string;
   symbol?: string;
   confidence: number;
