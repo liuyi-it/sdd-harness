@@ -15,6 +15,7 @@ import type {
   McpQueryResult,
   McpCapabilities,
 } from "./types.js";
+import { basename } from "node:path";
 
 const DEFAULT_CONFIG: CodebaseConfig = {
   provider: "codebase-memory-mcp",
@@ -35,6 +36,7 @@ const DEFAULT_CONFIG: CodebaseConfig = {
 };
 
 export interface InitResult {
+  status: "AVAILABLE" | "DEGRADED" | "FAILED";
   /** MCP 启动结果 */
   lifecycle?: McpLifecycleResult;
   /** 当前 diagnostics */
@@ -70,6 +72,7 @@ export class CodebaseMemoryManager {
       });
       await writeDiagnostics(root, this.config.diagnosticsFile, diag);
       return {
+        status: "DEGRADED",
         diagnostics: diag,
         warnings: [degradedWarning("配置 mode=fallback")],
         degraded: true,
@@ -86,6 +89,16 @@ export class CodebaseMemoryManager {
       this.lifecycleResult = result;
 
       if (result.status === "STARTED" || result.status === "ALREADY_RUNNING") {
+        if (result.session === undefined)
+          return this.handleUnavailable(root, "MCP 会话未建立", "initialize");
+        await result.session.call("tools/call", {
+          name: "index_repository",
+          arguments: {
+            repo_path: root,
+            name: basename(root),
+            mode: "fast",
+          },
+        });
         const diag = createDiagnostics({
           version: this.config.version,
           lastStartedAt: new Date().toISOString(),
@@ -93,6 +106,7 @@ export class CodebaseMemoryManager {
         });
         await writeDiagnostics(root, this.config.diagnosticsFile, diag);
         return {
+          status: "AVAILABLE",
           lifecycle: result,
           diagnostics: diag,
           warnings: [],
@@ -122,9 +136,28 @@ export class CodebaseMemoryManager {
     ) {
       return fallbackQuery(input);
     }
-    // 正常模式 — 此处后续可通过 MCP stdio 发送 query 请求
-    // 当前 MVP 返回 fallback 结果
-    return fallbackQuery(input);
+    const session = this.lifecycleResult?.session;
+    if (session === undefined) return fallbackQuery(input);
+    try {
+      const name = toolForIntent(input.intent);
+      if (!(this.lifecycleResult?.tools ?? []).includes(name))
+        throw new Error(`MCP 未暴露 ${name}`);
+      const result = await session.call("tools/call", {
+        name,
+        arguments: toolArguments(name, input),
+      });
+      return {
+        schemaVersion: "1.0.0",
+        provider: "codebase-memory-mcp",
+        mode: "managed",
+        degraded: false,
+        intent: input.intent,
+        query: input.query,
+        items: extractItems(result),
+      };
+    } catch {
+      return fallbackQuery(input);
+    }
   }
 
   /** 获取当前能力描述，基于真实 MCP 状态而非配置 */
@@ -134,23 +167,14 @@ export class CodebaseMemoryManager {
       (this.lifecycleResult.status === "STARTED" ||
         this.lifecycleResult.status === "ALREADY_RUNNING");
     const degraded = this.config.mode === "fallback" || !mcpAlive;
+    const tools = this.lifecycleResult?.tools ?? [];
+    const supported = supportedIntents(tools);
     return {
       schemaVersion: "1.0.0",
       provider: degraded ? "fallback-file-scan" : "codebase-memory-mcp",
-      supportedIntents: degraded
-        ? ["impact", "related-files"]
-        : [
-            "impact",
-            "related-files",
-            "symbols",
-            "callers",
-            "callees",
-            "routes",
-            "tests",
-            "architecture",
-          ],
-      supportsIndex: !degraded,
-      supportsGraphQuery: !degraded,
+      supportedIntents: degraded ? ["impact", "related-files"] : supported,
+      supportsIndex: !degraded && tools.includes("index_repository"),
+      supportsGraphQuery: !degraded && tools.includes("query_graph"),
     };
   }
 
@@ -178,6 +202,7 @@ export class CodebaseMemoryManager {
       });
       await writeDiagnostics(root, this.config.diagnosticsFile, diag);
       return {
+        status: "FAILED",
         diagnostics: diag,
         warnings: [
           {
@@ -201,6 +226,7 @@ export class CodebaseMemoryManager {
       });
       await writeDiagnostics(root, this.config.diagnosticsFile, diag);
       return {
+        status: "DEGRADED",
         diagnostics: diag,
         warnings: [degradedWarning(reason)],
         degraded: true,
@@ -213,6 +239,7 @@ export class CodebaseMemoryManager {
       errors: [createDiagError("E_COMPONENT_UNAVAILABLE", stage, reason)],
     });
     return {
+      status: "FAILED",
       diagnostics: diag,
       warnings: [
         {
@@ -224,4 +251,88 @@ export class CodebaseMemoryManager {
       degraded: false,
     };
   }
+}
+
+function toolForIntent(intent: McpQueryInput["intent"]): string {
+  if (intent === "architecture") return "get_architecture";
+  if (intent === "callers" || intent === "callees") return "trace_path";
+  if (intent === "data-flow") return "trace_path";
+  if (intent === "impact") return "detect_changes";
+  if (intent === "config" || intent === "related-files") return "search_code";
+  return "search_graph";
+}
+
+function toolArguments(
+  tool: string,
+  input: McpQueryInput,
+): Record<string, unknown> {
+  const project = basename(input.root);
+  if (tool === "get_architecture") return { project, aspects: ["overview"] };
+  if (tool === "trace_path")
+    return {
+      project,
+      function_name: input.query,
+      direction: input.intent === "callers" ? "inbound" : "outbound",
+      mode: input.intent === "data-flow" ? "data_flow" : "calls",
+    };
+  if (tool === "detect_changes") return { project };
+  if (tool === "search_code")
+    return { project, pattern: input.query, mode: "compact" };
+  return { project, query: input.query || ".*" };
+}
+
+function supportedIntents(
+  tools: string[],
+): McpCapabilities["supportedIntents"] {
+  const intents: McpCapabilities["supportedIntents"] = [];
+  if (tools.includes("detect_changes")) intents.push("impact");
+  if (tools.includes("search_code")) intents.push("related-files", "config");
+  if (tools.includes("search_graph"))
+    intents.push("symbols", "routes", "tests", "entrypoints");
+  if (tools.includes("trace_path"))
+    intents.push("callers", "callees", "data-flow");
+  if (tools.includes("get_architecture")) intents.push("architecture");
+  return intents;
+}
+
+function extractItems(value: unknown): McpQueryResult["items"] {
+  const text = Array.isArray((value as { content?: unknown })?.content)
+    ? (value as { content: Array<{ text?: unknown }> }).content
+        .map((item) => item.text)
+        .filter((item): item is string => typeof item === "string")
+        .join("\n")
+    : "";
+  let payload: unknown = value;
+  try {
+    payload = text.length === 0 ? value : JSON.parse(text);
+  } catch {
+    return [{ type: "module", confidence: 0.5, reason: text.slice(0, 500) }];
+  }
+  const record = payload as Record<string, unknown>;
+  const results = Array.isArray(record.results)
+    ? record.results
+    : Array.isArray(record.items)
+      ? record.items
+      : [];
+  return results.flatMap((entry) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const item = entry as Record<string, unknown>;
+    const path =
+      typeof item.file_path === "string" ? item.file_path : item.path;
+    const symbol =
+      typeof item.qualified_name === "string"
+        ? item.qualified_name
+        : typeof item.name === "string"
+          ? item.name
+          : undefined;
+    return [
+      {
+        type: typeof symbol === "string" ? "symbol" : "file",
+        ...(typeof path === "string" ? { path } : {}),
+        ...(typeof symbol === "string" ? { symbol } : {}),
+        confidence: 0.9,
+        reason: "codebase-memory-mcp 查询结果",
+      },
+    ];
+  });
 }

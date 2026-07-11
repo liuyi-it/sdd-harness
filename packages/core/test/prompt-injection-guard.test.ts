@@ -13,7 +13,6 @@ import { Core } from "../src/core.js";
 import {
   MCP_BOUNDARY_BEGIN,
   MCP_BOUNDARY_END,
-  REPOSITORY_BOUNDARY_BEGIN,
   REPOSITORY_BOUNDARY_END,
   wrapUntrustedMcpOutput,
   wrapUntrustedRepositoryContent,
@@ -239,11 +238,10 @@ describe("prompt injection guard", () => {
 
     const result = await core.execute({ command: "build", cwd: root });
 
-    expect(result).toMatchObject({ ok: true, state: "BUILD_READY" });
-    expect(requests[0]?.allowedCommands).toEqual(["npm test"]);
-    expect(requests[0]?.contextPack).toContain("## Security Rules");
-    expect(requests[0]?.contextPack).toContain(
-      REPOSITORY_BOUNDARY_BEGIN.trim(),
-    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+    expect(requests).toEqual([]);
   });
 });

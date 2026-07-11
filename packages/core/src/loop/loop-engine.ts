@@ -6,7 +6,7 @@ import type {
 import { COMMANDS } from "../contracts.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
-import type { StateStore } from "../state/state-store.js";
+import type { StateStore, WorkflowState } from "../state/state-store.js";
 import type { LoopStore } from "./loop-store.js";
 import type { LoopEventStore } from "./loop-events.js";
 import { decide } from "./loop-decision.js";
@@ -245,13 +245,15 @@ export class LoopEngine {
           status: "RUNNING",
           updatedAt: new Date().toISOString(),
         });
-        const activeLoop: Record<string, unknown> = {
+        const activeLoop: NonNullable<WorkflowState["activeLoop"]> = {
           loopId: run.loopId,
           runId: run.runId,
           status: "RUNNING",
         };
         if (keepWaiting !== undefined) {
-          activeLoop.waiting = keepWaiting;
+          activeLoop.waiting = keepWaiting as NonNullable<
+            WorkflowState["activeLoop"]
+          >["waiting"];
         }
 
         await this.store.update((current) => ({
@@ -605,10 +607,10 @@ export class LoopEngine {
     await this.store.update((current) => ({
       ...current,
       activeLoop:
-        current.activeLoop === null || typeof current.activeLoop !== "object"
+        current.activeLoop === null
           ? current.activeLoop
           : {
-              ...(current.activeLoop as Record<string, unknown>),
+              ...current.activeLoop,
               runId,
               status: status === "ARCHIVED" ? "SUCCEEDED" : status,
             },

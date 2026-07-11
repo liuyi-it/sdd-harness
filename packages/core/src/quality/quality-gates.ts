@@ -13,6 +13,8 @@ import { traceabilityFailures } from "./traceability.js";
  */
 export interface StoredTaskResult extends TaskExecutionResult {
   taskId: string;
+  status?: "DONE" | "SUCCEEDED";
+  schemaVersion?: string;
 }
 
 export interface GateResult {

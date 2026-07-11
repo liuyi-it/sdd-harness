@@ -18,14 +18,76 @@ const taskStatusSchema = z.enum([
     "FAILED",
     "SKIPPED",
 ]);
-export const workflowStateSchema = z.object({
+const safeIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]*$/);
+const safeRelativePathSchema = z
+    .string()
+    .min(1)
+    .refine((value) => !value.startsWith("/") &&
+    !value.includes("\\") &&
+    !value.split("/").includes(".."), "必须是安全相对路径");
+const pendingAgentTaskSchema = z.object({
+    taskId: safeIdSchema,
+    resultFile: safeRelativePathSchema,
+    since: z.string().datetime(),
+});
+const activeLoopSchema = z
+    .object({
+    loopId: safeIdSchema,
+    runId: safeIdSchema,
+    status: z.enum([
+        "RUNNING",
+        "WAITING_AGENT",
+        "PAUSED",
+        "FAILED",
+        "SUCCEEDED",
+        "ABORTED",
+        "ARCHIVED",
+    ]),
+    waiting: z
+        .object({
+        reason: z.enum([
+            "AGENT_TASK_EXECUTION",
+            "CLARIFICATION",
+            "HUMAN_REVIEW",
+        ]),
+        taskId: safeIdSchema.optional(),
+        resultFile: safeRelativePathSchema.optional(),
+        since: z.string().datetime(),
+    })
+        .optional(),
+    recovered: z.boolean().optional(),
+    lastDecision: z.string().optional(),
+})
+    .superRefine((loop, context) => {
+    if (loop.status === "WAITING_AGENT" && loop.waiting === undefined)
+        context.addIssue({
+            code: "custom",
+            message: "WAITING_AGENT 必须包含 waiting",
+        });
+    if (loop.waiting?.reason === "AGENT_TASK_EXECUTION" &&
+        (loop.waiting.taskId === undefined ||
+            loop.waiting.resultFile === undefined))
+        context.addIssue({
+            code: "custom",
+            message: "任务等待必须包含 taskId 和 resultFile",
+        });
+    if (["ABORTED", "SUCCEEDED", "ARCHIVED"].includes(loop.status) &&
+        loop.waiting !== undefined)
+        context.addIssue({
+            code: "custom",
+            message: "终态 loop 不能保留 waiting",
+        });
+});
+export const workflowStateSchema = z
+    .object({
     schemaVersion: z.literal(CURRENT_SCHEMA_VERSION),
     version: z.number().int().positive(),
     updatedAt: z.string(),
     initialized: z.boolean(),
     currentChangeId: z.string().nullable(),
     currentRunId: z.string().nullable(),
-    activeLoop: z.unknown().nullable(),
+    activeLoop: activeLoopSchema.nullable(),
+    pendingAgentTask: pendingAgentTaskSchema.nullable().default(null),
     currentPhase: z.enum(PHASES),
     indexStatus: z.enum([
         "MISSING",
@@ -57,6 +119,23 @@ export const workflowStateSchema = z.object({
     tasks: z.record(z.string(), taskStatusSchema),
     artifacts: z.record(z.string(), z.enum(["MISSING", "READY", "CANDIDATE", "STALE"])),
     recoveredFromBackup: z.boolean().optional(),
+})
+    .superRefine((state, context) => {
+    const pending = state.pendingAgentTask;
+    if (pending !== null && state.tasks[pending.taskId] !== "BUILDING")
+        context.addIssue({
+            code: "custom",
+            message: "pendingAgentTask 必须对应 BUILDING 任务",
+        });
+    const waiting = state.activeLoop?.waiting;
+    if (waiting?.reason === "AGENT_TASK_EXECUTION" &&
+        (state.pendingAgentTask === null ||
+            waiting.taskId !== state.pendingAgentTask.taskId ||
+            waiting.resultFile !== state.pendingAgentTask.resultFile))
+        context.addIssue({
+            code: "custom",
+            message: "activeLoop waiting 必须与 pendingAgentTask 保持一致",
+        });
 });
 export function createInitialState() {
     return {
@@ -67,6 +146,7 @@ export function createInitialState() {
         currentChangeId: null,
         currentRunId: null,
         activeLoop: null,
+        pendingAgentTask: null,
         currentPhase: "NOT_INITIALIZED",
         indexStatus: "MISSING",
         codebaseProvider: "codebase-memory-mcp",
@@ -446,6 +526,8 @@ function migrateFrom120(raw) {
         const buildingTasks = Object.entries(tasks).filter(([, status]) => status === "BUILDING");
         if (buildingTasks.length === 1) {
             const [taskId] = buildingTasks[0];
+            const runId = raw.currentRunId ?? `run-${Date.now()}`;
+            const resultFile = `.sdd/runs/${runId}/tasks/${taskId}.result.json`;
             return workflowStateSchema.parse({
                 ...raw,
                 schemaVersion: "1.3.0",
@@ -453,13 +535,19 @@ function migrateFrom120(raw) {
                 inProgressPhase: null,
                 activeLoop: {
                     loopId: "auto-default",
-                    runId: raw.currentRunId ?? `run-${Date.now()}`,
+                    runId,
                     status: "WAITING_AGENT",
                     waiting: {
                         reason: "AGENT_TASK_EXECUTION",
                         taskId,
+                        resultFile,
                         since: raw.updatedAt ?? new Date().toISOString(),
                     },
+                },
+                pendingAgentTask: {
+                    taskId,
+                    resultFile,
+                    since: raw.updatedAt ?? new Date().toISOString(),
                 },
                 version: typeof raw.version === "number" ? raw.version + 1 : 1,
                 updatedAt: new Date().toISOString(),

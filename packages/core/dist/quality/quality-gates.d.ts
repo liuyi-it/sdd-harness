@@ -8,6 +8,8 @@ import type { SpecDocument } from "../engines/openspec/model.js";
  */
 export interface StoredTaskResult extends TaskExecutionResult {
     taskId: string;
+    status?: "DONE" | "SUCCEEDED";
+    schemaVersion?: string;
 }
 export interface GateResult {
     passed: boolean;

@@ -1,6 +1,7 @@
 import { mkdir, opendir, readFile, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { createMcpQueryBuilder, isSupportedIntent, MCP_FALLBACK_PROVIDER, MCP_PINNED_PROVIDER, MCP_QUERY_UNAVAILABLE, } from "./mcp-query.js";
+import { SddError } from "../errors.js";
 export const MCP_UNAVAILABLE_REASON = "codebase-memory-mcp unavailable";
 const EXCLUDED_DIRECTORIES = new Set([
     ".git",
@@ -55,6 +56,8 @@ export class CodebaseAdapter {
                     });
                 {
                     const initialized = await this.transport.index(root);
+                    if (initialized?.failed === true)
+                        throw new SddError("E_COMPONENT_UNAVAILABLE", initialized.reason ?? MCP_UNAVAILABLE_REASON, "sdd codebase doctor");
                     if (initialized?.degraded === true)
                         return await this.fallback(root, {
                             installed: inspected?.installed ?? false,
@@ -65,6 +68,7 @@ export class CodebaseAdapter {
                             officialUrl: CODEBASE_MEMORY_MCP_URL,
                             message: initialized.reason ?? MCP_UNAVAILABLE_REASON,
                         });
+                    const inspectedAfterInit = await this.transport.inspect?.(root);
                     return {
                         provider: "codebase-memory-mcp",
                         degraded: false,
@@ -76,12 +80,14 @@ export class CodebaseAdapter {
                             callable: true,
                             indexed: true,
                             officialUrl: CODEBASE_MEMORY_MCP_URL,
-                            ...inspected,
+                            ...inspectedAfterInit,
                         },
                     };
                 }
             }
             catch (error) {
+                if (error instanceof SddError)
+                    throw error;
                 return await this.fallback(root, {
                     installed: inspected?.installed ?? true,
                     configured: inspected?.configured ?? true,

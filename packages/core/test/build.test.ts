@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { artifactInputHash } from "../src/artifacts/artifact-writer.js";
 import { renderContextPack } from "../src/build/context-pack.js";
+import { normalizeTaskExecutionResult } from "../src/build/task-result-normalizer.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { type TaskExecutor } from "../src/build/task-executor.js";
@@ -102,6 +103,93 @@ afterEach(async () => {
 });
 
 describe("sdd build", () => {
+  it("手动 build next 持久化 handoff，重复调用返回同一任务，并接受标准 V2 制品", async () => {
+    const { core, root } = await plannedProject({ execute: vi.fn() });
+    const first = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
+    const repeated = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
+    expect(first.actionRequired?.type).toBe("AGENT_TASK_EXECUTION");
+    expect(repeated.actionRequired).toMatchObject({
+      taskId: first.actionRequired?.taskId,
+      resultFile: first.actionRequired?.resultFile,
+    });
+    const taskId = first.actionRequired!.taskId;
+    const artifact = normalizeTaskExecutionResult(
+      {
+        taskId,
+        modifiedFiles: [],
+        ...evidenceFor("RED"),
+      } as Parameters<typeof normalizeTaskExecutionResult>[0],
+      {
+        actualFileDelta: { added: [], modified: [], deleted: [] },
+        startedAt: new Date().toISOString(),
+        endedAt: new Date().toISOString(),
+        requestedMode: "main-agent",
+        actualMode: "main-agent",
+      },
+    );
+    artifact.taskId = taskId;
+    expect(
+      await core.execute({
+        command: "build",
+        cwd: root,
+        args: { subcommand: "complete", taskId, result: artifact },
+      }),
+    ).toMatchObject({ ok: true, state: "PLAN_READY" });
+  });
+
+  it("Agent 返回非成功状态时终止 handoff 而不是把失败当作成功", async () => {
+    const { core, root } = await plannedProject({ execute: vi.fn() });
+    const handoff = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
+    const taskId = handoff.actionRequired!.taskId;
+    expect(
+      await core.execute({
+        command: "build",
+        cwd: root,
+        args: {
+          subcommand: "complete",
+          taskId,
+          result: {
+            schemaVersion: "1.0.0",
+            taskId,
+            status: "FAILED",
+            modifiedFiles: [],
+            ...evidenceFor("RED"),
+          },
+        },
+      }),
+    ).toMatchObject({
+      ok: false,
+      error: { code: "E_AGENT_TASK_FAILED" },
+    });
+    expect((await new StateStore(root).read()).tasks[taskId]).toBe("FAILED");
+  });
+
+  it("损坏的 task-results 元素返回结构化状态错误", async () => {
+    const { core, root } = await plannedProject({ execute: vi.fn() });
+    await writeFile(
+      join(root, ".sdd/changes/add-cancel/task-results.json"),
+      "[null]",
+    );
+    await expect(
+      core.execute({ command: "build", cwd: root }),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
+    });
+  });
+
   it("缺少 TDD 证据时拒绝完成任务", async () => {
     const { core, root } = await plannedProject({
       execute: vi.fn().mockResolvedValue({

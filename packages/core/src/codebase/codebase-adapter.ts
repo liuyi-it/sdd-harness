@@ -12,6 +12,7 @@ import {
   type McpQueryInput,
   type McpQueryResult,
 } from "./mcp-query.js";
+import { SddError } from "../errors.js";
 
 /**
  * CodebaseAdapter 封装两类代码上下文来源：
@@ -47,7 +48,9 @@ export const MCP_UNAVAILABLE_REASON = "codebase-memory-mcp unavailable";
 
 export interface McpTransport {
   isAvailable(): Promise<boolean>;
-  index(root: string): Promise<void | { degraded: boolean; reason?: string }>;
+  index(
+    root: string,
+  ): Promise<void | { degraded: boolean; failed?: boolean; reason?: string }>;
   summarize(root: string): Promise<CodebaseSummary>;
   inspect?(root: string): Promise<Partial<McpDiagnostics>>;
   /** V2: 返回 MCP 暴露的工具集合，缺失时按空集合处理并写入 partial。 */
@@ -113,6 +116,12 @@ export class CodebaseAdapter {
           });
         {
           const initialized = await this.transport.index(root);
+          if (initialized?.failed === true)
+            throw new SddError(
+              "E_COMPONENT_UNAVAILABLE",
+              initialized.reason ?? MCP_UNAVAILABLE_REASON,
+              "sdd codebase doctor",
+            );
           if (initialized?.degraded === true)
             return await this.fallback(root, {
               installed: inspected?.installed ?? false,
@@ -123,6 +132,7 @@ export class CodebaseAdapter {
               officialUrl: CODEBASE_MEMORY_MCP_URL,
               message: initialized.reason ?? MCP_UNAVAILABLE_REASON,
             });
+          const inspectedAfterInit = await this.transport.inspect?.(root);
           return {
             provider: "codebase-memory-mcp",
             degraded: false,
@@ -134,11 +144,12 @@ export class CodebaseAdapter {
               callable: true,
               indexed: true,
               officialUrl: CODEBASE_MEMORY_MCP_URL,
-              ...inspected,
+              ...inspectedAfterInit,
             },
           };
         }
       } catch (error) {
+        if (error instanceof SddError) throw error;
         return await this.fallback(root, {
           installed: inspected?.installed ?? true,
           configured: inspected?.configured ?? true,

@@ -15,7 +15,7 @@ import { scopePatternsOverlap } from "../security/scope-overlap.js";
 import { taskEvidenceFailures, tddChainFailures, } from "../quality/tdd-evidence.js";
 import { resolveProjectRules, } from "../project-conventions/rule-resolver.js";
 import { StateStore } from "../state/state-store.js";
-import { parseTasks } from "../quality/quality-schema.js";
+import { parseTaskResults, parseTasks } from "../quality/quality-schema.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 export async function runBuild(root, executor, signal, rawArgs) {
     const subcommand = rawArgs?.subcommand;
@@ -43,7 +43,7 @@ export async function runBuild(root, executor, signal, rawArgs) {
         await assertChangeWritable(root, changeId);
         const businessRoot = resolveBusinessRoot(root, state);
         const change = join(root, ".sdd", "changes", changeId);
-        const tasks = JSON.parse(await readFile(join(change, "tasks.json"), "utf8"));
+        const tasks = parseTasks(await readFile(join(change, "tasks.json"), "utf8"));
         await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
         const previousResults = await readResults(join(change, "task-results.json"));
         const trustedPreviousResults = previousResults.filter((result) => {
@@ -282,7 +282,13 @@ function validateExecution(task, result, actualModifiedFiles) {
             throw new SddError("E_SECURITY_BLOCKED", `验证命令未在允许清单内：${evidence.command}`);
     if (legacy.verification.some((evidence) => !evidence.passed))
         throw new SddError("E_VERIFY_FAILED", `任务 ${task.id} 验证失败`, "sdd build");
-    return { taskId: task.id, ...legacy, modifiedFiles };
+    return {
+        taskId: task.id,
+        schemaVersion: "1.0.0",
+        status: "DONE",
+        ...legacy,
+        modifiedFiles,
+    };
 }
 function lockOptions(args) {
     const timeoutMs = timeoutMilliseconds(args);
@@ -368,10 +374,12 @@ function fileFitsTask(file, task) {
 }
 async function readResults(path) {
     try {
-        const parsed = JSON.parse(await readFile(path, "utf8"));
-        if (!Array.isArray(parsed))
-            throw new SddError("E_STATE_CORRUPTED", "task-results.json 必须是数组");
-        return parsed;
+        const parsed = parseTaskResults(await readFile(path, "utf8"));
+        return parsed.map((result) => {
+            if (result.status !== "DONE" && result.status !== "SUCCEEDED")
+                throw new SddError("E_STATE_CORRUPTED", "task-results.json 包含未成功的任务结果");
+            return result;
+        });
     }
     catch (error) {
         if (isMissingFile(error))
@@ -454,15 +462,14 @@ async function buildNextTask(root, rawArgs) {
     await lock.acquire("sdd build next", undefined, lockOptions(rawArgs));
     try {
         const state = await new StateStore(root).read();
-        // 如果当前已有 active waiting task，返回同一份 handoff，不重复分配
+        // 无论来自手动 build 还是 auto loop，均从独立 handoff 状态恢复同一任务。
         if (state.currentPhase === "BUILD_WAITING_AGENT") {
-            const activeLoop = state.activeLoop;
-            const waiting = activeLoop?.waiting;
-            if (waiting?.taskId && waiting?.resultFile) {
-                const existingTaskId = waiting.taskId;
+            const pending = state.pendingAgentTask;
+            if (pending !== null) {
+                const existingTaskId = pending.taskId;
                 const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
                 const change = join(root, ".sdd", "changes", changeId);
-                const tasks = JSON.parse(await readFile(join(change, "tasks.json"), "utf8"));
+                const tasks = parseTasks(await readFile(join(change, "tasks.json"), "utf8"));
                 const task = tasks.find((t) => t.id === existingTaskId);
                 if (task) {
                     const contextPackPath = `.sdd/context-packs/${changeId}/${existingTaskId}.md`;
@@ -479,7 +486,7 @@ async function buildNextTask(root, rawArgs) {
                             const [command, ...rest] = cmd.split(/\s+/);
                             return { command: command, args: rest };
                         }) ?? [],
-                        resultFile: waiting.resultFile,
+                        resultFile: pending.resultFile,
                         codebase: {
                             provider: state.codebaseProvider === "codebase-memory-mcp"
                                 ? "codebase-memory-mcp"
@@ -513,7 +520,7 @@ async function buildNextTask(root, rawArgs) {
         }
         const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
         const change = join(root, ".sdd", "changes", changeId);
-        const tasks = JSON.parse(await readFile(join(change, "tasks.json"), "utf8"));
+        const tasks = parseTasks(await readFile(join(change, "tasks.json"), "utf8"));
         // 查找第一个可执行任务（排除 DONE 和 BUILDING）
         const taskStatuses = state.tasks;
         const nextTask = tasks.find((t) => taskStatuses[t.id] !== "DONE" &&
@@ -559,6 +566,7 @@ async function buildNextTask(root, rawArgs) {
             recursive: true,
         });
         // 标记任务为 BUILDING + 更新状态（P1-2）
+        const since = new Date().toISOString();
         await new StateStore(root).update((current) => ({
             ...current,
             currentPhase: "BUILD_WAITING_AGENT",
@@ -567,7 +575,8 @@ async function buildNextTask(root, rawArgs) {
             lastError: null,
             suggestedCommand: "sdd build complete",
             tasks: { ...current.tasks, [nextTask.id]: "BUILDING" },
-            activeLoop: current.activeLoop !== null && typeof current.activeLoop === "object"
+            pendingAgentTask: { taskId: nextTask.id, resultFile, since },
+            activeLoop: current.activeLoop !== null
                 ? {
                     ...current.activeLoop,
                     status: "WAITING_AGENT",
@@ -575,7 +584,7 @@ async function buildNextTask(root, rawArgs) {
                         reason: "AGENT_TASK_EXECUTION",
                         taskId: nextTask.id,
                         resultFile,
-                        since: new Date().toISOString(),
+                        since,
                     },
                 }
                 : current.activeLoop,
@@ -634,15 +643,17 @@ function parseCompleteResult(taskId, value) {
         Object.getPrototypeOf(value) !== Object.prototype)
         return invalidCompleteResult("TaskExecutionResult 结构不合法");
     const result = value;
-    const legacy = result.schemaVersion === "1.2.0" && "fileDelta" in result
-        ? result.legacy
-        : result;
+    const isV2 = result.schemaVersion === "1.2.0" && "fileDelta" in result;
+    const legacy = isV2 ? result.legacy : result;
     if (typeof legacy !== "object" || legacy === null || Array.isArray(legacy))
         return invalidCompleteResult("v2 task execution result 必须包含合法 legacy");
     const parsed = legacy;
-    if (typeof parsed.schemaVersion !== "string" ||
-        parsed.taskId !== taskId ||
-        !VALID_TASK_STATUSES.includes(parsed.status) ||
+    const schemaVersion = isV2 ? result.schemaVersion : parsed.schemaVersion;
+    const resultTaskId = isV2 ? result.taskId : parsed.taskId;
+    const status = isV2 ? result.status : parsed.status;
+    if (typeof schemaVersion !== "string" ||
+        resultTaskId !== taskId ||
+        !VALID_TASK_STATUSES.includes(status) ||
         !Array.isArray(parsed.modifiedFiles) ||
         !parsed.modifiedFiles.every((file) => typeof file === "string") ||
         !Array.isArray(parsed.tddEvidence) ||
@@ -662,7 +673,9 @@ function parseCompleteResult(taskId, value) {
         return invalidCompleteResult("TaskExecutionResult 字段类型不合法");
     return {
         ...parsed,
+        schemaVersion,
         taskId,
+        status,
         modifiedFiles: [...parsed.modifiedFiles],
         tddEvidence: [...parsed.tddEvidence],
         verification: [...parsed.verification],
@@ -698,12 +711,10 @@ async function buildCompleteTask(root, rawArgs) {
         const state = await store.read();
         if (state.currentPhase !== "BUILD_WAITING_AGENT")
             return invalidCompleteResult(`无法在 ${state.currentPhase} 状态执行 build complete`);
-        const activeLoop = state.activeLoop;
-        const waiting = activeLoop?.waiting;
-        if (activeLoop?.status !== "WAITING_AGENT" ||
-            waiting?.reason !== "AGENT_TASK_EXECUTION" ||
-            waiting.taskId !== taskId ||
-            typeof waiting.resultFile !== "string" ||
+        const pending = state.pendingAgentTask;
+        if (pending === null ||
+            pending.taskId !== taskId ||
+            typeof pending.resultFile !== "string" ||
             state.tasks[taskId] !== "BUILDING")
             return {
                 ...invalidCompleteResult("当前没有与该任务匹配的 Agent handoff"),
@@ -730,6 +741,30 @@ async function buildCompleteTask(root, rawArgs) {
                 state: "FAILED",
                 exitCode: 4,
                 error: { code: "E_MISSING_ARTIFACT", message: `任务 ${taskId} 不存在` },
+            };
+        }
+        if (resultJson.status !== "SUCCEEDED") {
+            await store.update((current) => ({
+                ...current,
+                tasks: { ...current.tasks, [taskId]: "FAILED" },
+                currentPhase: "FAILED",
+                failedCommand: "sdd build complete",
+                failedReason: `Agent 返回 ${resultJson.status}`,
+                lastError: `任务 ${taskId} 返回状态 ${resultJson.status}`,
+                suggestedCommand: "sdd auto --resume",
+                pendingAgentTask: null,
+                activeLoop: current.activeLoop === null
+                    ? null
+                    : { ...current.activeLoop, status: "FAILED", waiting: undefined },
+            }));
+            return {
+                ok: false,
+                state: "FAILED",
+                exitCode: 7,
+                error: {
+                    code: "E_AGENT_TASK_FAILED",
+                    message: `任务 ${taskId} 返回状态 ${resultJson.status}`,
+                },
             };
         }
         // 文件范围校验：统一使用 validateTaskFiles
@@ -805,9 +840,7 @@ async function buildCompleteTask(root, rawArgs) {
             };
         }
         // === 持久化（P0-6）：写入 task-results.json ===
-        const taskStatus = resultJson.status === "SUCCEEDED" || resultJson.status === "DONE"
-            ? "DONE"
-            : "FAILED";
+        const taskStatus = "DONE";
         const existingResults = (await readResults(join(change, "task-results.json")));
         const resultEntry = {
             taskId,
@@ -850,12 +883,11 @@ async function buildCompleteTask(root, rawArgs) {
             lastCommand: "sdd build complete",
             lastError: null,
             suggestedCommand: allDone ? "sdd verify" : "sdd build next",
+            pendingAgentTask: null,
             // 清除 activeLoop.waiting
-            activeLoop: current.activeLoop !== null && typeof current.activeLoop === "object"
+            activeLoop: current.activeLoop !== null
                 ? (() => {
-                    const loop = {
-                        ...current.activeLoop,
-                    };
+                    const loop = { ...current.activeLoop };
                     loop.status = "RUNNING";
                     delete loop.waiting;
                     return loop;

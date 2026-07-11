@@ -47,6 +47,15 @@ export interface McpLifecycleResult {
   pid?: number;
   endpoint?: string;
   message?: string;
+  /** 仅运行期使用，不序列化到 diagnostics。 */
+  session?: McpSession;
+  tools?: string[];
+}
+
+export interface McpSession {
+  call(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  notify(method: string, params?: Record<string, unknown>): void;
+  close(): void;
 }
 
 export interface McpIndexInput {

@@ -31,6 +31,7 @@ export interface McpTransport {
     isAvailable(): Promise<boolean>;
     index(root: string): Promise<void | {
         degraded: boolean;
+        failed?: boolean;
         reason?: string;
     }>;
     summarize(root: string): Promise<CodebaseSummary>;

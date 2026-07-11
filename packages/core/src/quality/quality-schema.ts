@@ -1,6 +1,7 @@
 import type { StoredTaskResult } from "./quality-gates.js";
 import type { TaskDefinition, TddPhase } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
+import { isCommandAllowed } from "../security/shell-policy.js";
 
 const phases: TddPhase[] = ["RED", "GREEN", "REFACTOR", "VERIFY"];
 const statuses = ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"];
@@ -45,6 +46,20 @@ export function parseTasks(raw: string): TaskDefinition[] {
     });
     if ((entry.requirements as unknown[]).length !== 1)
       fail(`${path}.requirements`, "必须且只能关联一个 Requirement");
+    for (const key of ["allowedFiles", "expectedNewFiles", "forbiddenFiles"])
+      (entry[key] as string[]).forEach((pattern, item) => {
+        if (
+          pattern.startsWith("/") ||
+          pattern.includes("\\") ||
+          pattern.split("/").includes("..") ||
+          /[\r\n\0]/.test(pattern)
+        )
+          fail(`${path}.${key}[${item}]`, "必须是安全相对路径模式");
+      });
+    (entry.verification as string[]).forEach((command, item) => {
+      if (!isCommandAllowed(command))
+        fail(`${path}.verification[${item}]`, "命令未在允许清单内");
+    });
     text(entry.title, `${path}.title`);
     return entry as unknown as TaskDefinition;
   });
@@ -63,6 +78,19 @@ export function parseTasks(raw: string): TaskDefinition[] {
         );
     });
   });
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const visit = (taskId: string): void => {
+    if (visited.has(taskId)) return;
+    if (visiting.has(taskId)) fail("tasks.json", `任务依赖图存在环：${taskId}`);
+    visiting.add(taskId);
+    for (const dependency of byId.get(taskId)?.dependsOn ?? [])
+      visit(dependency);
+    visiting.delete(taskId);
+    visited.add(taskId);
+  };
+  tasks.forEach((task) => visit(task.id));
   return tasks;
 }
 

@@ -1,4 +1,5 @@
 import { SddError } from "../errors.js";
+import { isCommandAllowed } from "../security/shell-policy.js";
 const phases = ["RED", "GREEN", "REFACTOR", "VERIFY"];
 const statuses = ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"];
 export function parseTasks(raw) {
@@ -43,6 +44,18 @@ export function parseTasks(raw) {
         });
         if (entry.requirements.length !== 1)
             fail(`${path}.requirements`, "必须且只能关联一个 Requirement");
+        for (const key of ["allowedFiles", "expectedNewFiles", "forbiddenFiles"])
+            entry[key].forEach((pattern, item) => {
+                if (pattern.startsWith("/") ||
+                    pattern.includes("\\") ||
+                    pattern.split("/").includes("..") ||
+                    /[\r\n\0]/.test(pattern))
+                    fail(`${path}.${key}[${item}]`, "必须是安全相对路径模式");
+            });
+        entry.verification.forEach((command, item) => {
+            if (!isCommandAllowed(command))
+                fail(`${path}.verification[${item}]`, "命令未在允许清单内");
+        });
         text(entry.title, `${path}.title`);
         return entry;
     });
@@ -55,6 +68,21 @@ export function parseTasks(raw) {
                 fail(`tasks.json[${index}].dependsOn[${dependencyIndex}]`, `不存在依赖任务 ${dependency}`);
         });
     });
+    const visiting = new Set();
+    const visited = new Set();
+    const byId = new Map(tasks.map((task) => [task.id, task]));
+    const visit = (taskId) => {
+        if (visited.has(taskId))
+            return;
+        if (visiting.has(taskId))
+            fail("tasks.json", `任务依赖图存在环：${taskId}`);
+        visiting.add(taskId);
+        for (const dependency of byId.get(taskId)?.dependsOn ?? [])
+            visit(dependency);
+        visiting.delete(taskId);
+        visited.add(taskId);
+    };
+    tasks.forEach((task) => visit(task.id));
     return tasks;
 }
 export function assertTaskResultIds(tasks, results) {

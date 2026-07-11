@@ -158,4 +158,55 @@ describe("CodebaseAdapter", () => {
       },
     });
   });
+
+  it("使用初始化后的 diagnostics，而不是启动前的 false 快照", async () => {
+    const root = await project();
+    const inspect = vi
+      .fn()
+      .mockResolvedValueOnce({
+        installed: false,
+        configured: false,
+        connected: false,
+        callable: false,
+        indexed: false,
+      })
+      .mockResolvedValueOnce({
+        installed: true,
+        configured: true,
+        connected: true,
+        callable: true,
+        indexed: true,
+      });
+    const result = await new CodebaseAdapter({
+      inspect,
+      isAvailable: vi.fn().mockResolvedValue(true),
+      index: vi.fn().mockResolvedValue(undefined),
+      summarize: vi.fn().mockResolvedValue({
+        codebaseSummary: "MCP summary",
+        packageStructure: "src",
+        architecture: "test",
+      }),
+    }).initialize(root);
+    expect(inspect).toHaveBeenCalledTimes(2);
+    expect(result.diagnostics).toMatchObject({
+      connected: true,
+      callable: true,
+      indexed: true,
+    });
+  });
+
+  it("MCP 必需但不可用时不伪装成成功初始化", async () => {
+    const root = await project();
+    await expect(
+      new CodebaseAdapter({
+        isAvailable: vi.fn().mockResolvedValue(true),
+        index: vi.fn().mockResolvedValue({
+          degraded: false,
+          failed: true,
+          reason: "MCP handshake failed",
+        }),
+        summarize: vi.fn(),
+      }).initialize(root),
+    ).rejects.toMatchObject({ code: "E_COMPONENT_UNAVAILABLE" });
+  });
 });

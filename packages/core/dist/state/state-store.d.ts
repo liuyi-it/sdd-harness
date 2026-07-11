@@ -7,8 +7,40 @@ export declare const workflowStateSchema: z.ZodObject<{
     initialized: z.ZodBoolean;
     currentChangeId: z.ZodNullable<z.ZodString>;
     currentRunId: z.ZodNullable<z.ZodString>;
-    activeLoop: z.ZodNullable<z.ZodUnknown>;
+    activeLoop: z.ZodNullable<z.ZodObject<{
+        loopId: z.ZodString;
+        runId: z.ZodString;
+        status: z.ZodEnum<{
+            RUNNING: "RUNNING";
+            WAITING_AGENT: "WAITING_AGENT";
+            PAUSED: "PAUSED";
+            FAILED: "FAILED";
+            SUCCEEDED: "SUCCEEDED";
+            ABORTED: "ABORTED";
+            ARCHIVED: "ARCHIVED";
+        }>;
+        waiting: z.ZodOptional<z.ZodObject<{
+            reason: z.ZodEnum<{
+                AGENT_TASK_EXECUTION: "AGENT_TASK_EXECUTION";
+                CLARIFICATION: "CLARIFICATION";
+                HUMAN_REVIEW: "HUMAN_REVIEW";
+            }>;
+            taskId: z.ZodOptional<z.ZodString>;
+            resultFile: z.ZodOptional<z.ZodString>;
+            since: z.ZodString;
+        }, z.core.$strip>>;
+        recovered: z.ZodOptional<z.ZodBoolean>;
+        lastDecision: z.ZodOptional<z.ZodString>;
+    }, z.core.$strip>>;
+    pendingAgentTask: z.ZodDefault<z.ZodNullable<z.ZodObject<{
+        taskId: z.ZodString;
+        resultFile: z.ZodString;
+        since: z.ZodString;
+    }, z.core.$strip>>>;
     currentPhase: z.ZodEnum<{
+        PAUSED: "PAUSED";
+        FAILED: "FAILED";
+        ARCHIVED: "ARCHIVED";
         NOT_INITIALIZED: "NOT_INITIALIZED";
         INITIALIZING: "INITIALIZING";
         INDEXING: "INDEXING";
@@ -28,9 +60,6 @@ export declare const workflowStateSchema: z.ZodObject<{
         REVIEWING: "REVIEWING";
         REVIEW_READY: "REVIEW_READY";
         ARCHIVING: "ARCHIVING";
-        ARCHIVED: "ARCHIVED";
-        FAILED: "FAILED";
-        PAUSED: "PAUSED";
     }>;
     indexStatus: z.ZodEnum<{
         INDEXING: "INDEXING";
@@ -45,6 +74,9 @@ export declare const workflowStateSchema: z.ZodObject<{
     lastCommand: z.ZodNullable<z.ZodString>;
     lastError: z.ZodNullable<z.ZodString>;
     previousPhase: z.ZodNullable<z.ZodEnum<{
+        PAUSED: "PAUSED";
+        FAILED: "FAILED";
+        ARCHIVED: "ARCHIVED";
         NOT_INITIALIZED: "NOT_INITIALIZED";
         INITIALIZING: "INITIALIZING";
         INDEXING: "INDEXING";
@@ -64,11 +96,11 @@ export declare const workflowStateSchema: z.ZodObject<{
         REVIEWING: "REVIEWING";
         REVIEW_READY: "REVIEW_READY";
         ARCHIVING: "ARCHIVING";
-        ARCHIVED: "ARCHIVED";
-        FAILED: "FAILED";
-        PAUSED: "PAUSED";
     }>>;
     inProgressPhase: z.ZodNullable<z.ZodEnum<{
+        PAUSED: "PAUSED";
+        FAILED: "FAILED";
+        ARCHIVED: "ARCHIVED";
         NOT_INITIALIZED: "NOT_INITIALIZED";
         INITIALIZING: "INITIALIZING";
         INDEXING: "INDEXING";
@@ -88,9 +120,6 @@ export declare const workflowStateSchema: z.ZodObject<{
         REVIEWING: "REVIEWING";
         REVIEW_READY: "REVIEW_READY";
         ARCHIVING: "ARCHIVING";
-        ARCHIVED: "ARCHIVED";
-        FAILED: "FAILED";
-        PAUSED: "PAUSED";
     }>>;
     failedCommand: z.ZodNullable<z.ZodString>;
     failedReason: z.ZodOptional<z.ZodNullable<z.ZodString>>;
@@ -103,11 +132,11 @@ export declare const workflowStateSchema: z.ZodObject<{
         baselineCommit: z.ZodString;
     }, z.core.$strip>>>;
     tasks: z.ZodRecord<z.ZodString, z.ZodEnum<{
-        BUILDING: "BUILDING";
         FAILED: "FAILED";
+        BUILDING: "BUILDING";
+        PENDING: "PENDING";
         DONE: "DONE";
         SKIPPED: "SKIPPED";
-        PENDING: "PENDING";
     }>>;
     artifacts: z.ZodRecord<z.ZodString, z.ZodEnum<{
         MISSING: "MISSING";

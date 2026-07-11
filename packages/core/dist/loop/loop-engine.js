@@ -470,7 +470,7 @@ export class LoopEngine {
         }
         await this.store.update((current) => ({
             ...current,
-            activeLoop: current.activeLoop === null || typeof current.activeLoop !== "object"
+            activeLoop: current.activeLoop === null
                 ? current.activeLoop
                 : {
                     ...current.activeLoop,

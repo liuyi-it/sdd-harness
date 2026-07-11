@@ -29,12 +29,16 @@ export class CodebaseMemoryTransport implements McpTransport {
     );
   }
 
-  async index(root: string): Promise<{ degraded: boolean; reason?: string }> {
+  async index(
+    root: string,
+  ): Promise<{ degraded: boolean; failed?: boolean; reason?: string }> {
     this.initialization = await this.manager.initialize(root);
     const reason = this.initialization.diagnostics.errors.at(-1)?.message;
-    return reason === undefined
-      ? { degraded: this.initialization.degraded }
-      : { degraded: this.initialization.degraded, reason };
+    const result = {
+      degraded: this.initialization.degraded,
+      ...(this.initialization.status === "FAILED" ? { failed: true } : {}),
+    };
+    return reason === undefined ? result : { ...result, reason };
   }
 
   async summarize(root: string): Promise<CodebaseSummary> {
