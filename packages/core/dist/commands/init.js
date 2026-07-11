@@ -110,7 +110,7 @@ export async function runInit(root, codebase, args, signal) {
         await writer.write(join(sddRoot, "index", "package-structure.md"), index.packageStructure, indexInputs);
         await writer.write(join(sddRoot, "index", "architecture.md"), index.architecture, indexInputs);
         await writeFile(join(sddRoot, "index", "codebase-diagnostics.json"), `${JSON.stringify(index.diagnostics, null, 2)}\n`, "utf8");
-        const capabilities = await codebase.capabilities();
+        const capabilities = await codebase.capabilities(root);
         await writeFile(join(sddRoot, "index", "mcp-capabilities.json"), `${JSON.stringify(capabilities, null, 2)}\n`, "utf8");
         await verifyDependencyIntegrityIfProvided(sddRoot, args);
         await writeDependencyMetadata(sddRoot, index.provider);

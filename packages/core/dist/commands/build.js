@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
@@ -15,6 +15,7 @@ import { scopePatternsOverlap } from "../security/scope-overlap.js";
 import { taskEvidenceFailures, tddChainFailures, } from "../quality/tdd-evidence.js";
 import { resolveProjectRules, } from "../project-conventions/rule-resolver.js";
 import { StateStore } from "../state/state-store.js";
+import { parseTasks } from "../quality/quality-schema.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 export async function runBuild(root, executor, signal, rawArgs) {
     const subcommand = rawArgs?.subcommand;
@@ -367,11 +368,24 @@ function fileFitsTask(file, task) {
 }
 async function readResults(path) {
     try {
-        return JSON.parse(await readFile(path, "utf8"));
+        const parsed = JSON.parse(await readFile(path, "utf8"));
+        if (!Array.isArray(parsed))
+            throw new SddError("E_STATE_CORRUPTED", "task-results.json 必须是数组");
+        return parsed;
     }
-    catch {
-        return [];
+    catch (error) {
+        if (isMissingFile(error))
+            return [];
+        if (error instanceof SddError)
+            throw error;
+        throw new SddError("E_STATE_CORRUPTED", "task-results.json 无法解析");
     }
+}
+function isMissingFile(error) {
+    return (typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT");
 }
 function interruptionError() {
     return new SddError("E_INTERRUPTED", "build 已被中断", "sdd build");
@@ -605,6 +619,55 @@ const VALID_TASK_STATUSES = [
     "SKIPPED",
     "DEGRADED",
 ];
+function invalidCompleteResult(message) {
+    return {
+        ok: false,
+        state: "FAILED",
+        exitCode: 4,
+        error: { code: "E_MISSING_ARTIFACT", message },
+    };
+}
+function parseCompleteResult(taskId, value) {
+    if (typeof value !== "object" ||
+        value === null ||
+        Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype)
+        return invalidCompleteResult("TaskExecutionResult 结构不合法");
+    const result = value;
+    const legacy = result.schemaVersion === "1.2.0" && "fileDelta" in result
+        ? result.legacy
+        : result;
+    if (typeof legacy !== "object" || legacy === null || Array.isArray(legacy))
+        return invalidCompleteResult("v2 task execution result 必须包含合法 legacy");
+    const parsed = legacy;
+    if (typeof parsed.schemaVersion !== "string" ||
+        parsed.taskId !== taskId ||
+        !VALID_TASK_STATUSES.includes(parsed.status) ||
+        !Array.isArray(parsed.modifiedFiles) ||
+        !parsed.modifiedFiles.every((file) => typeof file === "string") ||
+        !Array.isArray(parsed.tddEvidence) ||
+        !Array.isArray(parsed.verification) ||
+        !parsed.tddEvidence.every((entry) => typeof entry === "object" &&
+            entry !== null &&
+            !Array.isArray(entry) &&
+            typeof entry.phase === "string" &&
+            typeof entry.command === "string" &&
+            typeof entry.passed === "boolean" &&
+            typeof entry.output === "string") ||
+        !parsed.verification.every((entry) => typeof entry === "object" &&
+            entry !== null &&
+            !Array.isArray(entry) &&
+            typeof entry.command === "string" &&
+            typeof entry.passed === "boolean"))
+        return invalidCompleteResult("TaskExecutionResult 字段类型不合法");
+    return {
+        ...parsed,
+        taskId,
+        modifiedFiles: [...parsed.modifiedFiles],
+        tddEvidence: [...parsed.tddEvidence],
+        verification: [...parsed.verification],
+    };
+}
 /**
  * build complete：验收 Agent 提交的 TaskExecutionResult。
  *
@@ -612,8 +675,8 @@ const VALID_TASK_STATUSES = [
  */
 async function buildCompleteTask(root, rawArgs) {
     const taskId = rawArgs?.taskId;
-    const resultJson = rawArgs?.result;
-    if (!taskId || !resultJson) {
+    const rawResult = rawArgs?.result;
+    if (typeof taskId !== "string" || rawResult === undefined) {
         return {
             ok: false,
             state: "FAILED",
@@ -624,90 +687,31 @@ async function buildCompleteTask(root, rawArgs) {
             },
         };
     }
-    // Schema 校验（P1-5）
-    if (!resultJson.schemaVersion ||
-        !resultJson.taskId ||
-        !VALID_TASK_STATUSES.includes(resultJson.status)) {
-        return {
-            ok: false,
-            state: "FAILED",
-            exitCode: 4,
-            error: {
-                code: "E_MISSING_ARTIFACT",
-                message: "TaskExecutionResult 结构不合法",
-            },
-        };
-    }
-    // result 字段类型校验：防止畸形 result 引发非结构化异常
-    if ("modifiedFiles" in resultJson &&
-        !Array.isArray(resultJson.modifiedFiles)) {
-        return {
-            ok: false,
-            state: "FAILED",
-            exitCode: 4,
-            error: {
-                code: "E_MISSING_ARTIFACT",
-                message: "modifiedFiles 必须是数组",
-            },
-        };
-    }
-    if ("createdFiles" in resultJson && !Array.isArray(resultJson.createdFiles)) {
-        return {
-            ok: false,
-            state: "FAILED",
-            exitCode: 4,
-            error: { code: "E_MISSING_ARTIFACT", message: "createdFiles 必须是数组" },
-        };
-    }
-    if ("tddEvidence" in resultJson && !Array.isArray(resultJson.tddEvidence)) {
-        return {
-            ok: false,
-            state: "FAILED",
-            exitCode: 4,
-            error: { code: "E_MISSING_ARTIFACT", message: "tddEvidence 必须是数组" },
-        };
-    }
-    if ("verification" in resultJson && !Array.isArray(resultJson.verification)) {
-        return {
-            ok: false,
-            state: "FAILED",
-            exitCode: 4,
-            error: { code: "E_MISSING_ARTIFACT", message: "verification 必须是数组" },
-        };
-    }
-    // taskId 一致性校验
-    if (resultJson.taskId !== taskId) {
-        return {
-            ok: false,
-            state: "FAILED",
-            exitCode: 4,
-            error: {
-                code: "E_STATE_CORRUPTED",
-                message: `result.taskId (${String(resultJson.taskId)}) 与 --task (${taskId}) 不一致`,
-            },
-        };
-    }
+    const parsedResult = parseCompleteResult(taskId, rawResult);
+    if ("ok" in parsedResult)
+        return parsedResult;
+    const resultJson = parsedResult;
     const lock = new FileLock(root);
     await lock.acquire("sdd build complete", undefined, lockOptions(rawArgs));
     try {
         const store = new StateStore(root);
         const state = await store.read();
-        // 如果处于 BUILD_WAITING_AGENT，校验 complete 的是当前等待任务
-        if (state.currentPhase === "BUILD_WAITING_AGENT") {
-            const activeLoop = state.activeLoop;
-            const waiting = activeLoop?.waiting;
-            if (waiting?.taskId && waiting.taskId !== taskId) {
-                return {
-                    ok: false,
-                    state: "FAILED",
-                    exitCode: 4,
-                    error: {
-                        code: "E_STATE_CORRUPTED",
-                        message: `当前等待任务为 ${String(waiting.taskId)}，不能 complete ${taskId}`,
-                    },
-                };
-            }
-        }
+        if (state.currentPhase !== "BUILD_WAITING_AGENT")
+            return invalidCompleteResult(`无法在 ${state.currentPhase} 状态执行 build complete`);
+        const activeLoop = state.activeLoop;
+        const waiting = activeLoop?.waiting;
+        if (activeLoop?.status !== "WAITING_AGENT" ||
+            waiting?.reason !== "AGENT_TASK_EXECUTION" ||
+            waiting.taskId !== taskId ||
+            typeof waiting.resultFile !== "string" ||
+            state.tasks[taskId] !== "BUILDING")
+            return {
+                ...invalidCompleteResult("当前没有与该任务匹配的 Agent handoff"),
+                error: {
+                    code: "E_STATE_CORRUPTED",
+                    message: "当前没有与该任务匹配的 Agent handoff",
+                },
+            };
         const changeId = state.currentChangeId;
         if (!changeId) {
             return {
@@ -718,7 +722,7 @@ async function buildCompleteTask(root, rawArgs) {
             };
         }
         const change = join(root, ".sdd", "changes", changeId);
-        const tasks = JSON.parse(await readFile(join(change, "tasks.json"), "utf8"));
+        const tasks = parseTasks(await readFile(join(change, "tasks.json"), "utf8"));
         const task = tasks.find((t) => t.id === taskId);
         if (!task) {
             return {
@@ -727,27 +731,6 @@ async function buildCompleteTask(root, rawArgs) {
                 exitCode: 4,
                 error: { code: "E_MISSING_ARTIFACT", message: `任务 ${taskId} 不存在` },
             };
-        }
-        // v2 result 处理（选择方案 B：v2 必须包含 legacy，从 legacy 提取 v1 字段）
-        if (resultJson.schemaVersion === "1.2.0" &&
-            "fileDelta" in resultJson &&
-            !("modifiedFiles" in resultJson)) {
-            if (!resultJson.legacy) {
-                return {
-                    ok: false,
-                    state: "FAILED",
-                    exitCode: 7,
-                    error: {
-                        code: "E_TDD_EVIDENCE_REQUIRED",
-                        message: "v2 task execution result 必须包含 legacy TDD evidence",
-                    },
-                };
-            }
-            // 从 legacy 提取 v1 字段供后续校验使用
-            const legacy = resultJson.legacy;
-            resultJson.modifiedFiles = legacy.modifiedFiles;
-            resultJson.tddEvidence = legacy.tddEvidence;
-            resultJson.verification = legacy.verification;
         }
         // 文件范围校验：统一使用 validateTaskFiles
         const modifiedFiles = resultJson.modifiedFiles ?? [];
@@ -769,22 +752,18 @@ async function buildCompleteTask(root, rawArgs) {
             }
             throw error;
         }
-        // TDD evidence 校验（P1-6：空数组也阻断）
-        const tddEvidence = resultJson.tddEvidence ?? [];
-        // 验证 evidence 结构合法，不强制要求所有 phase
-        // 每个任务执行只包含其对应 phase 的证据
-        const invalidEvidence = tddEvidence.filter((e) => !e.phase || typeof e.passed !== "boolean");
-        if (invalidEvidence.length > 0) {
+        const tddEvidence = resultJson.tddEvidence;
+        const evidenceFailures = taskEvidenceFailures(task, resultJson);
+        if (evidenceFailures.length > 0)
             return {
                 ok: false,
                 state: "FAILED",
                 exitCode: 7,
                 error: {
                     code: "E_TDD_EVIDENCE_REQUIRED",
-                    message: `TDD evidence 结构不合法`,
+                    message: evidenceFailures.join("；"),
                 },
             };
-        }
         // TDD evidence 命令安全校验
         const blockedEvidenceCommand = tddEvidence.find((e) => typeof e.command === "string" && !isCommandAllowed(e.command));
         if (blockedEvidenceCommand) {
@@ -799,7 +778,7 @@ async function buildCompleteTask(root, rawArgs) {
             };
         }
         // verification 校验（P1-6）
-        const verification = resultJson.verification ?? [];
+        const verification = resultJson.verification;
         // verification 命令安全校验
         const blockedVerificationCommand = verification.find((v) => !isCommandAllowed(v.command));
         if (blockedVerificationCommand) {
@@ -829,16 +808,10 @@ async function buildCompleteTask(root, rawArgs) {
         const taskStatus = resultJson.status === "SUCCEEDED" || resultJson.status === "DONE"
             ? "DONE"
             : "FAILED";
-        const existingResults = [];
-        try {
-            const raw = await readFile(join(change, "task-results.json"), "utf8");
-            existingResults.push(...JSON.parse(raw));
-        }
-        catch {
-            // 文件不存在则使用空数组
-        }
+        const existingResults = (await readResults(join(change, "task-results.json")));
         const resultEntry = {
             taskId,
+            schemaVersion: resultJson.schemaVersion ?? "1.0.0",
             status: taskStatus,
             modifiedFiles,
             createdFiles: resultJson.createdFiles ?? [],
@@ -851,7 +824,10 @@ async function buildCompleteTask(root, rawArgs) {
             existingResults[idx] = resultEntry;
         else
             existingResults.push(resultEntry);
-        await writeFile(join(change, "task-results.json"), JSON.stringify(existingResults, null, 2), "utf8");
+        const resultsPath = join(change, "task-results.json");
+        const temporaryResultsPath = `${resultsPath}.${process.pid}.tmp`;
+        await writeFile(temporaryResultsPath, JSON.stringify(existingResults, null, 2), "utf8");
+        await rename(temporaryResultsPath, resultsPath);
         // 写入 run result artifact
         const runId = state.currentRunId ?? "unknown-run";
         const resultFilePath = join(root, ".sdd", "runs", runId, "tasks", `${taskId}.result.json`);

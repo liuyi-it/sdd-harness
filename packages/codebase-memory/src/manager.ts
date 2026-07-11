@@ -19,7 +19,8 @@ import type {
 const DEFAULT_CONFIG: CodebaseConfig = {
   provider: "codebase-memory-mcp",
   mode: "managed",
-  version: "0.8.1",
+  // 与 Core 的 pinned dependency 统一；npm 包名不接受前导 v。
+  version: "0.9.0",
   autoStart: true,
   autoIndex: true,
   requireAvailable: false,

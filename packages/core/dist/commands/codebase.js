@@ -13,7 +13,7 @@ export async function runCodebaseCommand(root, codebase, args) {
         case "status": {
             const initResult = await codebase.initialize(root);
             const capabilities = codebase.capabilities
-                ? await codebase.capabilities()
+                ? await codebase.capabilities(root)
                 : [];
             return {
                 ...handleResult(initResult),
@@ -86,10 +86,7 @@ export async function runCodebaseCommand(root, codebase, args) {
         case "query": {
             const query = args?.query || "";
             const intent = args?.intent || "impact";
-            const result = await codebase.query({
-                intent,
-                query,
-            });
+            const result = await codebase.query({ intent, query }, root);
             return {
                 ok: true,
                 state: "INDEX_READY",

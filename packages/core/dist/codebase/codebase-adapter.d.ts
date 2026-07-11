@@ -29,7 +29,10 @@ export interface CodebaseResult extends CodebaseSummary {
 export declare const MCP_UNAVAILABLE_REASON = "codebase-memory-mcp unavailable";
 export interface McpTransport {
     isAvailable(): Promise<boolean>;
-    index(root: string): Promise<void>;
+    index(root: string): Promise<void | {
+        degraded: boolean;
+        reason?: string;
+    }>;
     summarize(root: string): Promise<CodebaseSummary>;
     inspect?(root: string): Promise<Partial<McpDiagnostics>>;
     /** V2: 返回 MCP 暴露的工具集合，缺失时按空集合处理并写入 partial。 */
@@ -48,12 +51,12 @@ export declare class CodebaseAdapter {
      * V2 capability discovery：返回 MCP 固定版本的工具清单；缺失时按 partial 写入，
      * 仍必须保留 officialUrl、version、commit 三项事实。
      */
-    capabilities(): Promise<McpCapabilities>;
+    capabilities(root?: string): Promise<McpCapabilities>;
     /**
      * V2 query：唯一允许通过 Core 访问代码库上下文的入口。任何 transport.query
      * 返回必须命中 ImpactPayload / CodebaseSummary 等已知结构；其余 shape 一律降级。
      */
-    query<TPayload = unknown>(input: McpQueryInput): Promise<McpQueryResult<TPayload>>;
+    query<TPayload = unknown>(input: McpQueryInput, root?: string): Promise<McpQueryResult<TPayload>>;
     writeCapabilityArtifacts(root: string): Promise<{
         capabilitiesPath: string;
         diagnosticsPath: string;

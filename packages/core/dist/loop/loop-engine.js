@@ -76,7 +76,10 @@ export class LoopEngine {
             }
             const command = this.autoCommand(status, request.args);
             if (command === undefined) {
-                await this.finalizeLoop(loop.runId, status.state === "CLARIFYING" ? "PAUSED" : "RUNNING");
+                if (status.state === "CLARIFYING" || status.state === "PAUSED")
+                    await this.finalizeLoop(loop.runId, "PAUSED");
+                else if (status.state === "FAILED")
+                    await this.finalizeLoop(loop.runId, "FAILED");
                 return status;
             }
             const startedAt = new Date().toISOString();
@@ -171,6 +174,15 @@ export class LoopEngine {
                     ? currentLoop.waiting
                     : undefined;
                 const run = await this.loops.readRun(resumeRunId);
+                if (run.status === "ABORTED")
+                    throw new SddError("E_INVALID_PHASE_COMMAND", "已终止的 run 不能恢复，请使用 sdd auto --restart", "sdd auto --restart");
+                const resumedRun = { ...run };
+                delete resumedRun.endedAt;
+                await this.loops.writeRun({
+                    ...resumedRun,
+                    status: "RUNNING",
+                    updatedAt: new Date().toISOString(),
+                });
                 const activeLoop = {
                     loopId: run.loopId,
                     runId: run.runId,
@@ -184,6 +196,11 @@ export class LoopEngine {
                     currentRunId: run.runId,
                     activeLoop,
                 }));
+                await this.events.write(run.runId, {
+                    loopId: run.loopId,
+                    runId: run.runId,
+                    type: "LOOP_RESUMED",
+                });
             }
             finally {
                 await lock.release();
@@ -375,6 +392,8 @@ export class LoopEngine {
             ? state.activeLoop
             : null;
         const runId = currentLoop?.runId ?? state.currentRunId ?? `run-${Date.now()}`;
+        if (currentLoop?.status === "ABORTED")
+            throw new SddError("E_INVALID_PHASE_COMMAND", "当前 run 已终止，请使用 sdd auto --restart", "sdd auto --restart");
         const loopId = currentLoop?.loopId ?? spec.loopId;
         if (!(await this.loops.hasRun(runId))) {
             await this.loops.writeRun({
@@ -441,10 +460,7 @@ export class LoopEngine {
                 ...run,
                 status,
                 updatedAt: new Date().toISOString(),
-                ...(status === "ARCHIVED" ||
-                    status === "FAILED" ||
-                    status === "PAUSED" ||
-                    status === "WAITING_AGENT"
+                ...(status === "ARCHIVED" || status === "FAILED"
                     ? { endedAt: new Date().toISOString() }
                     : {}),
             });

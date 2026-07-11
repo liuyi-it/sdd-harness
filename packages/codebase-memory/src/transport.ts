@@ -5,6 +5,7 @@ import type {
   McpQueryInput,
 } from "@sdd-harness/core";
 import { CodebaseMemoryManager } from "./manager.js";
+import type { InitResult } from "./manager.js";
 
 /**
  * CodebaseMemoryTransport — 将 CodebaseMemoryManager 适配为 Core 期望的 McpTransport 接口
@@ -15,28 +16,34 @@ import { CodebaseMemoryManager } from "./manager.js";
  */
 export class CodebaseMemoryTransport implements McpTransport {
   private manager: CodebaseMemoryManager;
+  private initialization: InitResult | null = null;
 
   constructor(manager?: CodebaseMemoryManager) {
     this.manager = manager ?? new CodebaseMemoryManager();
   }
 
-  /** 只要有 manager 就认为可尝试启动 MCP，实际启动在 index() 中由 adapter 兜底 */
+  /** 只有 initialize 已完成且未降级时才报告 MCP 可用。 */
   async isAvailable(): Promise<boolean> {
-    return true;
+    return (
+      this.initialization === null || this.initialization.degraded === false
+    );
   }
 
-  async index(root: string): Promise<void> {
-    await this.manager.initialize(root);
+  async index(root: string): Promise<{ degraded: boolean; reason?: string }> {
+    this.initialization = await this.manager.initialize(root);
+    const reason = this.initialization.diagnostics.errors.at(-1)?.message;
+    return reason === undefined
+      ? { degraded: this.initialization.degraded }
+      : { degraded: this.initialization.degraded, reason };
   }
 
   async summarize(root: string): Promise<CodebaseSummary> {
-    void root;
     const caps = await this.manager.getCapabilities();
     const degraded = caps.provider === "fallback-file-scan";
     return {
       codebaseSummary: degraded
         ? "codebase-memory-mcp 不可用，使用 fallback-file-scan"
-        : "codebase-memory-mcp 托管运行中",
+        : `codebase-memory-mcp 已索引：${root}`,
       packageStructure: "",
       architecture: degraded ? "fallback" : "mcp-managed",
     };

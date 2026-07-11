@@ -330,8 +330,7 @@ export class StateStore {
         phase = "REVIEW_READY";
       else if (await reportPassed(join(change, "verify-report.md")))
         phase = "VERIFY_READY";
-      else if (await allTasksDone(join(change, "task-results.json")))
-        phase = "BUILD_READY";
+      else if (await allTasksDone(change)) phase = "BUILD_READY";
       else if (await pathExists(join(change, "tasks.md"))) phase = "PLAN_READY";
       else if (await pathExists(join(change, "design.md")))
         phase = "DESIGN_READY";
@@ -418,10 +417,48 @@ async function reportPassed(path: string): Promise<boolean> {
   }
 }
 
-async function allTasksDone(path: string): Promise<boolean> {
+async function allTasksDone(change: string): Promise<boolean> {
   try {
-    const results = JSON.parse(await readFile(path, "utf8")) as unknown[];
-    return results.length > 0;
+    const [rawTasks, rawResults] = await Promise.all([
+      readFile(join(change, "tasks.json"), "utf8"),
+      readFile(join(change, "task-results.json"), "utf8"),
+    ]);
+    const tasks = JSON.parse(rawTasks) as unknown;
+    const results = JSON.parse(rawResults) as unknown;
+    if (!Array.isArray(tasks) || tasks.length === 0 || !Array.isArray(results))
+      return false;
+    const taskIds = new Set<string>();
+    for (const task of tasks) {
+      const id =
+        typeof task === "object" && task !== null
+          ? (task as Record<string, unknown>).id
+          : undefined;
+      if (typeof id !== "string") return false;
+      taskIds.add(id);
+    }
+    if (taskIds.size !== tasks.length || results.length !== taskIds.size)
+      return false;
+    const completed = new Set<string>();
+    for (const result of results) {
+      const taskId =
+        typeof result === "object" && result !== null
+          ? (result as Record<string, unknown>).taskId
+          : undefined;
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        typeof taskId !== "string" ||
+        !["DONE", "SUCCEEDED"].includes(
+          String((result as Record<string, unknown>).status),
+        )
+      )
+        return false;
+      completed.add(taskId);
+    }
+    return (
+      completed.size === taskIds.size &&
+      [...taskIds].every((id) => completed.has(id))
+    );
   } catch {
     return false;
   }

@@ -41,8 +41,30 @@ export class CodebaseAdapter {
         const inspected = await this.transport?.inspect?.(root);
         if (this.transport !== undefined) {
             try {
-                if (await this.transport.isAvailable()) {
-                    await this.transport.index(root);
+                if ((await this.transport.isAvailable()) === false)
+                    return await this.fallback(root, {
+                        installed: inspected?.installed ?? false,
+                        configured: inspected?.configured ?? false,
+                        connected: inspected?.connected ?? false,
+                        callable: inspected?.callable ?? false,
+                        indexed: inspected?.indexed ?? false,
+                        officialUrl: CODEBASE_MEMORY_MCP_URL,
+                        ...(inspected?.message === undefined
+                            ? {}
+                            : { message: inspected.message }),
+                    });
+                {
+                    const initialized = await this.transport.index(root);
+                    if (initialized?.degraded === true)
+                        return await this.fallback(root, {
+                            installed: inspected?.installed ?? false,
+                            configured: inspected?.configured ?? false,
+                            connected: false,
+                            callable: false,
+                            indexed: false,
+                            officialUrl: CODEBASE_MEMORY_MCP_URL,
+                            message: initialized.reason ?? MCP_UNAVAILABLE_REASON,
+                        });
                     return {
                         provider: "codebase-memory-mcp",
                         degraded: false,
@@ -95,7 +117,7 @@ export class CodebaseAdapter {
      * V2 capability discovery：返回 MCP 固定版本的工具清单；缺失时按 partial 写入，
      * 仍必须保留 officialUrl、version、commit 三项事实。
      */
-    async capabilities() {
+    async capabilities(root = ".") {
         const builder = createMcpQueryBuilder();
         if (this.transport === undefined ||
             (await this.transport.isAvailable()) === false) {
@@ -118,14 +140,14 @@ export class CodebaseAdapter {
                 generatedAt: new Date().toISOString(),
             };
         }
-        const tools = (await this.transport.capabilities?.(".").catch(() => [])) ?? [];
+        const tools = (await this.transport.capabilities?.(root).catch(() => [])) ?? [];
         return builder.capabilitiesFrom(tools);
     }
     /**
      * V2 query：唯一允许通过 Core 访问代码库上下文的入口。任何 transport.query
      * 返回必须命中 ImpactPayload / CodebaseSummary 等已知结构；其余 shape 一律降级。
      */
-    async query(input) {
+    async query(input, root = ".") {
         if (!isSupportedIntent(input.intent)) {
             throw new Error(`unsupported intent: ${input.intent}`);
         }
@@ -138,7 +160,7 @@ export class CodebaseAdapter {
             return builder.buildFallback(input.intent, MCP_QUERY_UNAVAILABLE, { intent: input.intent });
         }
         try {
-            const raw = await this.transport.query(".", input);
+            const raw = await this.transport.query(root, input);
             if (raw === null || typeof raw !== "object") {
                 return builder.buildFallback(input.intent, MCP_QUERY_UNAVAILABLE, { intent: input.intent });
             }
@@ -166,7 +188,7 @@ export class CodebaseAdapter {
     async writeCapabilityArtifacts(root) {
         const sddRoot = join(root, ".sdd");
         await mkdir(join(sddRoot, "index"), { recursive: true });
-        const capabilities = await this.capabilities();
+        const capabilities = await this.capabilities(root);
         const diagnostics = await this.inspectDiagnostics(root);
         const capabilitiesPath = join(sddRoot, "index", "mcp-capabilities.json");
         const diagnosticsPath = join(sddRoot, "index", "codebase-diagnostics.json");

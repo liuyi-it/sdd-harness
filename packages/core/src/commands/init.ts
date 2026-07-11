@@ -181,7 +181,7 @@ export async function runInit(
       `${JSON.stringify(index.diagnostics, null, 2)}\n`,
       "utf8",
     );
-    const capabilities = await codebase.capabilities();
+    const capabilities = await codebase.capabilities(root);
     await writeFile(
       join(sddRoot, "index", "mcp-capabilities.json"),
       `${JSON.stringify(capabilities, null, 2)}\n`,

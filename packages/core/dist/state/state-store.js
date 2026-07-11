@@ -268,7 +268,7 @@ export class StateStore {
                 phase = "REVIEW_READY";
             else if (await reportPassed(join(change, "verify-report.md")))
                 phase = "VERIFY_READY";
-            else if (await allTasksDone(join(change, "task-results.json")))
+            else if (await allTasksDone(change))
                 phase = "BUILD_READY";
             else if (await pathExists(join(change, "tasks.md")))
                 phase = "PLAN_READY";
@@ -340,10 +340,41 @@ async function reportPassed(path) {
         return false;
     }
 }
-async function allTasksDone(path) {
+async function allTasksDone(change) {
     try {
-        const results = JSON.parse(await readFile(path, "utf8"));
-        return results.length > 0;
+        const [rawTasks, rawResults] = await Promise.all([
+            readFile(join(change, "tasks.json"), "utf8"),
+            readFile(join(change, "task-results.json"), "utf8"),
+        ]);
+        const tasks = JSON.parse(rawTasks);
+        const results = JSON.parse(rawResults);
+        if (!Array.isArray(tasks) || tasks.length === 0 || !Array.isArray(results))
+            return false;
+        const taskIds = new Set();
+        for (const task of tasks) {
+            const id = typeof task === "object" && task !== null
+                ? task.id
+                : undefined;
+            if (typeof id !== "string")
+                return false;
+            taskIds.add(id);
+        }
+        if (taskIds.size !== tasks.length || results.length !== taskIds.size)
+            return false;
+        const completed = new Set();
+        for (const result of results) {
+            const taskId = typeof result === "object" && result !== null
+                ? result.taskId
+                : undefined;
+            if (typeof result !== "object" ||
+                result === null ||
+                typeof taskId !== "string" ||
+                !["DONE", "SUCCEEDED"].includes(String(result.status)))
+                return false;
+            completed.add(taskId);
+        }
+        return (completed.size === taskIds.size &&
+            [...taskIds].every((id) => completed.has(id)));
     }
     catch {
         return false;

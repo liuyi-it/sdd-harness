@@ -26,7 +26,7 @@ export async function runCodebaseCommand(
     case "status": {
       const initResult = await codebase.initialize(root);
       const capabilities = codebase.capabilities
-        ? await codebase.capabilities()
+        ? await codebase.capabilities(root)
         : [];
       return {
         ...handleResult(initResult),
@@ -99,10 +99,10 @@ export async function runCodebaseCommand(
     case "query": {
       const query = (args?.query as string) || "";
       const intent = (args?.intent as string) || "impact";
-      const result = await codebase.query({
-        intent,
-        query,
-      } as Parameters<typeof codebase.query>[0]);
+      const result = await codebase.query(
+        { intent, query } as Parameters<typeof codebase.query>[0],
+        root,
+      );
       return {
         ok: true,
         state: "INDEX_READY",
