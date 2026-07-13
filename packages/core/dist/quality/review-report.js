@@ -19,6 +19,7 @@ export function createReviewIssue(input) {
         id: stableId(input),
         category: input.category,
         severity: input.severity,
+        axis: input.axis ?? "STANDARDS",
         message: input.message.trim(),
         ...(input.file === undefined ? {} : { file: input.file }),
         ...(input.task === undefined ? {} : { task: input.task }),
@@ -27,6 +28,7 @@ export function createReviewIssue(input) {
 export function stableId(input) {
     const seed = JSON.stringify({
         category: input.category,
+        axis: input.axis ?? "STANDARDS",
         file: input.file ?? null,
         task: input.task ?? null,
         message: input.message.trim(),
@@ -40,18 +42,33 @@ export function createReviewReport(input) {
     const severityCounts = countSeverity(issues);
     const categoryCounts = countCategories(issues);
     const blocking = isBlocking(issues);
+    const standardsFindings = issues.filter((issue) => issue.axis === "STANDARDS");
+    const specFindings = issues.filter((issue) => issue.axis === "SPEC");
     const generatedAt = input.generatedAt ?? new Date().toISOString();
     return {
-        schemaVersion: "1.2.0",
+        schemaVersion: "2.0.0",
         changeId: input.changeId,
+        fixedPoint: input.fixedPoint ?? "unknown",
         result: blocking ? "BLOCK" : "PASS",
         generatedAt,
         severityCounts,
         categoryCounts,
         issues,
-        summary: blocking
+        standards: {
+            status: isBlocking(standardsFindings) ? "FAILED" : "PASSED",
+            findings: standardsFindings,
+        },
+        spec: {
+            status: isBlocking(specFindings) ? "FAILED" : "PASSED",
+            findings: specFindings,
+        },
+        message: blocking
             ? `审查阻断：${issues.length} 个问题含禁止类别或严重级别`
             : `审查通过：${issues.length} 个问题均不阻断归档`,
+        summary: {
+            standardsFindingCount: standardsFindings.length,
+            specFindingCount: specFindings.length,
+        },
     };
 }
 export function isBlocking(issues) {
@@ -61,18 +78,19 @@ export function isBlocking(issues) {
 export async function writeReviewReport(root, changeId, report) {
     const dir = join(root, ".sdd", "changes", changeId);
     await mkdir(dir, { recursive: true });
-    const jsonPath = join(dir, "review-report.v1.2.json");
-    const mdPath = join(dir, "review-report.v1.2.md");
+    const jsonPath = join(dir, "review-report.v2.json");
+    const mdPath = join(dir, "review-report.v2.md");
     await writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     await writeFile(mdPath, renderReviewMarkdown(report), "utf8");
     return { jsonPath, mdPath };
 }
 export function renderReviewMarkdown(report) {
     const lines = [
-        "# 审查报告 (v1.2)",
+        "# 审查报告 (v2)",
         "",
         `- 变更：${report.changeId}`,
         `- 结果：**${report.result}**`,
+        `- Fixed Point：${report.fixedPoint}`,
         `- 生成时间：${report.generatedAt}`,
         `- 严重度计数：${Object.entries(report.severityCounts)
             .map(([k, v]) => `${k}=${v}`)
@@ -80,7 +98,17 @@ export function renderReviewMarkdown(report) {
         "",
         "## 摘要",
         "",
-        report.summary,
+        report.message,
+        `- Standards findings: ${report.summary.standardsFindingCount}`,
+        `- Spec findings: ${report.summary.specFindingCount}`,
+        "",
+        "## Standards Axis",
+        "",
+        report.standards.status,
+        "",
+        "## Spec Axis",
+        "",
+        report.spec.status,
         "",
     ];
     if (report.issues.length === 0) {
@@ -90,7 +118,7 @@ export function renderReviewMarkdown(report) {
         for (const issue of report.issues) {
             const file = issue.file === undefined ? "" : ` (${issue.file})`;
             const task = issue.task === undefined ? "" : ` [${issue.task}]`;
-            lines.push(`- ${issue.id} ${issue.category}/${issue.severity}${file}${task}：${issue.message}`);
+            lines.push(`- ${issue.id} ${issue.axis}/${issue.category}/${issue.severity}${file}${task}：${issue.message}`);
         }
     }
     return lines.join("\n") + "\n";

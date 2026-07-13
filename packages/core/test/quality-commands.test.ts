@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
+import { prepareRepairTasks } from "../src/commands/repair-task.js";
 import { GitInspector } from "../src/git/git-inspector.js";
 import { StateStore } from "../src/state/state-store.js";
 import type { StoredTaskResult } from "../src/quality/quality-gates.js";
@@ -254,7 +255,7 @@ describe("quality commands", () => {
     });
   });
 
-  it("fails verify when post-build drift introduces files outside task results", async () => {
+  it("verify 修复需要扩大文件范围时暂停并请求用户决策", async () => {
     const { root, core } = await builtProject();
     await writeFile(join(root, "notes.txt"), "manual drift\n", "utf8");
 
@@ -262,8 +263,8 @@ describe("quality commands", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      state: "FAILED",
-      error: { code: "E_VERIFY_FAILED", next: "sdd verify" },
+      state: "PAUSED",
+      error: { code: "E_VERIFY_FAILED", next: "sdd status" },
     });
     expect(
       await readFile(
@@ -271,6 +272,14 @@ describe("quality commands", () => {
         "utf8",
       ),
     ).toContain("未跟踪到任务结果的变更文件：notes.txt");
+    const tasks = JSON.parse(
+      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
+    ) as Array<{
+      sliceType?: string;
+      failureContext?: { source: string; errorCode: string };
+      policyRefs?: Array<{ id: string }>;
+    }>;
+    expect(tasks.filter((task) => task.sliceType === "REPAIR")).toHaveLength(0);
   });
 
   it("verify 会复核持久化的 TDD 证据", async () => {
@@ -288,8 +297,80 @@ describe("quality commands", () => {
 
     expect(result).toMatchObject({
       ok: false,
-      error: { code: "E_VERIFY_FAILED" },
+      state: "PLAN_READY",
+      error: { code: "E_VERIFY_FAILED", next: "sdd build next" },
     });
+    const tasks = JSON.parse(
+      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
+    ) as Array<{
+      sliceType?: string;
+      failureContext?: { source: string; errorCode: string };
+      policyRefs?: Array<{ id: string }>;
+    }>;
+    const repairs = tasks.filter((task) => task.sliceType === "REPAIR");
+    expect(repairs).toHaveLength(4);
+    expect(repairs[0]?.failureContext).toMatchObject({
+      source: "VERIFY",
+      errorCode: "E_VERIFY_FAILED",
+    });
+    expect(repairs[0]?.policyRefs?.map(({ id }) => id)).toContain(
+      "systematic-diagnosis",
+    );
+    expect(
+      await core.execute({
+        command: "build",
+        cwd: root,
+        args: { subcommand: "next" },
+      }),
+    ).toMatchObject({
+      ok: true,
+      state: "BUILD_WAITING_AGENT",
+      actionRequired: {
+        policyBundle: {
+          policies: expect.arrayContaining([
+            expect.objectContaining({ id: "systematic-diagnosis" }),
+          ]),
+        },
+      },
+    });
+  });
+
+  it("同一失败签名达到预算后暂停，不产生无限 REPAIR", async () => {
+    const { root, core } = await builtProject();
+    const resultPath = join(root, ".sdd/changes/add-cancel/task-results.json");
+    const results = JSON.parse(await readFile(resultPath, "utf8"));
+    results[0].tddEvidence = [];
+    await writeFile(
+      resultPath,
+      `${JSON.stringify(results, null, 2)}\n`,
+      "utf8",
+    );
+    const first = await core.execute({ command: "verify", cwd: root });
+    const message = first.error?.message ?? "verify failed";
+
+    const second = await prepareRepairTasks(root, "add-cancel", {
+      source: "VERIFY",
+      errorCode: "E_VERIFY_FAILED",
+      message,
+    });
+    const exhausted = await prepareRepairTasks(root, "add-cancel", {
+      source: "VERIFY",
+      errorCode: "E_VERIFY_FAILED",
+      message,
+    });
+
+    expect(second).toMatchObject({ created: true, paused: false });
+    expect(exhausted).toEqual({ created: false, paused: true, taskIds: [] });
+    expect(
+      JSON.parse(await readFile(join(root, ".sdd/state.json"), "utf8")),
+    ).toMatchObject({
+      currentPhase: "PAUSED",
+      suggestedCommand: "sdd status",
+    });
+    const tasks = JSON.parse(
+      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
+    ) as Array<{ sliceType?: string }>;
+    expect(tasks.filter((task) => task.sliceType === "REPAIR")).toHaveLength(8);
   });
 
   it("VERIFY_READY 重复 verify 也会重新复核被篡改的 TDD 证据", async () => {
@@ -476,24 +557,34 @@ describe("quality commands", () => {
     });
   });
 
-  it("fails review when verify之后又出现无关改动", async () => {
+  it("review 失败生成 REPAIR 任务并阻止归档", async () => {
     const { root, core } = await builtProject();
     await core.execute({ command: "verify", cwd: root });
-    await writeFile(join(root, "notes.txt"), "manual drift\n", "utf8");
+    await writeFile(
+      join(root, "src/order.ts"),
+      "export const leaked = 'ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789';\n",
+      "utf8",
+    );
 
     const result = await core.execute({ command: "review", cwd: root });
 
     expect(result).toMatchObject({
       ok: false,
-      state: "FAILED",
-      error: { code: "E_REVIEW_FAILED", next: "sdd review" },
+      state: "PLAN_READY",
+      error: { code: "E_REVIEW_FAILED", next: "sdd build next" },
     });
     expect(
       await readFile(
-        join(root, ".sdd/changes/add-cancel/review-report.md"),
+        join(root, ".sdd/changes/add-cancel/review-report.v2.md"),
         "utf8",
       ),
-    ).toContain("未跟踪到任务结果的变更文件：notes.txt");
+    ).toContain("SECRET_LEAK");
+    const tasks = JSON.parse(
+      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
+    ) as Array<{ sliceType?: string; failureContext?: { source: string } }>;
+    expect(
+      tasks.find((task) => task.sliceType === "REPAIR")?.failureContext,
+    ).toMatchObject({ source: "REVIEW" });
   });
 
   it("review 在超时后进入 FAILED", async () => {
@@ -575,6 +666,16 @@ describe("quality commands", () => {
       expect(traceability).toMatch(/## REQ-001[\s\S]*### REQ-001-SC-001/);
       expect(traceability).toContain("RED 任务：");
       expect(traceability).toContain("最终验证命令：");
+      const archiveReport = await readFile(
+        join(root, ".sdd/changes/add-cancel/archive-report.md"),
+        "utf8",
+      );
+      expect(archiveReport).toContain("## Policy Traceability");
+      expect(archiveReport).toContain("deep-module-design@1.0.0");
+      expect(archiveReport).toContain("tdd-task-execution@1.0.0");
+      expect(archiveReport).toContain("two-axis-review@1.0.0");
+      expect(archiveReport).toContain("Policy Upstream Attribution");
+      expect(archiveReport).toContain("Loop Run ID:");
       expect(
         JSON.parse(
           await readFile(

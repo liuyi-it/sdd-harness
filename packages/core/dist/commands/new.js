@@ -1,5 +1,6 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter, artifactInputHash, } from "../artifacts/artifact-writer.js";
 import { wrapUntrustedMcpOutput } from "../security/untrusted-content.js";
@@ -87,6 +88,10 @@ export async function runNew(root, rawArgs, engine, codebase, signal) {
         const generationInput = {
             requirement,
             codebaseSummary,
+            policyBundle: resolvePolicyBundle({
+                command: "new",
+                phase: state.currentPhase,
+            }),
             ...(args.answers === undefined ? {} : { answers: args.answers }),
         };
         const preview = unansweredBlockers.length > 0

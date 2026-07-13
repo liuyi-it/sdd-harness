@@ -86,14 +86,21 @@ describe("design and plan", () => {
       "Current Code Structure",
       "Target Design",
       "API Changes",
+      "Interfaces and Contracts",
       "Transaction and Idempotency",
       "Logging and Monitoring",
       "Testing Strategy",
+      "Test Seams",
       "Risks and Rollback",
     ]) {
       expect(design).toContain(section);
     }
     expect(design).toContain("README.md");
+    expect(design).toContain("## Phase Policy");
+    expect(design).toContain("deep-module-design");
+    expect(design).toContain("design-it-twice");
+    expect(design).toContain("方案 A");
+    expect(design).toContain("方案 B");
     expect(designMetadata).toMatchObject({
       schemaVersion: "1.0.0",
       generatedBy: "sdd-harness",
@@ -188,6 +195,8 @@ describe("design and plan", () => {
       /Project Conventions Hash: sha256:[a-f0-9]{64}/,
     );
     expect(contextPack).toContain("Generated At:");
+    expect(contextPack).toContain("Schema Version: 2.0.0");
+    expect(contextPack).toContain("tdd-task-execution");
     expect(Buffer.byteLength(contextPack)).toBeLessThanOrEqual(30 * 1024);
     expect(tasksMetadata).toMatchObject({
       schemaVersion: "1.0.0",
@@ -196,6 +205,17 @@ describe("design and plan", () => {
       artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       createdAt: expect.any(String),
     });
+    const taskDefinitions = JSON.parse(
+      await readFile(
+        join(root, ".sdd/changes/add-order-cancellation/tasks.json"),
+        "utf8",
+      ),
+    ) as Array<{ policyRefs?: Array<{ id: string }> }>;
+    expect(taskDefinitions[0]?.policyRefs?.map(({ id }) => id)).toEqual([
+      "core-authority",
+      "tracer-bullet-planning",
+      "expand-contract-migration",
+    ]);
     const state = JSON.parse(
       await readFile(join(root, ".sdd/state.json"), "utf8"),
     );

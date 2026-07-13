@@ -68,11 +68,7 @@ export function validateTaskResult(data: unknown): AgentTaskResult {
   for (let i = 0; i < (obj.commandsRun as unknown[]).length; i++) {
     const cmd = (obj.commandsRun as Record<string, unknown>[])[i]!;
     assertString(cmd.command, `commandsRun[${i}].command`);
-    if (!Array.isArray(cmd.args)) {
-      throw new Error(
-        `E_SCHEMA_VALIDATION_FAILED: commandsRun[${i}].args 必须是数组`,
-      );
-    }
+    assertStringArray(cmd.args, `commandsRun[${i}].args`);
     assertNumber(cmd.exitCode, `commandsRun[${i}].exitCode`);
     assertBoolean(cmd.passed, `commandsRun[${i}].passed`);
     assertString(cmd.outputSummary, `commandsRun[${i}].outputSummary`);
@@ -90,11 +86,7 @@ export function validateTaskResult(data: unknown): AgentTaskResult {
       );
     }
     assertString(e.command, `tddEvidence[${i}].command`);
-    if (!Array.isArray(e.args)) {
-      throw new Error(
-        `E_SCHEMA_VALIDATION_FAILED: tddEvidence[${i}].args 必须是数组`,
-      );
-    }
+    assertStringArray(e.args, `tddEvidence[${i}].args`);
     assertBoolean(e.passed, `tddEvidence[${i}].passed`);
     assertString(e.outputSummary, `tddEvidence[${i}].outputSummary`);
   }
@@ -106,19 +98,13 @@ export function validateTaskResult(data: unknown): AgentTaskResult {
   for (let i = 0; i < (obj.verification as unknown[]).length; i++) {
     const v = (obj.verification as Record<string, unknown>[])[i]!;
     assertString(v.command, `verification[${i}].command`);
-    if (!Array.isArray(v.args)) {
-      throw new Error(
-        `E_SCHEMA_VALIDATION_FAILED: verification[${i}].args 必须是数组`,
-      );
-    }
+    assertStringArray(v.args, `verification[${i}].args`);
     assertBoolean(v.passed, `verification[${i}].passed`);
     assertString(v.outputSummary, `verification[${i}].outputSummary`);
   }
 
   // 校验 notes
-  if (!Array.isArray(obj.notes)) {
-    throw new Error("E_SCHEMA_VALIDATION_FAILED: notes 必须是数组");
-  }
+  assertStringArray(obj.notes, "notes");
 
   return obj as unknown as AgentTaskResult;
 }

@@ -1,3 +1,4 @@
+import type { PolicyBundle } from "@sdd-harness/agent-policies";
 import type { PlanArtifacts, PlanningInput, TaskDefinition, TddPhase } from "../superpowers/protocol.js";
 export interface DesignInput {
     spec: string;
@@ -5,6 +6,7 @@ export interface DesignInput {
     codebaseSummary: string;
     packageStructure: string;
     architecture: string;
+    policyBundle?: PolicyBundle;
     existingDesign?: string;
 }
 type MaybePromise<T> = T | Promise<T>;

@@ -100,6 +100,37 @@ describe("Superpowers 原子计划器", () => {
       "src/create-order.ts",
       "test/create-order.test.ts",
     ]);
+    expect(plan.tasks.every((task) => task.sliceType === "VERTICAL")).toBe(
+      true,
+    );
+    expect(
+      plan.tasks.every((task) =>
+        task.userVisibleOutcome?.includes("用户可见行为通过完整验证"),
+      ),
+    ).toBe(true);
+  });
+
+  it("大范围迁移按 EXPAND、MIGRATE、CONTRACT 排序且 CONTRACT 依赖全部迁移", () => {
+    const plan = new TddEngine().generatePlan({
+      spec: threeRequirements.split("### Requirement: 取消订单")[0]!,
+      design: "采用 expand-migrate-contract 完成 database migration",
+      impact:
+        "package.json\nREQ-001 创建订单: src/create-order.ts test/create-order.test.ts",
+      codebaseSummary:
+        "package.json\nsrc/create-order.ts\ntest/create-order.test.ts",
+    });
+
+    expect(plan.tasks.map((task) => task.sliceType)).toEqual([
+      "EXPAND",
+      "MIGRATE",
+      "MIGRATE",
+      "CONTRACT",
+    ]);
+    expect(plan.tasks[3]!.dependsOn).toEqual([
+      "TASK-001-RED",
+      "TASK-001-GREEN",
+      "TASK-001-REFACTOR",
+    ]);
   });
 
   it("文件范围不重叠时 requirement 链可以并行", () => {

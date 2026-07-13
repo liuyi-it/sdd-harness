@@ -4,6 +4,10 @@
  */
 export function decide(input) {
     if (!input.result.ok) {
+        if (input.result.state === "PLAN_READY" &&
+            ["E_VERIFY_FAILED", "E_REVIEW_FAILED"].includes(input.result.error?.code ?? "") &&
+            input.result.error?.next === "sdd build next")
+            return "CONTINUE";
         if (input.result.error?.code === "E_VERIFY_FAILED")
             return "PAUSE_FOR_HUMAN";
         if (input.result.error?.code === "E_REVIEW_FAILED")

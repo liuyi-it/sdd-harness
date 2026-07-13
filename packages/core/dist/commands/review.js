@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
-import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { ArtifactWriter, artifactInputHash, } from "../artifacts/artifact-writer.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson, } from "../git/git-inspector.js";
 import { driftFailures, reviewGate } from "../quality/quality-gates.js";
@@ -15,6 +15,7 @@ import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 import { assertRecoverableCommandState, canResumeCommand, normalizeCommandError, persistCommandFailure, previousStablePhase, } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
+import { prepareRepairTasks } from "./repair-task.js";
 /**
  * review 阶段在 verify 通过之后再做一次实现侧审查，
  * 重点确认修改范围、验证证据和任务声明之间没有漂移。
@@ -25,6 +26,7 @@ export async function runReview(root, args, signal) {
     const store = new StateStore(root);
     let started = false;
     let previousPhase = "VERIFY_READY";
+    let activeChangeId;
     try {
         const state = await store.read();
         assertRecoverableCommandState(state, "sdd review");
@@ -35,6 +37,7 @@ export async function runReview(root, args, signal) {
             throw new SddError("E_VERIFY_REQUIRED", `无法在 ${state.currentPhase} 状态下执行 review`, state.suggestedCommand ?? "sdd verify");
         }
         const changeId = requireActiveChangeId(state.currentChangeId, args);
+        activeChangeId = changeId;
         await assertChangeWritable(root, changeId);
         const businessRoot = resolveBusinessRoot(root, state);
         const change = join(root, ".sdd", "changes", changeId);
@@ -74,6 +77,7 @@ export async function runReview(root, args, signal) {
             const secretIssues = await detectSecretLeakIssues(businessRoot, baseline, currentSnapshot);
             const reviewReport = createReviewReport({
                 changeId,
+                fixedPoint: artifactInputHash(currentSnapshot),
                 issues: deterministic.issues.concat(secretIssues),
                 ...(gate.failures.length === 0
                     ? {}
@@ -83,20 +87,32 @@ export async function runReview(root, args, signal) {
                                 id: "RV-" + failure,
                                 category: "UNRELATED_CHANGE",
                                 severity: "MAJOR",
+                                axis: "STANDARDS",
                                 message: failure,
                             }
                             : {
                                 id: "RV-" + failure,
                                 category: "FILE_SCOPE",
                                 severity: "MAJOR",
+                                axis: "STANDARDS",
                                 message: failure,
                             })),
                     }),
             });
-            // reportPaths 会写入 .sdd/changes/<change-id>/review-report.v1.2.{json,md} 并被 archive 复用
             await writeReviewReport(root, changeId, reviewReport);
-            if (reviewReport.result === "BLOCK")
-                throw new SddError("E_REVIEW_FAILED", reviewReport.summary, "sdd review");
+            if (reviewReport.result === "BLOCK") {
+                const reviewError = new SddError("E_REVIEW_FAILED", reviewReport.message, "sdd review");
+                reviewError.repairFiles = [
+                    ...new Set([
+                        ...changedUnreportedFiles(baseline, currentSnapshot, reportedFiles),
+                        ...secretIssues.flatMap((issue) => issue.file === undefined ? [] : [issue.file]),
+                    ]),
+                ];
+                reviewError.findingIds = reviewReport.issues
+                    .filter((issue) => issue.severity === "MAJOR")
+                    .map((issue) => issue.id);
+                throw reviewError;
+            }
             if (state.currentPhase === "REVIEW_READY" &&
                 gate.passed &&
                 (await reviewSnapshotUnchanged(change, currentSnapshot))) {
@@ -212,6 +228,21 @@ export async function runReview(root, args, signal) {
     catch (error) {
         const normalized = normalizeCommandError(error, "E_STATE_CORRUPTED", "sdd review");
         if (started) {
+            if (normalized.code === "E_REVIEW_FAILED" &&
+                activeChangeId !== undefined) {
+                const repair = await prepareRepairTasks(root, activeChangeId, {
+                    source: "REVIEW",
+                    errorCode: "E_REVIEW_FAILED",
+                    message: normalized.message,
+                    ...(repairFilesFrom(error) === undefined
+                        ? {}
+                        : { requestedFiles: repairFilesFrom(error) }),
+                    ...(findingIdsFrom(error) === undefined
+                        ? {}
+                        : { findingIds: findingIdsFrom(error) }),
+                });
+                throw new SddError(normalized.code, normalized.message, repair.created ? "sdd build next" : "sdd status");
+            }
             await persistCommandFailure(store, normalized, {
                 command: "sdd review",
                 previousPhase,
@@ -223,6 +254,31 @@ export async function runReview(root, args, signal) {
     finally {
         await lock.release();
     }
+}
+function changedUnreportedFiles(baseline, current, reportedFiles) {
+    if (baseline === null ||
+        current === null ||
+        !baseline.available ||
+        !current.available)
+        return [];
+    const reported = new Set(reportedFiles);
+    return current.files.filter((file) => baseline.hashes[file] !== current.hashes[file] && !reported.has(file));
+}
+function repairFilesFrom(error) {
+    if (typeof error !== "object" || error === null || !("repairFiles" in error))
+        return undefined;
+    const files = error.repairFiles;
+    return Array.isArray(files)
+        ? files.filter((file) => typeof file === "string")
+        : undefined;
+}
+function findingIdsFrom(error) {
+    if (typeof error !== "object" || error === null || !("findingIds" in error))
+        return undefined;
+    const ids = error.findingIds;
+    return Array.isArray(ids)
+        ? ids.filter((id) => typeof id === "string")
+        : undefined;
 }
 async function detectSecretLeakIssues(businessRoot, baseline, current) {
     if (baseline === null || current === null)

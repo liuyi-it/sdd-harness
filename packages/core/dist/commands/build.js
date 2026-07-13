@@ -1,8 +1,8 @@
-import { access, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
-import { readContextPackMetadata, renderContextPack, stripManagedSections, } from "../build/context-pack.js";
+import { readContextPackMetadata, renderContextPack, stripManagedSections, verifyContextPackDigest, } from "../build/context-pack.js";
 import { normalizeTaskExecutionResult, } from "../build/task-result-normalizer.js";
 import { assertRecoverableCommandState, canResumeCommand } from "./recovery.js";
 import { SddError } from "../errors.js";
@@ -17,6 +17,7 @@ import { resolveProjectRules, } from "../project-conventions/rule-resolver.js";
 import { StateStore } from "../state/state-store.js";
 import { parseTaskResults, parseTasks } from "../quality/quality-schema.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
+import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
 export async function runBuild(root, executor, signal, rawArgs) {
     const subcommand = rawArgs?.subcommand;
     // build next：返回下一个待执行任务的 AGENT_TASK_EXECUTION
@@ -245,12 +246,7 @@ function resolveBusinessRoot(controlRoot, state) {
 }
 function assertExecutionResultShape(taskId, value) {
     const record = value;
-    if (typeof value === "object" &&
-        value !== null &&
-        record?.schemaVersion === "1.2.0" &&
-        Array.isArray(record.commandEvidence) &&
-        typeof record.fileDelta === "object" &&
-        record.fileDelta !== null) {
+    if (record?.schemaVersion === "1.2.0" && isValidV2Envelope(record)) {
         return;
     }
     if (typeof value !== "object" ||
@@ -262,6 +258,44 @@ function assertExecutionResultShape(taskId, value) {
         !Array.isArray(record.tddEvidence) ||
         !Array.isArray(record.verification))
         throw new SddError("E_TDD_EVIDENCE_REQUIRED", `任务 ${taskId} 的执行结果结构无效`, "sdd build");
+}
+function isValidV2Envelope(record) {
+    const fileDelta = record.fileDelta;
+    const timestamps = record.timestamps;
+    const mode = record.mode;
+    return (VALID_TASK_STATUSES.includes(record.status) &&
+        typeof record.summary === "string" &&
+        record.summary.trim().length > 0 &&
+        Array.isArray(record.commandEvidence) &&
+        record.commandEvidence.every(isValidCommandEvidence) &&
+        isStringArrayRecord(fileDelta, ["added", "modified", "deleted"]) &&
+        isStringRecord(timestamps, ["startedAt", "endedAt"]) &&
+        (mode === undefined ||
+            (isRecord(mode) &&
+                ["subagent", "main-agent"].includes(String(mode.requested)) &&
+                ["subagent", "main-agent"].includes(String(mode.actual)))) &&
+        (record.notes === undefined || isStringArray(record.notes)));
+}
+function isValidCommandEvidence(value) {
+    if (!isRecord(value))
+        return false;
+    return (typeof value.command === "string" &&
+        value.command.trim().length > 0 &&
+        isStringArray(value.args) &&
+        (value.exitCode === undefined || typeof value.exitCode === "number") &&
+        typeof value.outputSummary === "string");
+}
+function isStringArrayRecord(value, keys) {
+    return isRecord(value) && keys.every((key) => isStringArray(value[key]));
+}
+function isStringRecord(value, keys) {
+    return isRecord(value) && keys.every((key) => typeof value[key] === "string");
+}
+function isStringArray(value) {
+    return (Array.isArray(value) && value.every((item) => typeof item === "string"));
+}
+function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function validateExecution(task, result, actualModifiedFiles) {
     const legacy = toLegacyResult(task.id, result);
@@ -315,15 +349,29 @@ async function ensureFreshContextPacks(root, changeId, tasks, host) {
     const projectConventionsHash = await readProjectConventionsHash(root);
     for (const task of tasks) {
         const path = join(root, ".sdd", "context-packs", changeId, `${task.id}.md`);
-        const contextPack = await readFile(path, "utf8");
-        const metadata = readContextPackMetadata(contextPack);
+        let contextPack;
+        let metadata;
+        try {
+            contextPack = await readFile(path, "utf8");
+            metadata = readContextPackMetadata(contextPack);
+        }
+        catch {
+            contextPack = undefined;
+            metadata = undefined;
+        }
         const rules = await resolveProjectRules(root, [...task.allowedFiles, ...task.expectedNewFiles], host);
-        if (metadata.codebaseIndexHash !== expectedCodebaseHash ||
+        const digestValid = contextPack !== undefined && verifyContextPackDigest(contextPack);
+        if (metadata === undefined ||
+            contextPack === undefined ||
+            !digestValid ||
+            metadata.codebaseIndexHash !== expectedCodebaseHash ||
             metadata.sourceArtifactHash !== expectedSourceHash ||
             metadata.projectRulesHash !== rules.hash ||
             metadata.projectConventionsHash !== projectConventionsHash) {
             await writeFile(path, renderContextPack({
-                body: stripManagedSections(contextPack),
+                body: contextPack === undefined || !digestValid
+                    ? renderFallbackTaskBody(task)
+                    : stripManagedSections(contextPack),
                 rules,
                 codebaseSummary,
                 spec,
@@ -332,9 +380,46 @@ async function ensureFreshContextPacks(root, changeId, tasks, host) {
                 tasksMarkdown,
                 tasksJson,
                 projectConventionsHash,
+                references: contextPackReferences(changeId),
+                task: {
+                    taskId: task.id,
+                    objective: task.title,
+                    userVisibleOutcome: task.userVisibleOutcome ?? task.title,
+                    requiredFiles: task.allowedFiles,
+                    allowedFiles: task.allowedFiles,
+                    forbiddenFiles: task.forbiddenFiles,
+                    verification: task.verification,
+                },
+                policyBundle: resolvePolicyBundle({
+                    command: "build",
+                    phase: "PLAN_READY",
+                    ...(task.failureContext === undefined
+                        ? {}
+                        : { failureCode: task.failureContext.errorCode }),
+                }),
             }), "utf8");
         }
     }
+}
+function contextPackReferences(changeId) {
+    return {
+        spec: `.sdd/changes/${changeId}/spec.md`,
+        design: `.sdd/changes/${changeId}/design.md`,
+        plan: `.sdd/changes/${changeId}/tasks.md`,
+        impact: `.sdd/changes/${changeId}/impact.md`,
+        codebase: ".sdd/index/codebase-summary.md",
+    };
+}
+function renderFallbackTaskBody(task) {
+    return [
+        `# Task: ${task.id}`,
+        "",
+        `Phase: ${task.phase}`,
+        "",
+        "## Description",
+        "",
+        task.title,
+    ].join("\n");
 }
 function selectParallelBatch(tasks) {
     const batch = [];
@@ -458,7 +543,11 @@ function readHost(args) {
 }
 async function readProjectConventionsHash(root) {
     try {
-        return artifactInputHash(await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"));
+        const profile = JSON.parse(await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"));
+        const stable = { ...profile };
+        delete stable.generatedAt;
+        delete stable.indexHash;
+        return artifactInputHash(stable);
     }
     catch {
         return artifactInputHash("missing-project-conventions");
@@ -486,6 +575,7 @@ async function buildNextTask(root, rawArgs) {
                 const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
                 const change = join(root, ".sdd", "changes", changeId);
                 const tasks = parseTasks(await readFile(join(change, "tasks.json"), "utf8"));
+                await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
                 const task = tasks.find((t) => t.id === existingTaskId);
                 if (task) {
                     const contextPackPath = `.sdd/context-packs/${changeId}/${existingTaskId}.md`;
@@ -509,6 +599,14 @@ async function buildNextTask(root, rawArgs) {
                                 : "fallback-file-scan",
                             degraded: state.degraded,
                         },
+                        policyBundle: resolvePolicyBundle({
+                            command: "build",
+                            phase: state.currentPhase,
+                            actionType: "AGENT_TASK_EXECUTION",
+                            ...(task.failureContext === undefined
+                                ? {}
+                                : { failureCode: task.failureContext.errorCode }),
+                        }),
                     };
                     return {
                         ok: true,
@@ -537,6 +635,7 @@ async function buildNextTask(root, rawArgs) {
         const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
         const change = join(root, ".sdd", "changes", changeId);
         const tasks = parseTasks(await readFile(join(change, "tasks.json"), "utf8"));
+        await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
         // 查找第一个可执行任务（排除 DONE 和 BUILDING）
         const taskStatuses = state.tasks;
         const nextTask = tasks.find((t) => taskStatuses[t.id] !== "DONE" &&
@@ -570,13 +669,6 @@ async function buildNextTask(root, rawArgs) {
         await mkdir(join(root, ".sdd", "context-packs", changeId), {
             recursive: true,
         });
-        // 不覆盖 plan 生成的 Context Pack（P1-1）
-        try {
-            await access(join(root, contextPackPath));
-        }
-        catch {
-            await writeFile(join(root, contextPackPath), `# Task: ${nextTask.id}\n\nPhase: ${nextTask.phase}\n\n## Allowed Files\n${(nextTask.allowedFiles ?? []).map((f) => `- ${f}`).join("\n")}\n\n## Description\n${nextTask.title ?? "实施此任务"}\n`, "utf8");
-        }
         const resultFile = `.sdd/runs/${runId}/tasks/${nextTask.id}.result.json`;
         await mkdir(join(root, ".sdd", "runs", runId, "tasks"), {
             recursive: true,
@@ -640,6 +732,14 @@ async function buildNextTask(root, rawArgs) {
                     : "fallback-file-scan",
                 degraded: state.degraded,
             },
+            policyBundle: resolvePolicyBundle({
+                command: "build",
+                phase: state.currentPhase,
+                actionType: "AGENT_TASK_EXECUTION",
+                ...(nextTask.failureContext === undefined
+                    ? {}
+                    : { failureCode: nextTask.failureContext.errorCode }),
+            }),
         };
         return {
             ok: true,
@@ -676,6 +776,8 @@ function parseCompleteResult(taskId, value) {
         return invalidCompleteResult("TaskExecutionResult 结构不合法");
     const result = value;
     const isV2 = result.schemaVersion === "1.2.0" && "fileDelta" in result;
+    if (isV2 && !isValidV2Envelope(result))
+        return invalidCompleteResult("v2 task execution result 深层结构不合法");
     const legacy = isV2 ? result.legacy : result;
     if (typeof legacy !== "object" || legacy === null || Array.isArray(legacy))
         return invalidCompleteResult("v2 task execution result 必须包含合法 legacy");

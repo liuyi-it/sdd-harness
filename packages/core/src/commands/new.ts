@@ -1,6 +1,8 @@
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
+
 import { AuditLogger } from "../audit/audit-logger.js";
 import {
   ArtifactWriter,
@@ -153,6 +155,10 @@ export async function runNew(
     const generationInput: GenerateSpecInput = {
       requirement,
       codebaseSummary,
+      policyBundle: resolvePolicyBundle({
+        command: "new",
+        phase: state.currentPhase,
+      }),
       ...(args.answers === undefined ? {} : { answers: args.answers }),
     };
     const preview =

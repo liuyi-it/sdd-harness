@@ -114,6 +114,15 @@ export function renderTraceability(document, tasks, results) {
             }
         }
     }
+    const repairTasks = tasks.filter((task) => task.sliceType === "REPAIR");
+    if (repairTasks.length > 0) {
+        lines.push("## Repair Traceability", "");
+        for (const task of repairTasks) {
+            const result = results.find((entry) => entry.taskId === task.id);
+            lines.push(`### ${task.id}: ${task.title}`, "");
+            lines.push(`失败来源：${task.failureContext?.source ?? "unknown"}`, `错误码：${task.failureContext?.errorCode ?? "unknown"}`, `Review Findings：${task.failureContext?.findingIds?.join("、") || "无"}`, `前序 Loop Run：${task.failureContext?.previousRunId ?? "unknown"}`, `Policy：${task.policyRefs?.map((policy) => `${policy.id}@${policy.version} (${policy.digest})`).join("；") || "无"}`, `修改文件：${unique(result?.modifiedFiles ?? []).join("、")}`, `TDD 命令：${unique(result?.tddEvidence.map((entry) => entry.command) ?? []).join("；")}`, `验证命令：${unique(result?.verification.map((entry) => entry.command) ?? []).join("；")}`, "");
+        }
+    }
     return lines.join("\n");
 }
 function unique(values) {

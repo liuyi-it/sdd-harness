@@ -9,6 +9,11 @@ export function createDefaultLoopSpec(): LoopSpec {
     maxSteps: 12,
     maxRetriesPerStep: 0,
     maxRepeatedFailures: 2,
+    repairPolicy: {
+      maxRepairAttemptsPerTask: 2,
+      maxRepeatedFailureSignature: 2,
+      stopOnScopeExpansion: true,
+    },
     stoppingRules: [
       "CLARIFYING",
       "WAITING_AGENT",

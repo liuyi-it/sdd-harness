@@ -11,6 +11,7 @@ import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 import { assertRecoverableCommandState, canResumeCommand, normalizeCommandError, persistCommandFailure, previousStablePhase, } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
+import { prepareRepairTasks } from "./repair-task.js";
 import { readAuthoritativeSpec } from "../quality/traceability.js";
 import { assertTaskResultIds, parseTaskResults, parseTasks, } from "../quality/quality-schema.js";
 /**
@@ -23,6 +24,7 @@ export async function runVerify(root, args, signal) {
     const store = new StateStore(root);
     let started = false;
     let previousPhase = "BUILD_READY";
+    let activeChangeId;
     try {
         const state = await store.read();
         assertRecoverableCommandState(state, "sdd verify");
@@ -33,6 +35,7 @@ export async function runVerify(root, args, signal) {
             throw new SddError("E_INVALID_PHASE_COMMAND", `无法在 ${state.currentPhase} 状态下执行 verify`, state.suggestedCommand ?? undefined);
         }
         const changeId = requireActiveChangeId(state.currentChangeId, args);
+        activeChangeId = changeId;
         await assertChangeWritable(root, changeId);
         const businessRoot = resolveBusinessRoot(root, state);
         const change = join(root, ".sdd", "changes", changeId);
@@ -111,6 +114,7 @@ export async function runVerify(root, args, signal) {
                 results,
                 gate,
                 report,
+                repairFiles: changedUnreportedFiles(baseline, currentSnapshot, reportedFiles),
             };
         })(), timeoutMilliseconds(args), "sdd verify", signal);
         if (resultBundle.reused) {
@@ -123,7 +127,7 @@ export async function runVerify(root, args, signal) {
                 data: { alreadyReady: true },
             };
         }
-        const { gate, tasks, results: taskResults, spec } = resultBundle;
+        const { gate, tasks, results: taskResults, spec, repairFiles, } = resultBundle;
         let requirementCount = 0;
         let scenarioCount = 0;
         try {
@@ -150,6 +154,7 @@ export async function runVerify(root, args, signal) {
         if (!gate.passed) {
             const error = new SddError("E_VERIFY_FAILED", gate.failures.join("; "), "sdd verify");
             error.reportPaths = reportPaths;
+            error.repairFiles = repairFiles;
             throw error;
         }
         const ready = await store.update((current) => ({
@@ -179,6 +184,18 @@ export async function runVerify(root, args, signal) {
     catch (error) {
         const normalized = normalizeCommandError(error, "E_STATE_CORRUPTED", "sdd verify");
         if (started) {
+            if (normalized.code === "E_VERIFY_FAILED" &&
+                activeChangeId !== undefined) {
+                const repair = await prepareRepairTasks(root, activeChangeId, {
+                    source: "VERIFY",
+                    errorCode: "E_VERIFY_FAILED",
+                    message: normalized.message,
+                    ...(repairFilesFrom(error) === undefined
+                        ? {}
+                        : { requestedFiles: repairFilesFrom(error) }),
+                });
+                throw new SddError(normalized.code, normalized.message, repair.created ? "sdd build next" : "sdd status");
+            }
             await persistCommandFailure(store, normalized, {
                 command: "sdd verify",
                 previousPhase,
@@ -190,6 +207,20 @@ export async function runVerify(root, args, signal) {
     finally {
         await lock.release();
     }
+}
+function changedUnreportedFiles(baseline, current, reportedFiles) {
+    if (baseline === null || !baseline.available || !current.available)
+        return [];
+    const reported = new Set(reportedFiles);
+    return current.files.filter((file) => baseline.hashes[file] !== current.hashes[file] && !reported.has(file));
+}
+function repairFilesFrom(error) {
+    if (typeof error !== "object" || error === null || !("repairFiles" in error))
+        return undefined;
+    const files = error.repairFiles;
+    return Array.isArray(files)
+        ? files.filter((file) => typeof file === "string")
+        : undefined;
 }
 function resolveBusinessRoot(controlRoot, state) {
     const worktreePath = state.workspace?.worktreePath;

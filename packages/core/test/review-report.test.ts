@@ -53,7 +53,7 @@ function snapshot(files: Record<string, string>): GitSnapshot {
   };
 }
 
-describe("ReviewReport v1.2 + deterministic review", () => {
+describe("ReviewReport v2 + deterministic review", () => {
   const roots: string[] = [];
   afterEach(async () => {
     const { rm } = await import("node:fs/promises");
@@ -217,6 +217,12 @@ describe("ReviewReport v1.2 + deterministic review", () => {
     expect(report.categoryCounts.BLOCKER).toBe(2);
     expect(report.categoryCounts.FILE_SCOPE).toBe(1);
     expect(report.result).toBe("BLOCK");
+    expect(report.standards.status).toBe("FAILED");
+    expect(report.spec.status).toBe("PASSED");
+    expect(report.summary).toEqual({
+      standardsFindingCount: 4,
+      specFindingCount: 0,
+    });
   });
 
   it("isBlocking returns true when MAJOR appears in BLOCKER category", () => {
@@ -266,7 +272,7 @@ describe("ReviewReport v1.2 + deterministic review", () => {
       ],
     });
     const md = renderReviewMarkdown(report);
-    expect(md).toContain("# 审查报告 (v1.2)");
+    expect(md).toContain("# 审查报告 (v2)");
     expect(md).toContain("MAJOR=1");
     expect(md).toContain("FILE_SCOPE");
   });
@@ -288,10 +294,10 @@ describe("ReviewReport v1.2 + deterministic review", () => {
       });
       const paths = await writeReviewReport(root, "demo", report);
       expect(
-        paths.jsonPath.endsWith(".sdd/changes/demo/review-report.v1.2.json"),
+        paths.jsonPath.endsWith(".sdd/changes/demo/review-report.v2.json"),
       ).toBe(true);
       expect(
-        paths.mdPath.endsWith(".sdd/changes/demo/review-report.v1.2.md"),
+        paths.mdPath.endsWith(".sdd/changes/demo/review-report.v2.md"),
       ).toBe(true);
       const stored = JSON.parse(await readFile(paths.jsonPath, "utf8"));
       expect(stored.result).toBe("BLOCK");
@@ -313,5 +319,47 @@ describe("ReviewReport v1.2 + deterministic review", () => {
     const report = createReviewReport({ changeId: "demo", issues: [] });
     expect(report.result).toBe("PASS");
     expect(report.severityCounts).toEqual({ MAJOR: 0, MINOR: 0, INFO: 0 });
+  });
+
+  it("将规格覆盖缺口归入 Spec 轴并独立阻断", () => {
+    const out = runDeterministicReview({
+      tasks: [],
+      results: [],
+      baseline: snapshot({}),
+      current: snapshot({}),
+      spec: {
+        title: "订单",
+        requirements: [
+          {
+            id: "REQ-001",
+            title: "取消订单",
+            statement: "系统 SHALL 允许取消订单",
+            operation: "ADDED",
+            scenarios: [
+              {
+                id: "REQ-001-SC-001",
+                title: "成功取消",
+                given: ["订单待处理"],
+                when: ["用户取消"],
+                then: ["订单已取消"],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const report = createReviewReport({
+      changeId: "demo",
+      fixedPoint: "sha256:test",
+      issues: out.issues,
+    });
+
+    expect(report.standards.status).toBe("PASSED");
+    expect(report.spec.status).toBe("FAILED");
+    expect(report.spec.findings).toHaveLength(2);
+    expect(report.spec.findings.every((issue) => issue.axis === "SPEC")).toBe(
+      true,
+    );
+    expect(report.result).toBe("BLOCK");
   });
 });

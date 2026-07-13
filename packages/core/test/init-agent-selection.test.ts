@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { getAvailableAdapters } from "../src/adapters/registry.js";
 import type { AdapterManifest } from "../src/adapters/types.js";
 import { installProjectIntegration } from "../src/install/project-installer.js";
 
@@ -34,6 +35,13 @@ function makeClaudeManifest(): AdapterManifest {
       "---\ndescription: sdd {command}\n---\n\n执行 /sdd.{command}\n",
     skillsDir: ".claude/skills/sdd-harness",
     skillContent: "---\nname: sdd-harness\n---\n\nClaude skill\n",
+    capabilities: {
+      supportsSkills: true,
+      supportsModelInvocation: true,
+      supportsUserCommands: true,
+      supportsReferences: true,
+    },
+    warnings: [],
   };
 }
 
@@ -48,10 +56,33 @@ function makeCodexManifest(): AdapterManifest {
       "---\ndescription: sdd {command}\n---\n\n执行 sdd {command}\n",
     skillsDir: ".codex/skills/sdd-harness",
     skillContent: "---\nname: sdd-harness\n---\n\nCodex skill\n",
+    capabilities: {
+      supportsSkills: true,
+      supportsModelInvocation: true,
+      supportsUserCommands: true,
+      supportsReferences: true,
+    },
+    warnings: [],
   };
 }
 
 describe("installProjectIntegration agent selection", () => {
+  it("manifest 仅描述能力且安装内容统一由 Policy compiler 生成", async () => {
+    const manifests = await getAvailableAdapters();
+    expect(manifests).toHaveLength(3);
+    for (const manifest of manifests) {
+      expect(manifest.capabilities).toEqual({
+        supportsSkills: true,
+        supportsModelInvocation: true,
+        supportsUserCommands: true,
+        supportsReferences: true,
+      });
+      expect(manifest.instructionContent).toContain("policyBundle");
+      expect(manifest.skillContent).not.toContain("RED 观察");
+      expect(manifest.commandTemplate).not.toContain("Think Before Coding");
+    }
+  });
+
   it("仅安装选中的适配器 — claude", async () => {
     const root = await project();
     await installProjectIntegration(root, [makeClaudeManifest()]);
@@ -136,20 +167,28 @@ describe("installProjectIntegration agent selection", () => {
     expect(h2Count).toBe(1);
   });
 
-  it("有 rules 的 manifest 会安装 rule 文件", async () => {
+  it("持久化 Adapter capability 与降级原因", async () => {
     const root = await project();
-    const manifestWithRules: AdapterManifest = {
+    const degraded: AdapterManifest = {
       ...makeClaudeManifest(),
-      rules: [{ file: ".claude/rules/sdd.md", content: "# SDD Rules\n" }],
+      warnings: ["使用 Context Pack 注入 Policy"],
+      degradationReason: "宿主不支持 Skill",
     };
 
-    await installProjectIntegration(root, [manifestWithRules]);
+    await installProjectIntegration(root, [degraded]);
 
-    const ruleContent = await readFile(
-      join(root, ".claude/rules/sdd.md"),
-      "utf8",
+    const capability = JSON.parse(
+      await readFile(
+        join(root, ".sdd/adapters/claude/capabilities.json"),
+        "utf8",
+      ),
     );
-    expect(ruleContent).toContain("# SDD Rules");
+    expect(capability).toMatchObject({
+      agent: "claude",
+      degraded: true,
+      degradationReason: "宿主不支持 Skill",
+      warnings: ["使用 Context Pack 注入 Policy"],
+    });
   });
 
   it("force 模式覆盖已有指令文件", async () => {

@@ -61,9 +61,6 @@ export const CANONICAL_SCHEMAS = {
     "artifacts"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.2.0" },
-    "version": { "type": "integer", "minimum": 1 },
-    "updatedAt": { "type": "string", "format": "date-time" },
     "schemaVersion": { "const": "1.4.0" },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "format": "date-time" },
@@ -166,6 +163,41 @@ export const CANONICAL_SCHEMAS = {
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1
+    },
+    "sliceType": {
+      "enum": ["VERTICAL", "EXPAND", "MIGRATE", "CONTRACT", "REPAIR"]
+    },
+    "userVisibleOutcome": { "type": "string", "minLength": 1 },
+    "acceptanceCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "testSeam": { "type": "string", "minLength": 1 },
+    "policyRefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "digest"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 },
+          "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "failureContext": {
+      "type": "object",
+      "required": ["source", "errorCode", "previousRunId"],
+      "properties": {
+        "source": { "enum": ["VERIFY", "REVIEW", "BUILD"] },
+        "errorCode": { "type": "string", "minLength": 1 },
+        "failingCommand": { "type": "string", "minLength": 1 },
+        "findingIds": { "type": "array", "items": { "type": "string" } },
+        "previousRunId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false
@@ -264,6 +296,7 @@ export const CANONICAL_SCHEMAS = {
     "maxSteps",
     "maxRetriesPerStep",
     "maxRepeatedFailures",
+    "repairPolicy",
     "stoppingRules",
     "decisionPolicy",
     "createdAt",
@@ -276,6 +309,23 @@ export const CANONICAL_SCHEMAS = {
     "maxSteps": { "type": "integer", "minimum": 1 },
     "maxRetriesPerStep": { "type": "integer", "minimum": 0 },
     "maxRepeatedFailures": { "type": "integer", "minimum": 0 },
+    "repairPolicy": {
+      "type": "object",
+      "required": [
+        "maxRepairAttemptsPerTask",
+        "maxRepeatedFailureSignature",
+        "stopOnScopeExpansion"
+      ],
+      "properties": {
+        "maxRepairAttemptsPerTask": { "type": "integer", "minimum": 0 },
+        "maxRepeatedFailureSignature": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stopOnScopeExpansion": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "stoppingRules": {
       "type": "array",
       "minItems": 1,

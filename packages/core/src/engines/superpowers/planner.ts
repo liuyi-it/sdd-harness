@@ -25,6 +25,7 @@ export function createAtomicTasks(input: PlanningInput): {
   const requirements = parseRequirements(input.spec);
   assertRequirements(requirements);
   const context = `${input.impact}\n${input.codebaseSummary}`;
+  const migration = requiresExpandContract(input.design, input.impact);
   const files = extractPaths(context);
   const sourceFiles = files.filter(isSourceFile);
   const testFiles = files.filter(isTestFile);
@@ -71,9 +72,13 @@ export function createAtomicTasks(input: PlanningInput): {
     for (const [phaseIndex, phase] of PHASES.entries()) {
       const id = `TASK-${ordinal}-${phase}`;
       const dependsOn =
-        phaseIndex > 0
-          ? [`TASK-${ordinal}-${PHASES[phaseIndex - 1]}`]
-          : overlappingVerifyIds;
+        migration && phase === "VERIFY"
+          ? PHASES.slice(0, phaseIndex).map(
+              (dependencyPhase) => `TASK-${ordinal}-${dependencyPhase}`,
+            )
+          : phaseIndex > 0
+            ? [`TASK-${ordinal}-${PHASES[phaseIndex - 1]}`]
+            : overlappingVerifyIds;
       const allowedFiles = unique([
         ...requirement.sourceFiles,
         ...requirement.testFiles,
@@ -91,11 +96,49 @@ export function createAtomicTasks(input: PlanningInput): {
         forbiddenFiles: [".git/**", ".env", "**/credentials*"],
         verification: commands,
         doneCriteria: doneCriteria(phase, scenarioIds),
+        sliceType: migration ? migrationSliceType(phase) : "VERTICAL",
+        userVisibleOutcome: `${requirement.title} 的用户可见行为通过完整验证`,
+        acceptanceCriteria: doneCriteria(phase, scenarioIds),
+        policyRefs: input.policyBundle?.policies ?? [],
+        ...(requirement.testFiles[0] === undefined
+          ? {}
+          : { testSeam: requirement.testFiles[0] }),
       });
     }
     previousChains.push(requirement);
   }
+  assertAcyclic(tasks);
   return { tasks, requirements: planned };
+}
+
+function requiresExpandContract(design: string, impact: string): boolean {
+  return /(?:expand[–-]migrate[–-]contract|schema migration|database migration|兼容迁移|数据迁移|扩展.*迁移.*收缩)/iu.test(
+    `${design}\n${impact}`,
+  );
+}
+
+function migrationSliceType(
+  phase: TddPhase,
+): "EXPAND" | "MIGRATE" | "CONTRACT" {
+  if (phase === "RED") return "EXPAND";
+  if (phase === "VERIFY") return "CONTRACT";
+  return "MIGRATE";
+}
+
+function assertAcyclic(tasks: readonly TaskDefinition[]): void {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): void => {
+    if (visiting.has(id))
+      throw new SddError("E_STATE_CORRUPTED", `任务依赖图存在循环：${id}`);
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dependency of byId.get(id)?.dependsOn ?? []) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const task of tasks) visit(task.id);
 }
 
 export function extractPaths(text: string): string[] {

@@ -7,6 +7,7 @@ import {
   artifactInputHash,
 } from "../artifacts/artifact-writer.js";
 import { renderContextPack } from "../build/context-pack.js";
+import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
 import { type CommandResult } from "../contracts.js";
 import type { TddEngine } from "../engines/tdd/tdd-engine.js";
 import type { PlanningInput } from "../engines/superpowers/protocol.js";
@@ -78,6 +79,10 @@ export async function runPlan(
         join(root, ".sdd/index/codebase-summary.md"),
         "utf8",
       ),
+      policyBundle: resolvePolicyBundle({
+        command: "plan",
+        phase: "DESIGN_READY",
+      }),
     };
     const artifacts = await withTimeout(
       Promise.resolve(engine.generatePlan(input)),
@@ -205,6 +210,20 @@ export async function runPlan(
             tasksMarkdown: normalizeArtifactContent(artifacts.tasksMarkdown),
             tasksJson,
             projectConventionsHash,
+            references: contextPackReferences(changeId),
+            task: {
+              taskId: task.id,
+              objective: task.title,
+              userVisibleOutcome: task.userVisibleOutcome ?? task.title,
+              requiredFiles: task.allowedFiles,
+              allowedFiles: task.allowedFiles,
+              forbiddenFiles: task.forbiddenFiles,
+              verification: task.verification,
+            },
+            policyBundle: resolvePolicyBundle({
+              command: "build",
+              phase: "PLAN_READY",
+            }),
           }),
           input,
         );
@@ -261,6 +280,16 @@ export async function runPlan(
   }
 }
 
+function contextPackReferences(changeId: string) {
+  return {
+    spec: `.sdd/changes/${changeId}/spec.md`,
+    design: `.sdd/changes/${changeId}/design.md`,
+    plan: `.sdd/changes/${changeId}/tasks.md`,
+    impact: `.sdd/changes/${changeId}/impact.md`,
+    codebase: ".sdd/index/codebase-summary.md",
+  };
+}
+
 function lockOptions(args: Record<string, unknown> | undefined): {
   timeoutMs?: number;
 } {
@@ -278,9 +307,13 @@ function readHost(args: Record<string, unknown> | undefined): RuleHost {
 
 async function readProjectConventionsHash(root: string): Promise<string> {
   try {
-    return artifactInputHash(
+    const profile = JSON.parse(
       await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"),
-    );
+    ) as Record<string, unknown>;
+    const stable = { ...profile };
+    delete stable.generatedAt;
+    delete stable.indexHash;
+    return artifactInputHash(stable);
   } catch {
     return artifactInputHash("missing-project-conventions");
   }

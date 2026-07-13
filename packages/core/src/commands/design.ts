@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
+
 import { AuditLogger } from "../audit/audit-logger.js";
 import {
   ArtifactWriter,
@@ -64,9 +66,11 @@ export async function runDesign(
       lastError: null,
     }));
     started = true;
+    const spec = await readFile(join(change, "spec.md"), "utf8");
+    const impact = await readFile(join(change, "impact.md"), "utf8");
     const input: DesignInput = {
-      spec: await readFile(join(change, "spec.md"), "utf8"),
-      impact: await readFile(join(change, "impact.md"), "utf8"),
+      spec,
+      impact,
       codebaseSummary: await readFile(
         join(root, ".sdd/index/codebase-summary.md"),
         "utf8",
@@ -79,6 +83,13 @@ export async function runDesign(
         join(root, ".sdd/index/architecture.md"),
         "utf8",
       ),
+      policyBundle: resolvePolicyBundle({
+        command: "design",
+        phase: "SPEC_READY",
+        ...(requiresAlternativeDesign(spec, impact)
+          ? { actionType: "HIGH_RISK_DESIGN" }
+          : {}),
+      }),
     };
     const writer = new ArtifactWriter();
     const designPath = join(change, "design.md");
@@ -169,6 +180,12 @@ export async function runDesign(
   } finally {
     await lock.release();
   }
+}
+
+function requiresAlternativeDesign(spec: string, impact: string): boolean {
+  return /(?:公开|public|API|协议|schema|数据库|持久化|迁移|跨包|workspace)/iu.test(
+    `${spec}\n${impact}`,
+  );
 }
 
 function lockOptions(args: Record<string, unknown> | undefined): {

@@ -14,6 +14,7 @@ const REQUIRED_PACKAGES = [
   "core",
   "cli",
   "agent-protocol",
+  "agent-policies",
   "codebase-memory",
   "claude-code-adapter",
   "codex-adapter",
@@ -65,6 +66,28 @@ export async function validateReleaseLayout(root = repoRoot) {
   for (const spec of vendorSpecs) {
     await validateVendorSnapshot(root, spec);
   }
+
+  await validatePolicyUpstream(root);
+}
+
+async function validatePolicyUpstream(root) {
+  const dependency = PINNED_DEPENDENCIES.mattpocockSkills;
+  const vendorRoot = join(root, "vendor", "mattpocock-skills");
+  const upstream = await readFile(join(vendorRoot, "UPSTREAM.md"), "utf8");
+  for (const expected of [
+    dependency.repository,
+    dependency.commit,
+    `License: ${dependency.license}`,
+    "Imported files:",
+    "Adapted policies:",
+    "Local modifications:",
+    "Last reviewed:",
+  ]) {
+    if (!upstream.includes(expected))
+      throw new Error(`mattpocock-skills UPSTREAM.md 缺少：${expected}`);
+  }
+  await ensureReadable(join(vendorRoot, "LICENSE"));
+  await ensureReadable(join(vendorRoot, "upstream", "LICENSE"));
 }
 
 function pickVersionMetadata(dependency) {

@@ -34,6 +34,11 @@ import {
   renderTraceability,
   traceabilityFailures,
 } from "../quality/traceability.js";
+import {
+  getPolicy,
+  resolvePolicyBundle,
+  type PolicyRef,
+} from "@sdd-harness/agent-policies";
 
 /**
  * archive 阶段把整个 change 固化为只读归档：
@@ -90,15 +95,23 @@ export async function runArchive(
     started = true;
     const { archivedMarker } = await withTimeout(
       (async () => {
-        const [spec, tasksText, verifyReport, reviewReport, taskJson, results] =
-          await Promise.all([
-            readFile(join(change, "spec.md"), "utf8"),
-            readFile(join(change, "tasks.md"), "utf8"),
-            readFile(join(change, "verify-report.md"), "utf8"),
-            readFile(join(change, "review-report.md"), "utf8"),
-            readFile(join(change, "tasks.json"), "utf8"),
-            readFile(join(change, "task-results.json"), "utf8"),
-          ]);
+        const [
+          spec,
+          design,
+          tasksText,
+          verifyReport,
+          reviewReport,
+          taskJson,
+          results,
+        ] = await Promise.all([
+          readFile(join(change, "spec.md"), "utf8"),
+          readFile(join(change, "design.md"), "utf8"),
+          readFile(join(change, "tasks.md"), "utf8"),
+          readFile(join(change, "verify-report.md"), "utf8"),
+          readFile(join(change, "review-report.md"), "utf8"),
+          readFile(join(change, "tasks.json"), "utf8"),
+          readFile(join(change, "task-results.json"), "utf8"),
+        ]);
         const writer = new ArtifactWriter();
         await assertPassReport(
           writer,
@@ -180,6 +193,7 @@ export async function runArchive(
             "sdd archive",
           );
         const traceability = renderTraceability(document, tasks, parsedResults);
+        const policyRefs = collectPolicyRefs(tasks, design);
         const archiveReport = [
           "# 归档报告",
           "",
@@ -213,6 +227,25 @@ export async function runArchive(
           "",
           "通过版本控制和有记录的数据迁移来回滚已归档的变更。",
           "",
+          "## Policy Traceability",
+          "",
+          ...policyRefs.map(
+            (policy) => `- ${policy.id}@${policy.version} (${policy.digest})`,
+          ),
+          "",
+          "## Policy Upstream Attribution",
+          "",
+          ...policyRefs.map((policy) => {
+            const source = getPolicy(policy.id).source;
+            const adapted = source.adaptedFrom?.join(", ") ?? "sdd-native";
+            return `- ${policy.id}: ${source.project}; adaptedFrom=${adapted}`;
+          }),
+          "",
+          "## Loop 与修复",
+          "",
+          `- Loop Run ID: ${state.currentRunId ?? "(manual)"}`,
+          `- Repair Tasks: ${tasks.filter((task) => task.sliceType === "REPAIR").length}`,
+          "",
           "## 最终结果",
           "",
           "ARCHIVED",
@@ -226,7 +259,7 @@ export async function runArchive(
           {
             path: join(change, "archive-report.md"),
             content: archiveReport,
-            inputs: { verifyReport, reviewReport },
+            inputs: { verifyReport, reviewReport, policyRefs },
           },
         ]);
         const stateHash = createHash("sha256")
@@ -287,6 +320,38 @@ export async function runArchive(
   } finally {
     await lock.release();
   }
+}
+
+function collectPolicyRefs(
+  tasks: ReturnType<typeof parseTasks>,
+  design: string,
+): PolicyRef[] {
+  const bundles = [
+    resolvePolicyBundle({ command: "new" }),
+    resolvePolicyBundle({
+      command: "design",
+      ...(design.includes("## design-it-twice")
+        ? { actionType: "HIGH_RISK_DESIGN" }
+        : {}),
+    }),
+    resolvePolicyBundle({ command: "plan" }),
+    resolvePolicyBundle({ command: "build" }),
+    resolvePolicyBundle({ command: "verify" }),
+    resolvePolicyBundle({ command: "review" }),
+    resolvePolicyBundle({ command: "archive" }),
+  ];
+  const refs = [
+    ...bundles.flatMap((bundle) => bundle.policies),
+    ...tasks.flatMap((task) => task.policyRefs ?? []),
+  ];
+  return [
+    ...new Map(
+      refs.map((policy) => [
+        `${policy.id}@${policy.version}:${policy.digest}`,
+        policy,
+      ]),
+    ).values(),
+  ];
 }
 
 function resolveBusinessRoot(

@@ -22,7 +22,34 @@ export function runDeterministicReview(input) {
     for (const result of input.results) {
         issues.push(...testingEvidenceIssues(result));
     }
+    issues.push(...specCoverageIssues(input.tasks, input.spec));
     return { issues };
+}
+function specCoverageIssues(tasks, spec) {
+    const requirementIds = new Set(tasks.flatMap((task) => task.requirements));
+    const scenarioIds = new Set(tasks.flatMap((task) => task.scenarios));
+    const issues = [];
+    for (const requirement of spec.requirements) {
+        if (!requirementIds.has(requirement.id)) {
+            issues.push(createReviewIssue({
+                axis: "SPEC",
+                category: "BLOCKER",
+                severity: "MAJOR",
+                message: `需求 ${requirement.id} 没有对应构建任务`,
+            }));
+        }
+        for (const scenario of requirement.scenarios) {
+            if (scenarioIds.has(scenario.id))
+                continue;
+            issues.push(createReviewIssue({
+                axis: "SPEC",
+                category: "BLOCKER",
+                severity: "MAJOR",
+                message: `场景 ${scenario.id} 没有对应构建任务`,
+            }));
+        }
+    }
+    return issues;
 }
 function forbiddenFileIssues(task, currentFiles) {
     if (!Array.isArray(task.forbiddenFiles) || task.forbiddenFiles.length === 0) {

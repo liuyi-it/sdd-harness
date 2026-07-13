@@ -174,7 +174,7 @@ export async function runInit(root, codebase, args, signal) {
             state: ready.currentPhase,
             exitCode: 0,
             next: "sdd new",
-            ...buildWarnings(index, configWarnings),
+            ...buildWarnings(index, configWarnings.concat(manifests.flatMap((manifest) => manifest.warnings))),
         };
     }
     catch (error) {

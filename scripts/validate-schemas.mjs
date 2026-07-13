@@ -244,7 +244,7 @@ async function collectSchemaContext(fixtures) {
     /* runs 目录可能不存在 */
   }
   const blockedReviewReport = JSON.parse(
-    await readFile(join(blockedChange, "review-report.v1.2.json"), "utf8"),
+    await readFile(join(blockedChange, "review-report.v2.json"), "utf8"),
   );
 
   return {

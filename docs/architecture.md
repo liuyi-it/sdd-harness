@@ -61,3 +61,9 @@ Spec model
 - `GitIsolationManager` 负责创建或安全复用 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`；遇到脏 worktree、基线漂移或注册不一致时直接阻断。
 - `build` / `verify` / `review` 读取 `state.workspace`，把业务目录切到 worktree；`.sdd/` 制品和状态仍只写 controlRoot。
 - `archive-report.md` 会额外记录 `branchName`、`worktreePath` 和业务目录最终 `HEAD`，但不会自动 merge、push 或删除 worktree。
+
+# 第五期 Policy 层
+
+Core/LoopEngine 仍是唯一流程编排者。每个现有命令通过 `PhasePolicyRegistry` 解析 Policy ID，由 `@sdd-harness/agent-policies` 编译为 `PolicyBundle`；Adapter 只声明宿主 capability 和安装位置。依赖方向固定为 `core → agent-policies → agent-protocol types`，Policy 包不得依赖 StateStore、Git writer 或 worktree manager。
+
+Context Pack v2 只引用仓库内的 spec、design、plan、impact 和 codebase 制品，并记录任务范围、verification、Policy refs 与 digest。`verify`/`review` 的可恢复失败追加 `REPAIR` 任务，仍由现有 Build 协议执行；失败签名预算耗尽或需要扩大范围时暂停等待用户决策。

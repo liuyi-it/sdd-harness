@@ -6,6 +6,10 @@ export class TddEngine {
         let prompt = [
             "# Design",
             "",
+            "## Phase Policy",
+            "",
+            input.policyBundle?.instructions ?? "",
+            "",
             "## Current Code Structure",
             "",
             input.codebaseSummary,
@@ -32,6 +36,10 @@ export class TddEngine {
             "",
             "仅公开规格明确要求的接口行为，并保持未涉及行为兼容。",
             "",
+            "## Interfaces and Contracts",
+            "",
+            "模块间只通过上述公开接口交换规格所需数据；输入、输出与稳定错误均以 Scenario 为契约。",
+            "",
             "## Data Changes",
             "",
             "仅持久化规格要求的状态；若涉及结构变更，需提供迁移和回滚验证。",
@@ -52,6 +60,28 @@ export class TddEngine {
             "",
             "每个 Scenario 执行 RED、GREEN、REFACTOR、VERIFY 四阶段链。",
             "",
+            "## Test Seams",
+            "",
+            "优先在公开 API 或模块导出边界建立稳定测试 seam，不依赖私有实现细节。",
+            "",
+            ...(input.policyBundle?.policies.some(({ id }) => id === "design-it-twice")
+                ? [
+                    "## Alternative Comparison",
+                    "",
+                    "### 方案 A：沿用现有模块边界",
+                    "",
+                    "在现有接口内完成最小增量，迁移风险较低，但需接受现有模块约束。",
+                    "",
+                    "### 方案 B：新增隔离模块与适配接口",
+                    "",
+                    "边界更清晰且便于演进，但增加接口、迁移和回滚成本。",
+                    "",
+                    "### 决策",
+                    "",
+                    "默认选择方案 A；只有现有边界无法维持规格契约或回滚要求时才选择方案 B。",
+                    "",
+                ]
+                : []),
             "## Risks and Rollback",
             "",
             "风险由受影响文件、兼容边界和状态变更决定；代码与数据变更应可共同回滚。",
@@ -93,6 +123,10 @@ export class TddEngine {
             "## Design",
             "",
             input.design,
+            "",
+            "## Phase Policy",
+            "",
+            input.policyBundle?.instructions ?? "",
         ].join("\n");
         if (input.existingPlan !== undefined) {
             context += `
@@ -113,7 +147,7 @@ export class TddEngine {
             tasksMarkdown: renderTasks(tasks),
             testPlan: renderTestPlan(requirements),
             context,
-            contextPacks: Object.fromEntries(tasks.map((task) => [task.id, renderContextPack(task, input)])),
+            contextPacks: Object.fromEntries(tasks.map((task) => [task.id, renderContextPack(task)])),
         };
     }
 }
@@ -148,7 +182,7 @@ function renderTasks(tasks) {
         ]),
     ].join("\n");
 }
-function renderContextPack(task, input) {
+function renderContextPack(task) {
     return [
         `# Context Pack: ${task.id}`,
         "",
@@ -176,7 +210,7 @@ function renderContextPack(task, input) {
         "",
         "## Relevant Code Context",
         "",
-        input.codebaseSummary,
+        "按 Context Pack v2 References 中的 codebase 路径读取，不在此复制代码库摘要。",
         "",
         ...list("Verification", task.verification, 2),
         "",

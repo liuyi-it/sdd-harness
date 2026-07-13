@@ -131,6 +131,10 @@ export class SpecEngine {
             proposal: [
                 "# Proposal",
                 "",
+                "## Phase Policy",
+                "",
+                input.policyBundle?.instructions ?? "",
+                "",
                 "## Requested Change",
                 "",
                 input.requirement,

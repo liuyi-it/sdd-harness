@@ -13,6 +13,11 @@ export interface LoopSpec {
     maxSteps: number;
     maxRetriesPerStep: number;
     maxRepeatedFailures: number;
+    repairPolicy: {
+        maxRepairAttemptsPerTask: number;
+        maxRepeatedFailureSignature: number;
+        stopOnScopeExpansion: boolean;
+    };
     stoppingRules: LoopStoppingRule[];
     decisionPolicy: LoopDecisionPolicy;
     createdAt: string;

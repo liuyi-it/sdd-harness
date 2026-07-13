@@ -112,6 +112,7 @@ export class LoopEngine {
                 command,
             });
             const decision = decide({ result });
+            const repairTransition = !result.ok && decision === "CONTINUE" && result.state === "PLAN_READY";
             await this.events.write(loop.runId, {
                 loopId: loop.loopId,
                 runId: loop.runId,
@@ -139,7 +140,7 @@ export class LoopEngine {
             noProgressCount = result.state === status.state ? noProgressCount + 1 : 0;
             if (noProgressCount > spec.maxRepeatedFailures)
                 throw new SddError("E_STATE_CORRUPTED", `auto 检测到连续 ${noProgressCount} 次无阶段进展，已停止以避免无限循环`, "sdd status");
-            if (!result.ok) {
+            if (!result.ok && !repairTransition) {
                 const attempts = (retries.get(command) ?? 0) + 1;
                 retries.set(command, attempts);
                 if (attempts <= spec.maxRetriesPerStep) {
@@ -147,7 +148,7 @@ export class LoopEngine {
                     continue;
                 }
             }
-            if (!result.ok ||
+            if ((!result.ok && !repairTransition) ||
                 decision === "PAUSE_FOR_AGENT" ||
                 decision === "PAUSE_FOR_CLARIFICATION" ||
                 decision === "PAUSE_FOR_HUMAN" ||

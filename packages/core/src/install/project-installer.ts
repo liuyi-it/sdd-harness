@@ -16,26 +16,63 @@ export async function installProjectIntegration(
   manifests: AdapterManifest[],
   _options: { force?: boolean } = {},
 ): Promise<void> {
-  await Promise.all([
-    ...manifests.flatMap((manifest) => [
-      installInstructions(
-        join(root, manifest.instructionFile),
+  const instructions = [
+    ...new Map(
+      manifests.map((manifest) => [
+        manifest.instructionFile,
         manifest.instructionContent,
+      ]),
+    ).entries(),
+  ];
+  await Promise.all([
+    ...instructions.map(([instructionFile, instructionContent]) =>
+      installInstructions(
+        join(root, instructionFile),
+        instructionContent,
         _options,
       ),
+    ),
+    ...manifests.flatMap((manifest) => [
+      installAdapterCapabilities(root, manifest),
       installCommands(root, manifest),
       ...(manifest.skillsDir !== undefined &&
       manifest.skillContent !== undefined
         ? [installSkill(root, manifest)]
         : []),
-      ...(manifest.rules !== undefined
-        ? manifest.rules.map((rule) =>
-            installRule(root, rule.file, rule.content),
-          )
-        : []),
     ]),
     installSchemas(root),
   ]);
+}
+
+async function installAdapterCapabilities(
+  root: string,
+  manifest: AdapterManifest,
+): Promise<void> {
+  const path = join(
+    root,
+    ".sdd",
+    "adapters",
+    manifest.agent,
+    "capabilities.json",
+  );
+  await mkdir(join(path, ".."), { recursive: true });
+  const content = `${JSON.stringify(
+    {
+      schemaVersion: "1.0.0",
+      agent: manifest.agent,
+      capabilities: manifest.capabilities,
+      degraded: manifest.degradationReason !== undefined,
+      degradationReason: manifest.degradationReason ?? null,
+      warnings: manifest.warnings,
+    },
+    null,
+    2,
+  )}\n`;
+  await new ArtifactWriter().write(path, content, {
+    generatedBy: "sdd-harness",
+    agent: manifest.agent,
+    capabilities: manifest.capabilities,
+  });
 }
 
 /**
@@ -123,19 +160,6 @@ async function installSkill(
     manifest.skillContent!,
     managedInputs(manifest.skillContent!),
   );
-}
-
-/**
- * 安装单个 rule 文件。
- */
-async function installRule(
-  root: string,
-  ruleFile: string,
-  content: string,
-): Promise<void> {
-  const rulePath = join(root, ruleFile);
-  await mkdir(join(rulePath, ".."), { recursive: true });
-  await new ArtifactWriter().write(rulePath, content, managedInputs(content));
 }
 
 /**

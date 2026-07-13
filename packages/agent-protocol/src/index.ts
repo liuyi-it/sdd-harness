@@ -1,4 +1,5 @@
 export type { AgentActionRequired } from "./types/action-required.js";
+export type { PhasePolicyId, PolicyBundle, PolicyRef } from "./types/policy.js";
 export type {
   AgentTaskResult,
   AgentTaskStatus,

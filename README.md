@@ -29,6 +29,7 @@ Git delta 事实源                 任务拆解与粒度判断
 3. **Agent 只通过 CLI / ActionRequired / TaskResult 与系统交互** —— build 阶段由 Agent 执行，但结果必须通过 CLI 提交验收
 4. **内置 codebase-memory-mcp** —— 用户无需手工安装 MCP，CLI 自动托管启动，不可用时降级 fallback-file-scan 并明确提示
 5. **不静默降级** —— 降级时必须包含 warning，指向 `sdd codebase doctor`
+6. **阶段 Policy 渐进加载** —— Core 选择当前阶段 Policy，Adapter 只负责宿主适配；Policy 不拥有状态流转、Git 或 worktree 控制权
 
 ### 支持的 Agent
 
@@ -127,6 +128,7 @@ bash scripts/uninstall.sh
 @sdd-harness/cli                       CLI 唯一入口，参数解析，命令路由
   ├── @sdd-harness/core                状态机、Schema 校验、Git delta 事实源、质量门禁
   ├── @sdd-harness/agent-protocol      AgentActionRequired / AgentTaskResult 类型与校验
+  ├── @sdd-harness/agent-policies      阶段工程策略、固定顺序编译与摘要
   ├── @sdd-harness/codebase-memory     内置托管 codebase-memory-mcp，降级 fallback-file-scan
   └── Agent Adapters                   命令模板，翻译宿主指令为 CLI 调用
         ├── claude-code-adapter         /sdd.* slash commands
@@ -142,6 +144,7 @@ packages/
 ├── core/                   @sdd-harness/core          状态机 + 命令实现 + 质量门禁
 ├── cli/                    @sdd-harness/cli            sdd / sdd-harness bin
 ├── agent-protocol/         @sdd-harness/agent-protocol Agent 交互协议
+├── agent-policies/         @sdd-harness/agent-policies 受控 Markdown Policy + compiler
 ├── codebase-memory/        @sdd-harness/codebase-memory MCP 托管 + 降级
 ├── claude-code-adapter/    @sdd-harness/claude-code-adapter
 ├── codex-adapter/          @sdd-harness/codex-adapter
@@ -170,6 +173,7 @@ sdd build next --json
       taskId, changeId, contextPack,
       allowedFiles, forbiddenFiles,
       verification, resultFile
+      policyBundle
     }
 
 Agent 执行：
@@ -185,6 +189,12 @@ sdd build complete
   → 校验文件范围、TDD evidence、verification
   → 更新 task 状态，全部完成进入 BUILD_READY
 ```
+
+### 阶段 Policy 与失败恢复
+
+`new`、`design`、`plan`、`build`、`verify`、`review`、`archive` 共享同一个 Policy Registry。Policy 正文从 `packages/agent-policies/policies/` 按阶段加载，每项都记录独立版本和 SHA-256 digest；Adapter manifest 仅声明宿主路径与 capability，不重复维护工程规则。
+
+Build 使用 Context Pack v2 引用现有 spec/design/plan 制品，并携带文件范围、验证命令和 Policy refs。可恢复的 verify/review 失败会生成现有任务模型中的 `REPAIR` 链，并通过 `sdd build next/complete` 执行；相同失败签名达到预算或修复要求扩大文件范围时进入 `PAUSED`，不会无限重试。
 
 ### OpenSpec 与 Superpowers 的借鉴与实现
 

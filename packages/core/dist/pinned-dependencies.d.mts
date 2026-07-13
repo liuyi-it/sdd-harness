@@ -28,6 +28,15 @@ export const PINNED_DEPENDENCIES: {
         readonly interface: "vendored-module";
         readonly localModifications: "concepts reimplemented in TddEngine; upstream source not copied into runtime";
     };
+    readonly mattpocockSkills: {
+        readonly name: "mattpocock-skills";
+        readonly repository: "https://github.com/mattpocock/skills";
+        readonly version: "main@391a270";
+        readonly commit: "391a2701dd948f94f56a39f7533f8eea9a859c87";
+        readonly license: "MIT";
+        readonly interface: "vendored-policy-source";
+        readonly localModifications: "selected engineering methods reimplemented as sdd-native policies; upstream runtime is not loaded";
+    };
 };
 export type DeepReadonly<T> = T extends object ? { readonly [K in keyof T]: DeepReadonly<T[K]>; } : T;
 //# sourceMappingURL=pinned-dependencies.d.mts.map

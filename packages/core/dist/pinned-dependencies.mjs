@@ -47,5 +47,14 @@ export const PINNED_DEPENDENCIES = asDeepReadonly(
         interface: "vendored-module",
         localModifications: "concepts reimplemented in TddEngine; upstream source not copied into runtime",
     },
+    mattpocockSkills: {
+        name: "mattpocock-skills",
+        repository: "https://github.com/mattpocock/skills",
+        version: "main@391a270",
+        commit: "391a2701dd948f94f56a39f7533f8eea9a859c87",
+        license: "MIT",
+        interface: "vendored-policy-source",
+        localModifications: "selected engineering methods reimplemented as sdd-native policies; upstream runtime is not loaded",
+    },
 }));
 //# sourceMappingURL=pinned-dependencies.mjs.map

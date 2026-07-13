@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdd-harness.dev/schemas/review-issue.schema.json",
-  "title": "sdd-harness review issue v1.2",
+  "title": "sdd-harness review issue v2",
   "type": "object",
-  "required": ["id", "category", "severity", "message"],
+  "required": ["id", "axis", "category", "severity", "message"],
   "properties": {
     "id": { "type": "string", "pattern": "^RV-[a-f0-9]{12}$" },
+    "axis": { "enum": ["STANDARDS", "SPEC"] },
     "category": {
       "enum": [
         "FILE_SCOPE",

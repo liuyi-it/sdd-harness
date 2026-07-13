@@ -61,6 +61,17 @@ export function parseTasks(raw: string): TaskDefinition[] {
         fail(`${path}.verification[${item}]`, "命令未在允许清单内");
     });
     text(entry.title, `${path}.title`);
+    optionalText(entry.userVisibleOutcome, `${path}.userVisibleOutcome`);
+    optionalText(entry.testSeam, `${path}.testSeam`);
+    if (
+      entry.sliceType !== undefined &&
+      !["VERTICAL", "EXPAND", "MIGRATE", "CONTRACT", "REPAIR"].includes(
+        String(entry.sliceType),
+      )
+    )
+      fail(`${path}.sliceType`, "切片类型无效");
+    if (entry.acceptanceCriteria !== undefined)
+      strings(entry.acceptanceCriteria, `${path}.acceptanceCriteria`);
     return entry as unknown as TaskDefinition;
   });
   const taskIds = new Set(tasks.map((task) => task.id));
@@ -92,6 +103,10 @@ export function parseTasks(raw: string): TaskDefinition[] {
   };
   tasks.forEach((task) => visit(task.id));
   return tasks;
+}
+
+function optionalText(value: unknown, path: string): void {
+  if (value !== undefined) text(value, path);
 }
 
 export function assertTaskResultIds(

@@ -20,6 +20,7 @@ describe("第三方依赖元数据", () => {
       PINNED_DEPENDENCIES.codebaseMemoryMcp,
       PINNED_DEPENDENCIES.openSpec,
       PINNED_DEPENDENCIES.superpowers,
+      PINNED_DEPENDENCIES.mattpocockSkills,
     ]) {
       expect(notices).toContain(dependency.name);
       expect(notices).toContain(dependency.version);
@@ -32,12 +33,25 @@ describe("第三方依赖元数据", () => {
       "vendor/openspec/upstream/LICENSE",
       "vendor/superpowers/LICENSE",
       "vendor/superpowers/upstream/LICENSE",
+      "vendor/mattpocock-skills/LICENSE",
+      "vendor/mattpocock-skills/upstream/LICENSE",
     ]) {
       await expect(access(join(process.cwd(), path))).resolves.toBeUndefined();
       expect(await readFile(join(process.cwd(), path), "utf8")).toContain(
         "MIT License",
       );
     }
+  });
+
+  it("固定 mattpocock/skills 来源并保留上游审计记录", async () => {
+    const upstream = await readFile(
+      join(process.cwd(), "vendor/mattpocock-skills/UPSTREAM.md"),
+      "utf8",
+    );
+    expect(upstream).toContain(PINNED_DEPENDENCIES.mattpocockSkills.repository);
+    expect(upstream).toContain(PINNED_DEPENDENCIES.mattpocockSkills.commit);
+    expect(upstream).toContain("License: MIT");
+    expect(upstream).toContain("Adapted policies:");
   });
 
   it("固定完整上游快照的来源、版本与本地修改声明", async () => {
@@ -142,6 +156,7 @@ describe("第三方依赖元数据", () => {
 
     expect(declaration).toContain('readonly version: "v1.4.1"');
     expect(declaration).toContain("readonly openSpec:");
+    expect(declaration).toContain("readonly mattpocockSkills:");
     expect(declaration).not.toMatch(/version: string/);
   });
 });

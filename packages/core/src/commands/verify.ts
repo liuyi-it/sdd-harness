@@ -24,6 +24,7 @@ import {
   previousStablePhase,
 } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
+import { prepareRepairTasks } from "./repair-task.js";
 import { readAuthoritativeSpec } from "../quality/traceability.js";
 import {
   assertTaskResultIds,
@@ -45,6 +46,7 @@ export async function runVerify(
   const store = new StateStore(root);
   let started = false;
   let previousPhase: CommandResult["state"] = "BUILD_READY";
+  let activeChangeId: string | undefined;
   try {
     const state = await store.read();
     assertRecoverableCommandState(state, "sdd verify");
@@ -61,6 +63,7 @@ export async function runVerify(
       );
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
+    activeChangeId = changeId;
     await assertChangeWritable(root, changeId);
     const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
@@ -167,6 +170,11 @@ export async function runVerify(
           results,
           gate,
           report,
+          repairFiles: changedUnreportedFiles(
+            baseline,
+            currentSnapshot,
+            reportedFiles,
+          ),
         };
       })(),
       timeoutMilliseconds(args),
@@ -183,7 +191,13 @@ export async function runVerify(
         data: { alreadyReady: true },
       };
     }
-    const { gate, tasks, results: taskResults, spec } = resultBundle;
+    const {
+      gate,
+      tasks,
+      results: taskResults,
+      spec,
+      repairFiles,
+    } = resultBundle;
     let requirementCount = 0;
     let scenarioCount = 0;
     try {
@@ -221,8 +235,12 @@ export async function runVerify(
         "E_VERIFY_FAILED",
         gate.failures.join("; "),
         "sdd verify",
-      ) as SddError & { reportPaths?: { jsonPath: string; mdPath: string } };
+      ) as SddError & {
+        reportPaths?: { jsonPath: string; mdPath: string };
+        repairFiles?: string[];
+      };
       error.reportPaths = reportPaths;
+      error.repairFiles = repairFiles;
       throw error;
     }
     const ready = await store.update((current) => ({
@@ -255,6 +273,24 @@ export async function runVerify(
       "sdd verify",
     );
     if (started) {
+      if (
+        normalized.code === "E_VERIFY_FAILED" &&
+        activeChangeId !== undefined
+      ) {
+        const repair = await prepareRepairTasks(root, activeChangeId, {
+          source: "VERIFY",
+          errorCode: "E_VERIFY_FAILED",
+          message: normalized.message,
+          ...(repairFilesFrom(error) === undefined
+            ? {}
+            : { requestedFiles: repairFilesFrom(error)! }),
+        });
+        throw new SddError(
+          normalized.code,
+          normalized.message,
+          repair.created ? "sdd build next" : "sdd status",
+        );
+      }
       await persistCommandFailure(store, normalized, {
         command: "sdd verify",
         previousPhase,
@@ -265,6 +301,28 @@ export async function runVerify(
   } finally {
     await lock.release();
   }
+}
+
+function changedUnreportedFiles(
+  baseline: ReturnType<typeof snapshotFromJson>,
+  current: Awaited<ReturnType<GitInspector["snapshot"]>>,
+  reportedFiles: readonly string[],
+): string[] {
+  if (baseline === null || !baseline.available || !current.available) return [];
+  const reported = new Set(reportedFiles);
+  return current.files.filter(
+    (file) =>
+      baseline.hashes[file] !== current.hashes[file] && !reported.has(file),
+  );
+}
+
+function repairFilesFrom(error: unknown): string[] | undefined {
+  if (typeof error !== "object" || error === null || !("repairFiles" in error))
+    return undefined;
+  const files = (error as { repairFiles?: unknown }).repairFiles;
+  return Array.isArray(files)
+    ? files.filter((file): file is string => typeof file === "string")
+    : undefined;
 }
 
 function resolveBusinessRoot(

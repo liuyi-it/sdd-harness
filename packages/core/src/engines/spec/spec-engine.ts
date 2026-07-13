@@ -21,6 +21,7 @@ export interface GenerateSpecInput {
   requirement: string;
   codebaseSummary: string;
   answers?: Record<string, string>;
+  policyBundle?: PolicyBundle;
   existingSpec?: {
     spec: string;
     delta: string;
@@ -202,6 +203,10 @@ export class SpecEngine {
     return {
       proposal: [
         "# Proposal",
+        "",
+        "## Phase Policy",
+        "",
+        input.policyBundle?.instructions ?? "",
         "",
         "## Requested Change",
         "",
@@ -568,3 +573,4 @@ function normalizeStatement(behavior: string): string {
     .replace(/[.,，。]+$/g, "")
     .trim();
 }
+import type { PolicyBundle } from "@sdd-harness/agent-policies";

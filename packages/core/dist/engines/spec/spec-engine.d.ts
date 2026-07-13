@@ -11,6 +11,7 @@ export interface GenerateSpecInput {
     requirement: string;
     codebaseSummary: string;
     answers?: Record<string, string>;
+    policyBundle?: PolicyBundle;
     existingSpec?: {
         spec: string;
         delta: string;
@@ -32,5 +33,6 @@ export declare class SpecEngine {
     analyze(requirement: string, answers?: Record<string, string>): SpecAnalysis;
     generate(input: GenerateSpecInput): MaybePromise<SpecArtifacts>;
 }
+import type { PolicyBundle } from "@sdd-harness/agent-policies";
 export {};
 //# sourceMappingURL=spec-engine.d.ts.map

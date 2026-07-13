@@ -1,26 +1,24 @@
-/**
- * 适配器安装清单，由各 adapter 包的 manifest.json 提供。
- * 描述该 agent 需要的集成文件及内容。
- */
-export interface AdapterManifest {
-    /** 适配器标识，如 "claude"、"codex"、"opencode" */
+export interface AdapterCapabilities {
+    supportsSkills: boolean;
+    supportsModelInvocation: boolean;
+    supportsUserCommands: boolean;
+    supportsReferences: boolean;
+}
+/** Adapter 包提供的宿主描述，不承载重复的工程规则正文。 */
+export interface AdapterDescriptor {
     agent: string;
-    /** 指令文件名，如 "CLAUDE.md"、"AGENTS.md" */
     instructionFile: string;
-    /** 追加到指令文件的内容（含 <!-- sdd-harness:managed --> 标记） */
-    instructionContent: string;
-    /** commands 目录路径，如 ".claude/commands" */
-    commandsDir: string;
-    /** command 文件模板，{command} 会被替换为具体命令名 */
-    commandTemplate: string;
-    /** skills 目录路径（可选），如 ".claude/skills/sdd-harness" */
+    commandsDir?: string;
     skillsDir?: string;
-    /** SKILL.md 内容（可选） */
+    capabilities: AdapterCapabilities;
+}
+/** Core 通过 Policy compiler 生成的安装清单。 */
+export interface AdapterManifest extends AdapterDescriptor {
+    instructionContent: string;
+    commandsDir: string;
+    commandTemplate: string;
     skillContent?: string;
-    /** rules 文件列表（可选） */
-    rules?: Array<{
-        file: string;
-        content: string;
-    }>;
+    warnings: string[];
+    degradationReason?: string;
 }
 //# sourceMappingURL=types.d.ts.map

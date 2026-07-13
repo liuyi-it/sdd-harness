@@ -1,4 +1,6 @@
 /** Agent 行动要求 — build next 时返回，指导 Agent 执行构建任务 */
+import type { PolicyBundle } from "./policy.js";
+
 export interface AgentActionRequired {
   type: "AGENT_TASK_EXECUTION";
   taskId: string;
@@ -20,4 +22,6 @@ export interface AgentActionRequired {
     provider: "codebase-memory-mcp" | "fallback-file-scan";
     degraded: boolean;
   };
+  /** 当前阶段的渐进加载工程策略；旧 Adapter 可安全忽略。 */
+  policyBundle?: PolicyBundle;
 }

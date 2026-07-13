@@ -55,6 +55,10 @@ describe("pinned dependencies", () => {
         version: "v6.1.1",
         commit: "d884ae04edebef577e82ff7c4e143debd0bbec99",
       },
+      mattpocockSkills: {
+        version: "main@391a270",
+        commit: "391a2701dd948f94f56a39f7533f8eea9a859c87",
+      },
     });
   });
 });

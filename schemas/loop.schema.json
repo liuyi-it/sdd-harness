@@ -10,6 +10,7 @@
     "maxSteps",
     "maxRetriesPerStep",
     "maxRepeatedFailures",
+    "repairPolicy",
     "stoppingRules",
     "decisionPolicy",
     "createdAt",
@@ -22,6 +23,23 @@
     "maxSteps": { "type": "integer", "minimum": 1 },
     "maxRetriesPerStep": { "type": "integer", "minimum": 0 },
     "maxRepeatedFailures": { "type": "integer", "minimum": 0 },
+    "repairPolicy": {
+      "type": "object",
+      "required": [
+        "maxRepairAttemptsPerTask",
+        "maxRepeatedFailureSignature",
+        "stopOnScopeExpansion"
+      ],
+      "properties": {
+        "maxRepairAttemptsPerTask": { "type": "integer", "minimum": 0 },
+        "maxRepeatedFailureSignature": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stopOnScopeExpansion": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
     "stoppingRules": {
       "type": "array",
       "minItems": 1,

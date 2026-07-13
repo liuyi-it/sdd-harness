@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "packages/cli" },
     { "path": "packages/codebase-memory" },
-    { "path": "packages/agent-protocol" }
+    { "path": "packages/agent-protocol" },
+    { "path": "packages/agent-policies" }
   ]
 }

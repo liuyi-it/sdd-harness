@@ -50,6 +50,41 @@
       "type": "array",
       "items": { "type": "string" },
       "minItems": 1
+    },
+    "sliceType": {
+      "enum": ["VERTICAL", "EXPAND", "MIGRATE", "CONTRACT", "REPAIR"]
+    },
+    "userVisibleOutcome": { "type": "string", "minLength": 1 },
+    "acceptanceCriteria": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1
+    },
+    "testSeam": { "type": "string", "minLength": 1 },
+    "policyRefs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "version", "digest"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "version": { "type": "string", "minLength": 1 },
+          "digest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "failureContext": {
+      "type": "object",
+      "required": ["source", "errorCode", "previousRunId"],
+      "properties": {
+        "source": { "enum": ["VERIFY", "REVIEW", "BUILD"] },
+        "errorCode": { "type": "string", "minLength": 1 },
+        "failingCommand": { "type": "string", "minLength": 1 },
+        "findingIds": { "type": "array", "items": { "type": "string" } },
+        "previousRunId": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

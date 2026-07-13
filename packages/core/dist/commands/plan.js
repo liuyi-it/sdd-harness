@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter, artifactInputHash, } from "../artifacts/artifact-writer.js";
 import { renderContextPack } from "../build/context-pack.js";
+import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
 import { SddError } from "../errors.js";
 import { resolveProjectRules, } from "../project-conventions/rule-resolver.js";
 import { FileLock } from "../state/file-lock.js";
@@ -47,6 +48,10 @@ export async function runPlan(root, engine, args, signal) {
             design: await readFile(join(change, "design.md"), "utf8"),
             impact: await readFile(join(change, "impact.md"), "utf8"),
             codebaseSummary: await readFile(join(root, ".sdd/index/codebase-summary.md"), "utf8"),
+            policyBundle: resolvePolicyBundle({
+                command: "plan",
+                phase: "DESIGN_READY",
+            }),
         };
         const artifacts = await withTimeout(Promise.resolve(engine.generatePlan(input)), timeoutMilliseconds(args), "sdd plan", signal);
         const writer = new ArtifactWriter();
@@ -146,6 +151,20 @@ export async function runPlan(root, engine, args, signal) {
                 tasksMarkdown: normalizeArtifactContent(artifacts.tasksMarkdown),
                 tasksJson,
                 projectConventionsHash,
+                references: contextPackReferences(changeId),
+                task: {
+                    taskId: task.id,
+                    objective: task.title,
+                    userVisibleOutcome: task.userVisibleOutcome ?? task.title,
+                    requiredFiles: task.allowedFiles,
+                    allowedFiles: task.allowedFiles,
+                    forbiddenFiles: task.forbiddenFiles,
+                    verification: task.verification,
+                },
+                policyBundle: resolvePolicyBundle({
+                    command: "build",
+                    phase: "PLAN_READY",
+                }),
             }), input);
         }));
         const tasks = Object.fromEntries(artifacts.tasks.map((task) => [task.id, task.status]));
@@ -194,6 +213,15 @@ export async function runPlan(root, engine, args, signal) {
         await lock.release();
     }
 }
+function contextPackReferences(changeId) {
+    return {
+        spec: `.sdd/changes/${changeId}/spec.md`,
+        design: `.sdd/changes/${changeId}/design.md`,
+        plan: `.sdd/changes/${changeId}/tasks.md`,
+        impact: `.sdd/changes/${changeId}/impact.md`,
+        codebase: ".sdd/index/codebase-summary.md",
+    };
+}
 function lockOptions(args) {
     const timeoutMs = timeoutMilliseconds(args);
     return timeoutMs === undefined ? {} : { timeoutMs };
@@ -206,7 +234,11 @@ function readHost(args) {
 }
 async function readProjectConventionsHash(root) {
     try {
-        return artifactInputHash(await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"));
+        const profile = JSON.parse(await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"));
+        const stable = { ...profile };
+        delete stable.generatedAt;
+        delete stable.indexHash;
+        return artifactInputHash(stable);
     }
     catch {
         return artifactInputHash("missing-project-conventions");

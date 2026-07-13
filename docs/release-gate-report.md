@@ -1,56 +1,37 @@
 # Release Gate Report
 
-## Result
+## 结果
 
 PASS
 
-## 基线与范围
+第五期功能、上游治理与本地发布门禁均已通过。`mattpocock/skills` 固定至官方仓库 commit `391a2701dd948f94f56a39f7533f8eea9a859c87`，许可证与来源审计记录均纳入发布校验。
 
-- 验收基线：`2077668088ee1d883319d94d0bef3392275c2c38`
-- 最终提交：本报告随本次修复提交
-- 覆盖范围：Agent handoff、状态机与 1.4 迁移、MCP 生命周期/分页/解码/降级身份、CLI 与三平台 CI、发布 tarball。
+## 第五期验收
 
-## 关键修复
+| 范围                       | 状态 | 主要证据                                                                                                 |
+| -------------------------- | ---- | -------------------------------------------------------------------------------------------------------- |
+| AC-001～005 架构           | PASS | 公开命令与主状态集合回归；Policy 包不依赖 StateStore、Git 或 worktree；auto/manual 共用 resolver         |
+| AC-006～010 Policy         | PASS | 唯一 ID、版本、SHA-256、结构化错误、固定顺序、受控 Markdown 渐进加载与 Adapter compiler 测试             |
+| AC-011～015 New/Design     | PASS | 单决策 clarification、结构化 design module/interface/seam、高风险双方案与既有阶段门禁测试                |
+| AC-016～021 Plan           | PASS | outcome、verification、无环依赖、纵向切片、expand–migrate–contract 与无外部 Ticket 测试                  |
+| AC-022～027 Build          | PASS | Policy Bundle、Context Pack v2 完整正文摘要与防篡改重建、深层数组校验、TDD evidence 与 Core 状态门禁测试 |
+| AC-028～032 Recovery       | PASS | verify/review REPAIR、现有 build 协议、失败签名预算、扩大范围暂停与无限重试保护测试                      |
+| AC-033～037 Review/Archive | PASS | Standards/Spec 双轴、归档阻断、finding 追踪、Policy 摘要与 requirement→task→evidence 追踪测试            |
+| AC-038～042 兼容发布       | PASS | 可选协议字段、1.0/1.2/1.3→1.4 自动迁移、auto/manual golden、无上游插件运行与全量门禁                     |
 
-- `build next/complete` 持久化 Git baseline，以真实 delta 取代 Agent 自报文件；越权、隐瞒、新增和删除均被拦截。
-- WorkflowState 升级至 1.4.0，旧 waiting handoff 无可信基线时结构化失败；可恢复 handoff 记录用于历史 run 恢复。
-- MCP 支持 tools/list 分页、Content-Length 与 JSONL 双分帧、真实 capability、typed decoder、空精确结果及 fallback 条目透传。
-- stop/restart 使旧 handoff 失效；auto 增加重试与无进展保护；CI 覆盖 Linux/macOS/Windows Node 22 全部门禁。
+## 实际执行结果
 
-## AC-001 至 AC-030
-
-| 项目 | 状态 | 自动化或运行证据 |
-| --- | --- | --- |
-| AC-001–004 | PASS | `auto.test.ts`、`build.test.ts` |
-| AC-005–010 | PASS | Git delta、handoff、restart/stop/resume 回归测试 |
-| AC-011–014 | PASS | FileLock、状态恢复与 1.0/1.2/1.3 → 1.4 测试 |
-| AC-015–020 | PASS | `lifecycle.test.ts`、真实 MCP index/query/60 秒 smoke |
-| AC-021–024 | PASS | task/result schema、TDD、V2 round-trip 测试 |
-| AC-025–029 | PASS | archive、status/doctor、错误码、路径和命令安全测试 |
-| AC-030 | PASS | 全量门禁、workspace tarball 本地安装 smoke |
-
-## 实际执行命令与退出码
-
-| 命令 | 退出码 |
-| --- | --- |
-| `npm ci` | 0 |
-| `npm run format:check` | 0 |
-| `npm run lint` | 0 |
-| `npm run typecheck` | 0 |
-| `npm run validate:schemas` | 0 |
-| `npm test` | 0（35 files / 360 tests） |
-| `npm run validate:release` | 0 |
-| `npm run build` | 0 |
-| `git diff --check` | 0 |
-| `npm pack --workspace ...` | 0 |
-| 临时安装 tarball；`sdd --version`、`sdd --help` | 0 |
-| 真实 MCP `initialize → tools/list → index → query` | 0 |
-| 真实 MCP 保持 60 秒后 query | 0 |
-
-## CI
-
-CI 配置为 `ubuntu-latest`、`macos-latest`、`windows-latest` × Node 22，并运行安装、格式、lint、类型、Schema、测试、发布校验、构建和 dist 一致性检查。Windows 同时覆盖 CLI help、init、build handoff 与 MCP Windows 启动参数单元测试。
+| 命令                       | 结果                         |
+| -------------------------- | ---------------------------- |
+| `npm run format:check`     | PASS                         |
+| `npm run lint`             | PASS                         |
+| `npm run typecheck`        | PASS                         |
+| `npm run build`            | PASS                         |
+| `npm test`                 | PASS（39 files / 391 tests） |
+| `npm run validate:schemas` | PASS                         |
+| `npm run validate:release` | PASS                         |
+| `git diff --check`         | PASS                         |
 
 ## 剩余风险
 
-无已知 P0/P1。MCP 首次运行可能下载其独立二进制；受限网络会进入身份明确的 fallback-file-scan，而 `requireAvailable=true` 会返回 `E_COMPONENT_UNAVAILABLE`。
+上游升级仍必须人工核验 commit、许可证和 Policy 行为回归；运行时不动态拉取或加载完整上游插件。

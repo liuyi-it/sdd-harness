@@ -2,7 +2,10 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 
 import { AuditLogger } from "../audit/audit-logger.js";
-import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import {
+  ArtifactWriter,
+  artifactInputHash,
+} from "../artifacts/artifact-writer.js";
 import { type CommandResult } from "../contracts.js";
 import { SddError } from "../errors.js";
 import {
@@ -36,6 +39,7 @@ import {
   previousStablePhase,
 } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
+import { prepareRepairTasks } from "./repair-task.js";
 
 /**
  * review 阶段在 verify 通过之后再做一次实现侧审查，
@@ -51,6 +55,7 @@ export async function runReview(
   const store = new StateStore(root);
   let started = false;
   let previousPhase: CommandResult["state"] = "VERIFY_READY";
+  let activeChangeId: string | undefined;
   try {
     const state = await store.read();
     assertRecoverableCommandState(state, "sdd review");
@@ -67,6 +72,7 @@ export async function runReview(
       );
     }
     const changeId = requireActiveChangeId(state.currentChangeId, args);
+    activeChangeId = changeId;
     await assertChangeWritable(root, changeId);
     const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
@@ -113,6 +119,7 @@ export async function runReview(
         );
         const reviewReport = createReviewReport({
           changeId,
+          fixedPoint: artifactInputHash(currentSnapshot),
           issues: deterministic.issues.concat(secretIssues),
           ...(gate.failures.length === 0
             ? {}
@@ -124,26 +131,44 @@ export async function runReview(
                           id: "RV-" + failure,
                           category: "UNRELATED_CHANGE" as const,
                           severity: "MAJOR" as const,
+                          axis: "STANDARDS" as const,
                           message: failure,
                         }
                       : {
                           id: "RV-" + failure,
                           category: "FILE_SCOPE" as const,
                           severity: "MAJOR" as const,
+                          axis: "STANDARDS" as const,
                           message: failure,
                         },
                   ),
                 ),
               }),
         });
-        // reportPaths 会写入 .sdd/changes/<change-id>/review-report.v1.2.{json,md} 并被 archive 复用
         await writeReviewReport(root, changeId, reviewReport);
-        if (reviewReport.result === "BLOCK")
-          throw new SddError(
+        if (reviewReport.result === "BLOCK") {
+          const reviewError = new SddError(
             "E_REVIEW_FAILED",
-            reviewReport.summary,
+            reviewReport.message,
             "sdd review",
-          );
+          ) as SddError & { repairFiles?: string[]; findingIds?: string[] };
+          reviewError.repairFiles = [
+            ...new Set([
+              ...changedUnreportedFiles(
+                baseline,
+                currentSnapshot,
+                reportedFiles,
+              ),
+              ...secretIssues.flatMap((issue) =>
+                issue.file === undefined ? [] : [issue.file],
+              ),
+            ]),
+          ];
+          reviewError.findingIds = reviewReport.issues
+            .filter((issue) => issue.severity === "MAJOR")
+            .map((issue) => issue.id);
+          throw reviewError;
+        }
 
         if (
           state.currentPhase === "REVIEW_READY" &&
@@ -281,6 +306,27 @@ export async function runReview(
       "sdd review",
     );
     if (started) {
+      if (
+        normalized.code === "E_REVIEW_FAILED" &&
+        activeChangeId !== undefined
+      ) {
+        const repair = await prepareRepairTasks(root, activeChangeId, {
+          source: "REVIEW",
+          errorCode: "E_REVIEW_FAILED",
+          message: normalized.message,
+          ...(repairFilesFrom(error) === undefined
+            ? {}
+            : { requestedFiles: repairFilesFrom(error)! }),
+          ...(findingIdsFrom(error) === undefined
+            ? {}
+            : { findingIds: findingIdsFrom(error)! }),
+        });
+        throw new SddError(
+          normalized.code,
+          normalized.message,
+          repair.created ? "sdd build next" : "sdd status",
+        );
+      }
       await persistCommandFailure(store, normalized, {
         command: "sdd review",
         previousPhase,
@@ -291,6 +337,43 @@ export async function runReview(
   } finally {
     await lock.release();
   }
+}
+
+function changedUnreportedFiles(
+  baseline: GitSnapshot | null,
+  current: GitSnapshot | null,
+  reportedFiles: readonly string[],
+): string[] {
+  if (
+    baseline === null ||
+    current === null ||
+    !baseline.available ||
+    !current.available
+  )
+    return [];
+  const reported = new Set(reportedFiles);
+  return current.files.filter(
+    (file) =>
+      baseline.hashes[file] !== current.hashes[file] && !reported.has(file),
+  );
+}
+
+function repairFilesFrom(error: unknown): string[] | undefined {
+  if (typeof error !== "object" || error === null || !("repairFiles" in error))
+    return undefined;
+  const files = (error as { repairFiles?: unknown }).repairFiles;
+  return Array.isArray(files)
+    ? files.filter((file): file is string => typeof file === "string")
+    : undefined;
+}
+
+function findingIdsFrom(error: unknown): string[] | undefined {
+  if (typeof error !== "object" || error === null || !("findingIds" in error))
+    return undefined;
+  const ids = (error as { findingIds?: unknown }).findingIds;
+  return Array.isArray(ids)
+    ? ids.filter((id): id is string => typeof id === "string")
+    : undefined;
 }
 
 async function detectSecretLeakIssues(

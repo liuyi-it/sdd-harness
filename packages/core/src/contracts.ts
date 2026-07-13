@@ -1,3 +1,5 @@
+import type { PolicyBundle } from "@sdd-harness/agent-policies";
+
 export const COMMANDS = [
   "init",
   "auto",
@@ -121,6 +123,8 @@ export interface AgentActionRequired {
     provider: "codebase-memory-mcp" | "fallback-file-scan";
     degraded: boolean;
   };
+  /** 当前任务的渐进加载工程方法；不具备新能力的 Adapter 可安全忽略。 */
+  policyBundle?: PolicyBundle;
 }
 
 export interface CommandRequest {

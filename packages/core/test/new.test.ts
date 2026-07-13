@@ -176,6 +176,9 @@ describe("sdd new", () => {
     }
 
     const change = join(root, ".sdd/changes/add-order-cancellation");
+    const proposal = await readFile(join(change, "proposal.md"), "utf8");
+    expect(proposal).toContain("bounded-clarification");
+    expect(proposal).toContain("spec-authoring");
     const spec = await readFile(join(change, "spec.md"), "utf8");
     expect(await readFile(join(change, "spec.delta.md"), "utf8")).toBe(spec);
     const model = JSON.parse(

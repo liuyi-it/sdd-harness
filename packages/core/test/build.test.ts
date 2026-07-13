@@ -325,6 +325,38 @@ describe("sdd build", () => {
     });
   });
 
+  it("v2 结果的嵌套数组元素畸形时返回稳定错误", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn().mockResolvedValue({
+        schemaVersion: "1.2.0",
+        status: "SUCCEEDED",
+        summary: "done",
+        commandEvidence: [
+          {
+            command: "npm",
+            args: [1],
+            outputSummary: "invalid args",
+          },
+        ],
+        fileDelta: { added: [], modified: [], deleted: [] },
+        timestamps: {
+          startedAt: "2026-07-13T00:00:00.000Z",
+          endedAt: "2026-07-13T00:00:01.000Z",
+        },
+        legacy: {
+          modifiedFiles: [],
+          tddEvidence: [],
+          verification: [],
+        },
+      }),
+    });
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: false,
+      error: { code: "E_TDD_EVIDENCE_REQUIRED" },
+    });
+  });
+
   it.each(["GREEN", "REFACTOR", "VERIFY"] as const)(
     "%s 证据显式携带 expectedFailure=false 时拒绝",
     async (phase) => {
@@ -429,6 +461,37 @@ describe("sdd build", () => {
     const after = await readFile(packPath, "utf8");
     expect(projectRulesHash(after)).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(projectRulesHash(after)).not.toBe(projectRulesHash(before));
+  });
+
+  it("Context Pack 的 allowedFiles 被篡改后从权威任务定义重建", async () => {
+    const { core, root } = await plannedProject({
+      execute: vi.fn(async ({ task }) => ({
+        modifiedFiles: [],
+        ...evidenceFor(task.phase),
+      })),
+    });
+    const packPath = join(
+      root,
+      ".sdd/context-packs/add-cancel/TASK-001-RED.md",
+    );
+    const original = await readFile(packPath, "utf8");
+    await writeFile(
+      packPath,
+      original.replaceAll("- src/order.ts", "- **"),
+      "utf8",
+    );
+
+    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+      ok: true,
+      state: "BUILD_READY",
+    });
+    const repaired = await readFile(packPath, "utf8");
+    expect(repaired).toContain("- src/order.ts");
+    expect(
+      repaired.match(
+        /### Allowed Files\n\n([\s\S]*?)\n\n### Forbidden Files/u,
+      )?.[1],
+    ).not.toContain("- **");
   });
 
   it("TDD 证据命令越权时安全阻断", async () => {
@@ -1004,6 +1067,22 @@ describe("sdd build", () => {
             tasksMarkdown,
             tasksJson: JSON.stringify(tasks, null, 2),
             projectConventionsHash,
+            references: {
+              spec: ".sdd/changes/add-cancel/spec.md",
+              design: ".sdd/changes/add-cancel/design.md",
+              plan: ".sdd/changes/add-cancel/tasks.md",
+              impact: ".sdd/changes/add-cancel/impact.md",
+              codebase: ".sdd/index/codebase-summary.md",
+            },
+            task: {
+              taskId: task.id,
+              objective: task.title,
+              userVisibleOutcome: task.userVisibleOutcome ?? task.title,
+              requiredFiles: task.allowedFiles,
+              allowedFiles: task.allowedFiles,
+              forbiddenFiles: task.forbiddenFiles,
+              verification: task.verification,
+            },
           }),
           "utf8",
         ),

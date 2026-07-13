@@ -97,13 +97,14 @@ export function tddChainFailures(
 ): string[] {
   const failures: string[] = [];
   const pairs = new Map<string, { requirement: string; scenario: string }>();
-  for (const task of tasks)
+  for (const task of tasks.filter((task) => task.sliceType !== "REPAIR"))
     for (const requirement of task.requirements)
       for (const scenario of task.scenarios)
         pairs.set(`${requirement}\0${scenario}`, { requirement, scenario });
   for (const { requirement, scenario } of pairs.values()) {
     const chain = tasks.filter(
       (task) =>
+        task.sliceType !== "REPAIR" &&
         task.requirements.includes(requirement) &&
         task.scenarios.includes(scenario),
     );

@@ -1,4 +1,11 @@
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  writeFile,
+} from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,6 +121,81 @@ afterEach(async () => {
 });
 
 describe("sdd auto", () => {
+  it("auto 与手动 build next 生成语义等价的 Policy、任务和 Context Pack", async () => {
+    const manual = await plannedCore();
+    const automatic = await plannedCore();
+
+    const manualResult = await manual.core.execute({
+      command: "build",
+      cwd: manual.root,
+      args: { subcommand: "next" },
+    });
+    const autoResult = await automatic.core.execute({
+      command: "auto",
+      cwd: automatic.root,
+    });
+
+    expect(autoResult).toMatchObject({
+      ok: true,
+      state: "BUILD_WAITING_AGENT",
+    });
+    expect(stripRunSpecific(autoResult.actionRequired)).toEqual(
+      stripRunSpecific(manualResult.actionRequired),
+    );
+    const manualTasks = JSON.parse(
+      await readFile(
+        join(manual.root, ".sdd/changes/add-cancel/tasks.json"),
+        "utf8",
+      ),
+    );
+    const autoTasks = JSON.parse(
+      await readFile(
+        join(automatic.root, ".sdd/changes/add-cancel/tasks.json"),
+        "utf8",
+      ),
+    );
+    expect(autoTasks).toEqual(manualTasks);
+    const contextPath = manualResult.actionRequired?.contextPack;
+    expect(contextPath).toBe(autoResult.actionRequired?.contextPack);
+    expect(
+      normalizeContextPack(
+        await readFile(join(automatic.root, contextPath!), "utf8"),
+      ),
+    ).toBe(
+      normalizeContextPack(
+        await readFile(join(manual.root, contextPath!), "utf8"),
+      ),
+    );
+  });
+
+  it("auto 不创建 worktree、提交、分支或外部 ticket", async () => {
+    const { root, core } = await plannedCore();
+    const headBefore = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: root,
+      encoding: "utf8",
+    }).trim();
+
+    await core.execute({ command: "auto", cwd: root });
+
+    expect(
+      execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe(headBefore);
+    expect(
+      execFileSync("git", ["branch", "--format=%(refname:short)"], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim(),
+    ).toBe("main");
+    await expect(access(join(root, ".worktrees"))).rejects.toThrow();
+    const repositoryFiles = await readdir(root);
+    expect(
+      repositoryFiles.some((name) => /(?:ticket|issue)/iu.test(name)),
+    ).toBe(false);
+  });
+
   it("rejects using resume and restart together", async () => {
     const { root, core } = await initializedCore();
     const result = await core.execute({
@@ -328,3 +410,14 @@ describe("sdd auto", () => {
     },
   );
 });
+
+function stripRunSpecific(action: unknown): unknown {
+  if (typeof action !== "object" || action === null) return action;
+  const stable = { ...(action as Record<string, unknown>) };
+  delete stable.resultFile;
+  return stable;
+}
+
+function normalizeContextPack(content: string): string {
+  return content.replace(/^Generated At: .*$/gmu, "Generated At: <normalized>");
+}
