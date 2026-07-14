@@ -1,18 +1,17 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter, artifactInputHash, } from "../artifacts/artifact-writer.js";
-import { renderContextPack } from "../build/context-pack.js";
+import { readCompactPlan, readCompactSpec, } from "../artifacts/change-artifacts.js";
 import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
 import { SddError } from "../errors.js";
-import { resolveProjectRules, } from "../project-conventions/rule-resolver.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
 import { assertChangeWritable, requireActiveChangeId } from "./change-id.js";
 import { assertRecoverableCommandState, canResumeCommand, normalizeCommandError, persistCommandFailure, previousStablePhase, } from "./recovery.js";
 import { timeoutMilliseconds, withTimeout } from "./timeout.js";
 /**
- * plan 阶段把设计稿进一步拆成任务、测试计划和上下文包。
+ * plan 阶段把设计稿进一步拆成任务、测试计划和上下文摘要。
  * 这里也是后续 build 阶段“允许改哪些文件”的主要事实来源。
  */
 export async function runPlan(root, engine, args, signal) {
@@ -46,7 +45,7 @@ export async function runPlan(root, engine, args, signal) {
         const input = {
             spec: await readFile(join(change, "spec.md"), "utf8"),
             design: await readFile(join(change, "design.md"), "utf8"),
-            impact: await readFile(join(change, "impact.md"), "utf8"),
+            impact: (await readCompactSpec(change)).impact,
             codebaseSummary: await readFile(join(root, ".sdd/index/codebase-summary.md"), "utf8"),
             policyBundle: resolvePolicyBundle({
                 command: "plan",
@@ -60,17 +59,16 @@ export async function runPlan(root, engine, args, signal) {
         let existingPlan;
         let unchanged = false;
         try {
-            const metaPath = `${join(change, "tasks.md")}.meta.json`;
-            const metadata = JSON.parse(await readFile(metaPath, "utf8"));
+            const metadata = await writer.metadata(join(change, "plan.json"));
+            if (metadata === undefined)
+                throw new Error("缺少 plan 制品摘要");
             if (metadata.inputHash === inputHash) {
                 try {
-                    const tasksContent = await readFile(join(change, "tasks.md"), "utf8");
-                    const testPlanContent = await readFile(join(change, "test-plan.md"), "utf8");
-                    const contextContent = await readFile(join(change, "context.md"), "utf8");
+                    const plan = await readCompactPlan(change);
                     existingPlan = {
-                        tasksMarkdown: tasksContent,
-                        testPlan: testPlanContent,
-                        context: contextContent,
+                        tasksMarkdown: plan.tasksMarkdown,
+                        testPlan: plan.testPlan,
+                        context: plan.context,
                     };
                     unchanged = true;
                 }
@@ -107,10 +105,11 @@ export async function runPlan(root, engine, args, signal) {
         if (!force) {
             if (existingPlan === undefined) {
                 try {
+                    const plan = await readCompactPlan(change);
                     existingPlan = {
-                        tasksMarkdown: await readFile(join(change, "tasks.md"), "utf8"),
-                        testPlan: await readFile(join(change, "test-plan.md"), "utf8"),
-                        context: await readFile(join(change, "context.md"), "utf8"),
+                        tasksMarkdown: plan.tasksMarkdown,
+                        testPlan: plan.testPlan,
+                        context: plan.context,
                     };
                 }
                 catch {
@@ -127,46 +126,13 @@ export async function runPlan(root, engine, args, signal) {
                 artifacts.contextPacks = merged.contextPacks;
             }
         }
-        await Promise.all([
-            writer.write(join(change, "tasks.md"), artifacts.tasksMarkdown, input),
-            writer.write(join(change, "test-plan.md"), artifacts.testPlan, input),
-            writer.write(join(change, "context.md"), artifacts.context, input),
-        ]);
-        await writeFile(join(change, "tasks.json"), `${JSON.stringify(artifacts.tasks, null, 2)}\n`, "utf8");
-        const tasksJson = JSON.stringify(artifacts.tasks, null, 2);
-        const packDirectory = join(root, ".sdd", "context-packs", changeId);
-        await mkdir(packDirectory, { recursive: true });
-        const host = readHost(args);
-        const projectConventionsHash = await readProjectConventionsHash(root);
-        await Promise.all(artifacts.tasks.map(async (task) => {
-            const content = artifacts.contextPacks[task.id];
-            if (content === undefined) {
-                throw new SddError("E_STATE_CORRUPTED", `缺少任务 ${task.id} 的 Context Pack`);
-            }
-            const rules = await resolveProjectRules(root, [...task.allowedFiles, ...task.expectedNewFiles], host);
-            return writer.write(join(packDirectory, `${task.id}.md`), renderContextPack({
-                body: content,
-                rules,
-                ...input,
-                tasksMarkdown: normalizeArtifactContent(artifacts.tasksMarkdown),
-                tasksJson,
-                projectConventionsHash,
-                references: contextPackReferences(changeId),
-                task: {
-                    taskId: task.id,
-                    objective: task.title,
-                    userVisibleOutcome: task.userVisibleOutcome ?? task.title,
-                    requiredFiles: task.allowedFiles,
-                    allowedFiles: task.allowedFiles,
-                    forbiddenFiles: task.forbiddenFiles,
-                    verification: task.verification,
-                },
-                policyBundle: resolvePolicyBundle({
-                    command: "build",
-                    phase: "PLAN_READY",
-                }),
-            }), input);
-        }));
+        await writer.write(join(change, "plan.json"), JSON.stringify({
+            schemaVersion: "2.0.0",
+            tasks: artifacts.tasks,
+            tasksMarkdown: artifacts.tasksMarkdown,
+            testPlan: artifacts.testPlan,
+            context: artifacts.context,
+        }, null, 2), input);
         const tasks = Object.fromEntries(artifacts.tasks.map((task) => [task.id, task.status]));
         const ready = await store.update((current) => ({
             ...current,
@@ -213,35 +179,8 @@ export async function runPlan(root, engine, args, signal) {
         await lock.release();
     }
 }
-function contextPackReferences(changeId) {
-    return {
-        spec: `.sdd/changes/${changeId}/spec.md`,
-        design: `.sdd/changes/${changeId}/design.md`,
-        plan: `.sdd/changes/${changeId}/tasks.md`,
-        impact: `.sdd/changes/${changeId}/impact.md`,
-        codebase: ".sdd/index/codebase-summary.md",
-    };
-}
 function lockOptions(args) {
     const timeoutMs = timeoutMilliseconds(args);
     return timeoutMs === undefined ? {} : { timeoutMs };
-}
-function normalizeArtifactContent(value) {
-    return value.endsWith("\n") ? value : `${value}\n`;
-}
-function readHost(args) {
-    return args?.host === "claude-code" ? "claude-code" : "codex";
-}
-async function readProjectConventionsHash(root) {
-    try {
-        const profile = JSON.parse(await readFile(join(root, ".sdd", "project", "conventions.json"), "utf8"));
-        const stable = { ...profile };
-        delete stable.generatedAt;
-        delete stable.indexHash;
-        return artifactInputHash(stable);
-    }
-    catch {
-        return artifactInputHash("missing-project-conventions");
-    }
 }
 //# sourceMappingURL=plan.js.map

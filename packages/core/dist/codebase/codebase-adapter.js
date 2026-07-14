@@ -355,8 +355,6 @@ async function scanFiles(root, limit = 2_000) {
                 // 即使只是文件摘要，也要跳过明显敏感文件。
                 if (isSecretFile(entry.name))
                     continue;
-                if (isGeneratedMetadataFile(entry.name))
-                    continue;
                 result.push(relative(absoluteRoot, absolute).split("\\").join("/"));
                 if (result.length >= limit)
                     break;
@@ -374,9 +372,6 @@ function isSecretFile(name) {
         lower === "application-prod.yaml" ||
         lower === "application-prod.properties" ||
         [".pem", ".key", ".p12", ".jks"].some((extension) => lower.endsWith(extension)));
-}
-function isGeneratedMetadataFile(name) {
-    return name.endsWith(".meta.json");
 }
 async function collectKeywordMatches(root, files) {
     const matches = [];

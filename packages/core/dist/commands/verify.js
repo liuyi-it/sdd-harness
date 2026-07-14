@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { readCompactPlan } from "../artifacts/change-artifacts.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
 import { driftFailures, verifyGate } from "../quality/quality-gates.js";
@@ -49,13 +50,13 @@ export async function runVerify(root, args, signal) {
         }));
         started = true;
         const resultBundle = await withTimeout((async () => {
-            const [spec, rawTasks, rawResults, currentState] = await Promise.all([
+            const [spec, plan, rawResults, currentState] = await Promise.all([
                 readFile(join(change, "spec.md"), "utf8"),
-                readFile(join(change, "tasks.json"), "utf8"),
+                readCompactPlan(change),
                 readFile(join(change, "task-results.json"), "utf8"),
                 store.read(),
             ]);
-            const tasks = parseTasks(rawTasks);
+            const tasks = parseTasks(JSON.stringify(plan.tasks));
             const results = parseTaskResults(rawResults);
             assertTaskResultIds(tasks, results);
             const authoritative = await readAuthoritativeSpec(change, spec);

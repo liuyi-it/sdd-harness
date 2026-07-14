@@ -1,4 +1,4 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
 import { COMMANDS } from "../contracts.js";
@@ -114,11 +114,9 @@ function managedInputs(content) {
     };
 }
 async function ensureMetadata(path, inputs) {
-    try {
-        await access(`${path}.meta.json`);
-    }
-    catch {
-        await new ArtifactWriter().write(path, await readFile(path, "utf8"), inputs);
+    const writer = new ArtifactWriter();
+    if ((await writer.metadata(path)) === undefined) {
+        await writer.write(path, await readFile(path, "utf8"), inputs);
     }
 }
 //# sourceMappingURL=project-installer.js.map

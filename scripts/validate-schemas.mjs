@@ -82,7 +82,7 @@ async function createRealFixtures() {
 async function createArchivedWorkflowFixture() {
   const root = await createRepo("schema-archived-");
   const core = createCore();
-  await core.execute({
+  await executeSuccessfully(core, {
     command: "init",
     cwd: root,
     args: { structurePolicy: "free-design" },
@@ -96,24 +96,24 @@ async function createArchivedWorkflowFixture() {
     "Q-RESULT": "successful result",
     "Q-TEST": "automated tests",
   };
-  await core.execute({
+  await executeSuccessfully(core, {
     command: "new",
     cwd: root,
     args: { requirement, changeId: "add-cancel", answers },
   });
-  await core.execute({ command: "design", cwd: root });
-  await core.execute({ command: "plan", cwd: root });
-  await core.execute({ command: "build", cwd: root });
-  await core.execute({ command: "verify", cwd: root });
-  await core.execute({ command: "review", cwd: root });
-  await core.execute({ command: "archive", cwd: root });
+  await executeSuccessfully(core, { command: "design", cwd: root });
+  await executeSuccessfully(core, { command: "plan", cwd: root });
+  await executeSuccessfully(core, { command: "build", cwd: root });
+  await executeSuccessfully(core, { command: "verify", cwd: root });
+  await executeSuccessfully(core, { command: "review", cwd: root });
+  await executeSuccessfully(core, { command: "archive", cwd: root });
   return { kind: "archived", root };
 }
 
 async function createBlockedReviewFixture() {
   const root = await createRepo("schema-blocked-");
   const core = createCore();
-  await core.execute({
+  await executeSuccessfully(core, {
     command: "init",
     cwd: root,
     args: { structurePolicy: "free-design" },
@@ -126,15 +126,15 @@ async function createBlockedReviewFixture() {
     "Q-RESULT": "successful result",
     "Q-TEST": "automated tests",
   };
-  await core.execute({
+  await executeSuccessfully(core, {
     command: "new",
     cwd: root,
     args: { requirement, changeId: "add-cancel", answers },
   });
-  await core.execute({ command: "design", cwd: root });
-  await core.execute({ command: "plan", cwd: root });
-  await core.execute({ command: "build", cwd: root });
-  await core.execute({ command: "verify", cwd: root });
+  await executeSuccessfully(core, { command: "design", cwd: root });
+  await executeSuccessfully(core, { command: "plan", cwd: root });
+  await executeSuccessfully(core, { command: "build", cwd: root });
+  await executeSuccessfully(core, { command: "verify", cwd: root });
   await writeFile(
     join(root, "src/order.ts"),
     "export const order = {};\nexport const token = 'ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789';\n",
@@ -143,7 +143,7 @@ async function createBlockedReviewFixture() {
   const review = await core.execute({ command: "review", cwd: root });
   if (review.ok !== false || review.error?.code !== "E_REVIEW_FAILED") {
     throw new Error(
-      "expected blocked review fixture to fail with E_REVIEW_FAILED",
+      `expected blocked review fixture to fail with E_REVIEW_FAILED: ${JSON.stringify(review)}`,
     );
   }
   return { kind: "blocked-review", root };
@@ -206,6 +206,16 @@ function createCore() {
       }),
     },
   });
+}
+
+async function executeSuccessfully(core, request) {
+  const result = await core.execute(request);
+  if (!result.ok) {
+    throw new Error(
+      `${request.command} fixture command failed: ${JSON.stringify(result)}`,
+    );
+  }
+  return result;
 }
 
 async function collectSchemaContext(fixtures) {

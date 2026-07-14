@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter, artifactInputHash, } from "../artifacts/artifact-writer.js";
+import { readCompactPlan } from "../artifacts/change-artifacts.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson, } from "../git/git-inspector.js";
 import { driftFailures, reviewGate } from "../quality/quality-gates.js";
@@ -52,11 +53,11 @@ export async function runReview(root, args, signal) {
         started = true;
         const resultBundle = await withTimeout((async () => {
             const currentSnapshot = await new GitInspector(businessRoot).snapshot();
-            const [rawTasks, rawResults] = await Promise.all([
-                readFile(join(change, "tasks.json"), "utf8"),
+            const [plan, rawResults] = await Promise.all([
+                readCompactPlan(change),
                 readFile(join(change, "task-results.json"), "utf8"),
             ]);
-            const tasks = parseTasks(rawTasks);
+            const tasks = parseTasks(JSON.stringify(plan.tasks));
             const results = parseTaskResults(rawResults);
             assertTaskResultIds(tasks, results);
             const rawSpec = await readFile(join(change, "spec.md"), "utf8");

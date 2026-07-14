@@ -12,7 +12,7 @@ export interface TaskDefinition {
     forbiddenFiles: string[];
     verification: string[];
     doneCriteria: string[];
-    /** 第五期渐进增强字段；旧 tasks.json 仍保持可读。 */
+    /** 第五期任务增强字段，随任务统一持久化到 plan.json。 */
     sliceType?: "VERTICAL" | "EXPAND" | "MIGRATE" | "CONTRACT" | "REPAIR";
     userVisibleOutcome?: string;
     acceptanceCriteria?: string[];

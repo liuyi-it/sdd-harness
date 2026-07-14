@@ -138,9 +138,9 @@ export class TddEngine {
 2. 保留用户修改的测试计划和上下文。
 3. 仅因设计变更而需要调整的部分才更新。
 4. 输出完整的计划文件。`;
-            context += `\n\n### tasks.md\n${input.existingPlan.tasksMarkdown}`;
-            context += `\n\n### test-plan.md\n${input.existingPlan.testPlan}`;
-            context += `\n\n### context.md\n${input.existingPlan.context}`;
+            context += `\n\n### 既有任务计划\n${input.existingPlan.tasksMarkdown}`;
+            context += `\n\n### 既有测试计划\n${input.existingPlan.testPlan}`;
+            context += `\n\n### 既有上下文摘要\n${input.existingPlan.context}`;
         }
         return {
             tasks,

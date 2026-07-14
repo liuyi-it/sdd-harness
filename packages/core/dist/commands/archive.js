@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { readCompactPlan, readCompactSpec, } from "../artifacts/change-artifacts.js";
 import { SddError } from "../errors.js";
 import { GitInspector, snapshotFromJson } from "../git/git-inspector.js";
 import { GitRunner } from "../git-isolation/git-runner.js";
@@ -44,6 +45,7 @@ export async function runArchive(root, args, signal) {
         const workspaceMeta = state.workspace ?? null;
         const change = join(root, ".sdd", "changes", changeId);
         if (await hasValidMarker(change, changeId)) {
+            await removeExpandedArtifacts(change);
             const archived = await convergeArchivedState(store);
             await writeArchiveAudit(root, archived.currentPhase, changeId);
             return { ok: true, state: "ARCHIVED", exitCode: 0, changeId };
@@ -58,15 +60,20 @@ export async function runArchive(root, args, signal) {
             lastError: null,
         }));
         started = true;
-        const { archivedMarker } = await withTimeout((async () => {
-            const [spec, design, tasksText, verifyReport, reviewReport, taskJson, results,] = await Promise.all([
+        const compactArchive = await withTimeout((async () => {
+            const [spec, design, compactSpec, plan, verifyReport, reviewReport, verifyReportData, reviewReportData, results, baselineJson, verifySnapshotJson, reviewSnapshotJson,] = await Promise.all([
                 readFile(join(change, "spec.md"), "utf8"),
                 readFile(join(change, "design.md"), "utf8"),
-                readFile(join(change, "tasks.md"), "utf8"),
+                readCompactSpec(change),
+                readCompactPlan(change),
                 readFile(join(change, "verify-report.md"), "utf8"),
                 readFile(join(change, "review-report.md"), "utf8"),
-                readFile(join(change, "tasks.json"), "utf8"),
+                readFile(join(change, "verify-report.v1.2.json"), "utf8"),
+                readFile(join(change, "review-report.v2.json"), "utf8"),
                 readFile(join(change, "task-results.json"), "utf8"),
+                readFile(join(change, "git-baseline.json"), "utf8"),
+                readFile(join(change, "verify-snapshot.json"), "utf8"),
+                readFile(join(change, "review-snapshot.json"), "utf8"),
             ]);
             const writer = new ArtifactWriter();
             await assertPassReport(writer, join(change, "verify-report.md"), verifyReport, "E_VERIFY_REQUIRED", "sdd verify");
@@ -74,15 +81,15 @@ export async function runArchive(root, args, signal) {
             if (!(await writer.isUnmodified(join(change, "verify-snapshot.json"))) ||
                 !(await writer.isUnmodified(join(change, "review-snapshot.json"))))
                 throw new SddError("E_VERIFY_REQUIRED", "verify/review 快照 metadata 校验失败", "sdd verify");
-            const tasks = parseTasks(taskJson);
+            const tasks = parseTasks(JSON.stringify(plan.tasks));
             const parsedResults = parseTaskResults(results);
             assertTaskResultIds(tasks, parsedResults);
             const { document } = await readAuthoritativeSpec(change, spec);
             const [currentSnapshot, baseline, verifySnapshot, reviewSnapshot] = await Promise.all([
                 new GitInspector(businessRoot).snapshot(),
-                readSnapshot(join(change, "git-baseline.json")),
-                readSnapshot(join(change, "verify-snapshot.json")),
-                readSnapshot(join(change, "review-snapshot.json")),
+                parseSnapshot(baselineJson, "git-baseline.json"),
+                parseSnapshot(verifySnapshotJson, "verify-snapshot.json"),
+                parseSnapshot(reviewSnapshotJson, "review-snapshot.json"),
             ]);
             const finalHead = await resolveFinalHead(businessRoot, workspaceMeta !== null);
             if (!sameSnapshot(currentSnapshot, verifySnapshot) ||
@@ -112,7 +119,7 @@ export async function runArchive(root, args, signal) {
                 "",
                 "## 已完成任务",
                 "",
-                tasksText,
+                plan.tasksMarkdown,
                 "",
                 "## 验证结果",
                 "",
@@ -157,31 +164,48 @@ export async function runArchive(root, args, signal) {
                 "",
                 "ARCHIVED",
             ].join("\n");
-            await writer.writeGroupAtomically([
-                {
-                    path: join(change, "traceability.md"),
-                    content: traceability,
-                    inputs: { tasks, parsedResults },
+            const archivedAt = new Date().toISOString();
+            const archiveMarkdown = `${archiveReport}\n\n---\n\n${traceability}\n`;
+            const archiveJson = `${JSON.stringify({
+                schemaVersion: "2.0.0",
+                changeId,
+                archivedAt,
+                specification: { markdown: spec, ...compactSpec },
+                design,
+                plan,
+                quality: {
+                    taskResults: JSON.parse(results),
+                    verifyReport,
+                    reviewReport,
+                    verifyReportData: JSON.parse(verifyReportData),
+                    reviewReportData: JSON.parse(reviewReportData),
+                    gitBaseline: JSON.parse(baselineJson),
+                    verifySnapshot: JSON.parse(verifySnapshotJson),
+                    reviewSnapshot: JSON.parse(reviewSnapshotJson),
                 },
-                {
-                    path: join(change, "archive-report.md"),
-                    content: archiveReport,
-                    inputs: { verifyReport, reviewReport, policyRefs },
+                traceability,
+                workspace: {
+                    branchName: workspaceMeta?.branchName ?? null,
+                    worktreePath: workspaceMeta?.worktreePath ?? null,
+                    finalHead,
                 },
-            ]);
+                policyRefs,
+            }, null, 2)}\n`;
             const stateHash = createHash("sha256")
                 .update(JSON.stringify(state))
                 .digest("hex");
             const artifactHash = createHash("sha256")
-                .update(normalizeArtifact(traceability))
-                .update(normalizeArtifact(archiveReport))
+                .update(archiveJson)
+                .update(archiveMarkdown)
                 .digest("hex");
-            const archivedMarker = `${JSON.stringify({ changeId, archivedAt: new Date().toISOString(), stateHash: `sha256:${stateHash}`, artifactHash: `sha256:${artifactHash}` }, null, 2)}\n`;
+            const archivedMarker = `${JSON.stringify({ changeId, archivedAt, stateHash: `sha256:${stateHash}`, artifactHash: `sha256:${artifactHash}` }, null, 2)}\n`;
             return {
+                archiveJson,
+                archiveMarkdown,
                 archivedMarker,
             };
         })(), timeoutMilliseconds(args), "sdd archive", signal);
-        await writeFile(join(change, ".archived"), archivedMarker, "utf8");
+        await writeCompactArchive(change, compactArchive);
         markerWritten = true;
         const archived = await convergeArchivedState(store);
         await writeArchiveAudit(root, archived.currentPhase, changeId);
@@ -289,22 +313,19 @@ async function hasValidMarker(change, changeId) {
         if (typeof value !== "object" || value === null)
             throw new Error("invalid");
         const marker = value;
-        const writer = new ArtifactWriter();
-        const [traceability, archiveReport] = await Promise.all([
-            readFile(join(change, "traceability.md"), "utf8"),
-            readFile(join(change, "archive-report.md"), "utf8"),
+        const [archiveJson, archiveMarkdown] = await Promise.all([
+            readFile(join(change, "archive.json"), "utf8"),
+            readFile(join(change, "archive.md"), "utf8"),
         ]);
         const artifactHash = `sha256:${createHash("sha256")
-            .update(traceability)
-            .update(archiveReport)
+            .update(archiveJson)
+            .update(archiveMarkdown)
             .digest("hex")}`;
         if (marker.changeId !== changeId ||
             typeof marker.archivedAt !== "string" ||
             Number.isNaN(Date.parse(marker.archivedAt)) ||
             !/^sha256:[a-f0-9]{64}$/.test(String(marker.stateHash)) ||
-            marker.artifactHash !== artifactHash ||
-            !(await writer.isUnmodified(join(change, "traceability.md"))) ||
-            !(await writer.isUnmodified(join(change, "archive-report.md"))))
+            marker.artifactHash !== artifactHash)
             throw new Error("invalid");
         return true;
     }
@@ -314,8 +335,35 @@ async function hasValidMarker(change, changeId) {
         throw new SddError("E_STATE_CORRUPTED", ".archived 结构无效");
     }
 }
-function normalizeArtifact(content) {
-    return content.endsWith("\n") ? content : `${content}\n`;
+async function writeCompactArchive(change, archive) {
+    const nonce = `${process.pid}-${Date.now()}`;
+    const staged = [
+        { target: join(change, "archive.json"), content: archive.archiveJson },
+        { target: join(change, "archive.md"), content: archive.archiveMarkdown },
+        { target: join(change, ".archived"), content: archive.archivedMarker },
+    ].map((item) => ({ ...item, temporary: `${item.target}.tmp-${nonce}` }));
+    try {
+        for (const item of staged)
+            await writeFile(item.temporary, item.content, "utf8");
+        // marker 最后发布；缺少 marker 的中间状态不会被识别为有效归档。
+        for (const item of staged)
+            await rename(item.temporary, item.target);
+        await removeExpandedArtifacts(change);
+    }
+    catch (error) {
+        await Promise.all(staged.map(({ temporary }) => rm(temporary, { force: true })));
+        throw error;
+    }
+}
+async function removeExpandedArtifacts(change) {
+    const retained = new Set(["archive.json", "archive.md", ".archived"]);
+    const entries = await readdir(change, { withFileTypes: true });
+    await Promise.all(entries
+        .filter((entry) => !retained.has(entry.name))
+        .map((entry) => rm(join(change, entry.name), {
+        recursive: entry.isDirectory(),
+        force: true,
+    })));
 }
 async function assertPassReport(writer, path, report, code, next) {
     const matches = [...report.matchAll(/^## Result\n\n(PASS|FAIL)$/gm)];
@@ -334,10 +382,10 @@ async function resolveFinalHead(businessRoot, requireGitHead) {
         return "(unavailable)";
     }
 }
-async function readSnapshot(path) {
-    const snapshot = snapshotFromJson(JSON.parse(await readFile(path, "utf8")));
+function parseSnapshot(content, name) {
+    const snapshot = snapshotFromJson(JSON.parse(content));
     if (snapshot === null)
-        throw new SddError("E_STATE_CORRUPTED", `${path} 结构无效`);
+        throw new SddError("E_STATE_CORRUPTED", `${name} 结构无效`);
     return snapshot;
 }
 function sameSnapshot(left, right) {

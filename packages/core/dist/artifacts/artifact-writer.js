@@ -1,33 +1,37 @@
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink, writeFile, } from "node:fs/promises";
-import { dirname } from "node:path";
+import { access, mkdir, open, readFile, rename, unlink, writeFile, } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+const MANIFEST_NAME = "artifacts.json";
+const manifestQueues = new Map();
+/** 所有制品摘要集中写入 `.sdd/artifacts.json`，避免为每个文件生成 sidecar。 */
 export class ArtifactWriter {
     renameFile;
     constructor(renameFile = rename) {
         this.renameFile = renameFile;
     }
     async writeGroupAtomically(artifacts) {
-        const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        const prepared = [];
+        if (artifacts.length === 0)
+            return;
+        const nonce = nonceValue();
+        const prepared = await Promise.all(artifacts.map(async (artifact) => {
+            const normalized = normalizeContent(artifact.content);
+            const temporary = `${artifact.path}.tmp-${nonce}`;
+            await mkdir(dirname(artifact.path), { recursive: true });
+            await writeFile(temporary, normalized, "utf8");
+            await syncFile(temporary);
+            return {
+                temporary,
+                target: artifact.path,
+                metadata: createMetadata(normalized, artifact.inputs),
+            };
+        }));
         const backups = [];
         const committed = [];
         try {
-            for (const artifact of artifacts) {
-                const temporary = `${artifact.path}.tmp-${nonce}`;
-                await this.write(temporary, artifact.content, artifact.inputs);
-                await syncFile(temporary);
-                await syncFile(`${temporary}.meta.json`);
-                prepared.push({ temporary, target: artifact.path });
-            }
-            for (const item of prepared.flatMap(({ temporary, target }) => [
-                { temporary, target },
-                { temporary: `${temporary}.meta.json`, target: `${target}.meta.json` },
-            ])) {
+            for (const item of prepared) {
                 const backup = `${item.target}.bak-${nonce}`;
                 try {
                     await this.renameFile(item.target, backup);
-                    await syncFile(backup);
-                    await syncDirectory(dirname(item.target));
                     backups.push({ backup, target: item.target });
                 }
                 catch (error) {
@@ -40,11 +44,8 @@ export class ArtifactWriter {
                 committed.push(item.target);
                 await syncFile(item.target);
                 await syncDirectory(dirname(item.target));
-                await this.renameFile(`${item.temporary}.meta.json`, `${item.target}.meta.json`);
-                committed.push(`${item.target}.meta.json`);
-                await syncFile(`${item.target}.meta.json`);
-                await syncDirectory(dirname(item.target));
             }
+            await this.writeMetadataEntries(prepared.map(({ target, metadata }) => ({ path: target, metadata })));
             await Promise.all(backups.map(({ backup }) => unlink(backup)));
             await syncDirectories(backups.map(({ target }) => dirname(target)));
         }
@@ -52,41 +53,132 @@ export class ArtifactWriter {
             await Promise.all(committed.map((path) => unlink(path).catch(() => undefined)));
             for (const { backup, target } of backups.reverse())
                 await this.renameFile(backup, target);
-            await Promise.all(prepared
-                .flatMap((item) => [item.temporary, `${item.temporary}.meta.json`])
-                .map((path) => unlink(path).catch(() => undefined)));
+            await Promise.all(prepared.map(({ temporary }) => unlink(temporary).catch(() => undefined)));
             await syncDirectories(prepared.map(({ target }) => dirname(target)));
             throw error;
         }
     }
     async write(path, content, inputs) {
         await mkdir(dirname(path), { recursive: true });
-        const normalized = content.endsWith("\n") ? content : `${content}\n`;
-        const metadata = {
-            schemaVersion: "1.0.0",
-            generatedBy: "sdd-harness",
-            inputHash: sha256(stableStringify(inputs)),
-            artifactHash: sha256(normalized),
-            createdAt: new Date().toISOString(),
-        };
-        await writeFile(path, normalized, "utf8");
-        await writeFile(`${path}.meta.json`, `${JSON.stringify(metadata, null, 2)}\n`, "utf8");
+        const normalized = normalizeContent(content);
+        const metadata = createMetadata(normalized, inputs);
+        const temporary = `${path}.tmp-${nonceValue()}`;
+        await writeFile(temporary, normalized, "utf8");
+        await this.renameFile(temporary, path);
+        await this.writeMetadataEntries([{ path, metadata }]);
         return metadata;
+    }
+    async metadata(path) {
+        try {
+            const manifestPath = await resolveManifestPath(path);
+            const manifest = parseManifest(await readFile(manifestPath, "utf8"));
+            return manifest.artifacts[manifestKey(manifestPath, path)];
+        }
+        catch {
+            return undefined;
+        }
     }
     async isUnmodified(path) {
         try {
-            const [content, metadataText] = await Promise.all([
+            const [content, metadata] = await Promise.all([
                 readFile(path, "utf8"),
-                readFile(`${path}.meta.json`, "utf8"),
+                this.metadata(path),
             ]);
-            const metadata = JSON.parse(metadataText);
-            return (isArtifactMetadata(metadata) &&
-                metadata.artifactHash === sha256(content));
+            return (metadata !== undefined && metadata.artifactHash === sha256(content));
         }
         catch {
             return false;
         }
     }
+    async writeMetadataEntries(entries) {
+        const grouped = new Map();
+        for (const entry of entries) {
+            const manifestPath = await resolveManifestPath(entry.path);
+            const current = grouped.get(manifestPath) ?? [];
+            current.push(entry);
+            grouped.set(manifestPath, current);
+        }
+        for (const [manifestPath, manifestEntries] of grouped) {
+            await enqueueManifestWrite(manifestPath, async () => {
+                const manifest = await readManifest(manifestPath);
+                for (const entry of manifestEntries)
+                    manifest.artifacts[manifestKey(manifestPath, entry.path)] =
+                        entry.metadata;
+                await writeJsonAtomically(manifestPath, manifest, this.renameFile);
+            });
+        }
+    }
+}
+async function resolveManifestPath(path) {
+    let current = dirname(path);
+    while (true) {
+        const sddRoot = join(current, ".sdd");
+        try {
+            await access(sddRoot);
+            return join(sddRoot, MANIFEST_NAME);
+        }
+        catch {
+            const parent = dirname(current);
+            if (parent === current)
+                break;
+            current = parent;
+        }
+    }
+    return join(dirname(path), MANIFEST_NAME);
+}
+function manifestKey(manifestPath, path) {
+    return relative(dirname(manifestPath), path).replaceAll("\\", "/");
+}
+async function readManifest(path) {
+    try {
+        return parseManifest(await readFile(path, "utf8"));
+    }
+    catch {
+        return { schemaVersion: "1.0.0", artifacts: {} };
+    }
+}
+function parseManifest(content) {
+    const value = JSON.parse(content);
+    if (value.schemaVersion !== "1.0.0" ||
+        typeof value.artifacts !== "object" ||
+        value.artifacts === null)
+        throw new Error("制品摘要清单结构无效");
+    return value;
+}
+async function enqueueManifestWrite(path, operation) {
+    const previous = manifestQueues.get(path) ?? Promise.resolve();
+    const current = previous.catch(() => undefined).then(operation);
+    manifestQueues.set(path, current);
+    try {
+        await current;
+    }
+    finally {
+        if (manifestQueues.get(path) === current)
+            manifestQueues.delete(path);
+    }
+}
+async function writeJsonAtomically(path, value, renameFile) {
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.tmp-${nonceValue()}`;
+    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    await syncFile(temporary);
+    await renameFile(temporary, path);
+    await syncDirectory(dirname(path));
+}
+function createMetadata(content, inputs) {
+    return {
+        schemaVersion: "1.0.0",
+        generatedBy: "sdd-harness",
+        inputHash: sha256(stableStringify(inputs)),
+        artifactHash: sha256(content),
+        createdAt: new Date().toISOString(),
+    };
+}
+function normalizeContent(content) {
+    return content.endsWith("\n") ? content : `${content}\n`;
+}
+function nonceValue() {
+    return `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 async function syncFile(path) {
     const handle = await open(path, "r");
@@ -111,25 +203,13 @@ async function syncDirectory(path) {
         }
     }
     catch {
-        // Directory fsync is not supported by every Windows filesystem.
+        // 部分 Windows 文件系统不支持目录 fsync。
     }
 }
 function isEnoent(error) {
     return (error instanceof Error &&
         "code" in error &&
         error.code === "ENOENT");
-}
-function isArtifactMetadata(value) {
-    if (typeof value !== "object" || value === null)
-        return false;
-    const metadata = value;
-    return (metadata.schemaVersion === "1.0.0" &&
-        metadata.generatedBy === "sdd-harness" &&
-        typeof metadata.inputHash === "string" &&
-        /^sha256:[a-f0-9]{64}$/.test(metadata.inputHash) &&
-        typeof metadata.artifactHash === "string" &&
-        /^sha256:[a-f0-9]{64}$/.test(metadata.artifactHash) &&
-        typeof metadata.createdAt === "string");
 }
 function sha256(value) {
     return `sha256:${createHash("sha256").update(value).digest("hex")}`;

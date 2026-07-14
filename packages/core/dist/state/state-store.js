@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { z } from "zod";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { readCompactPlan } from "../artifacts/change-artifacts.js";
 import { PHASES } from "../contracts.js";
 import { SddError } from "../errors.js";
 import { LoopStore } from "../loop/loop-store.js";
@@ -381,7 +382,7 @@ export class StateStore {
                 phase = "VERIFY_READY";
             else if (await allTasksDone(change))
                 phase = "BUILD_READY";
-            else if (await pathExists(join(change, "tasks.md")))
+            else if (await pathExists(join(change, "plan.json")))
                 phase = "PLAN_READY";
             else if (await pathExists(join(change, "design.md")))
                 phase = "DESIGN_READY";
@@ -453,11 +454,11 @@ async function reportPassed(path) {
 }
 async function allTasksDone(change) {
     try {
-        const [rawTasks, rawResults] = await Promise.all([
-            readFile(join(change, "tasks.json"), "utf8"),
+        const [plan, rawResults] = await Promise.all([
+            readCompactPlan(change),
             readFile(join(change, "task-results.json"), "utf8"),
         ]);
-        const tasks = JSON.parse(rawTasks);
+        const tasks = plan.tasks;
         const results = JSON.parse(rawResults);
         if (!Array.isArray(tasks) || tasks.length === 0 || !Array.isArray(results))
             return false;

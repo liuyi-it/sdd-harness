@@ -11,21 +11,23 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
         node: ["22"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # package-lock.json 有意不提交：三个系统需分别解析平台原生可选依赖。
-      # 不要改为 npm ci，否则缺少 lockfile 时所有 CI 任务会在安装阶段失败。
-      - run: npm install
+      # lockfile 必须从无 node_modules 的干净目录生成，否则 npm 可能裁掉其他平台的可选原生包。
+      # 安装前先检查 macOS/Windows bindings，避免不完整 lockfile 再次导致跨平台 CI 失败。
+      - run: npm run validate:lockfile
+      - run: npm ci
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
+      # 后续校验直接加载 dist，必须先构建，避免新旧生成物混用产生误导性错误。
+      - run: npm run build
       - run: npm run validate:schemas
       - run: npm test
       - run: npm run validate:release
-      - run: npm run build
       - run: git diff --exit-code

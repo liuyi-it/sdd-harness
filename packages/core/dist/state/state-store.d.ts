@@ -140,14 +140,14 @@ export declare const workflowStateSchema: z.ZodObject<{
     tasks: z.ZodRecord<z.ZodString, z.ZodEnum<{
         BUILDING: "BUILDING";
         FAILED: "FAILED";
+        PENDING: "PENDING";
         DONE: "DONE";
         SKIPPED: "SKIPPED";
-        PENDING: "PENDING";
     }>>;
     artifacts: z.ZodRecord<z.ZodString, z.ZodEnum<{
+        READY: "READY";
         MISSING: "MISSING";
         STALE: "STALE";
-        READY: "READY";
         CANDIDATE: "CANDIDATE";
     }>>;
     recoveredFromBackup: z.ZodOptional<z.ZodBoolean>;

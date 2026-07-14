@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { resolvePolicyBundle } from "@sdd-harness/agent-policies";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter, artifactInputHash, } from "../artifacts/artifact-writer.js";
+import { readCompactSpec } from "../artifacts/change-artifacts.js";
 import { SddError } from "../errors.js";
 import { FileLock } from "../state/file-lock.js";
 import { StateStore } from "../state/state-store.js";
@@ -42,7 +43,7 @@ export async function runDesign(root, engine, args, signal) {
         }));
         started = true;
         const spec = await readFile(join(change, "spec.md"), "utf8");
-        const impact = await readFile(join(change, "impact.md"), "utf8");
+        const impact = (await readCompactSpec(change)).impact;
         const input = {
             spec,
             impact,
@@ -64,7 +65,9 @@ export async function runDesign(root, engine, args, signal) {
         let existingDesign;
         let unchanged = false;
         try {
-            const metadata = JSON.parse(await readFile(`${designPath}.meta.json`, "utf8"));
+            const metadata = await writer.metadata(designPath);
+            if (metadata === undefined)
+                throw new Error("缺少 design 制品摘要");
             if (metadata.inputHash === inputHash) {
                 unchanged = true;
             }

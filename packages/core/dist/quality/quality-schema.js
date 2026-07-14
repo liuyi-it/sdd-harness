@@ -3,12 +3,12 @@ import { isCommandAllowed } from "../security/shell-policy.js";
 const phases = ["RED", "GREEN", "REFACTOR", "VERIFY"];
 const statuses = ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"];
 export function parseTasks(raw) {
-    const value = parseJson(raw, "tasks.json");
+    const value = parseJson(raw, "plan.json.tasks");
     if (!Array.isArray(value))
-        fail("tasks.json", "必须是数组");
+        fail("plan.json.tasks", "必须是数组");
     const ids = new Set();
     const tasks = value.map((entry, index) => {
-        const path = `tasks.json[${index}]`;
+        const path = `plan.json.tasks[${index}]`;
         record(entry, path);
         const id = text(entry.id, `${path}.id`);
         if (!/^TASK-[A-Z0-9][A-Z0-9-]*$/.test(id))
@@ -70,9 +70,9 @@ export function parseTasks(raw) {
     tasks.forEach((task, index) => {
         task.dependsOn.forEach((dependency, dependencyIndex) => {
             if (dependency === task.id)
-                fail(`tasks.json[${index}].dependsOn[${dependencyIndex}]`, "任务不得依赖自身");
+                fail(`plan.json.tasks[${index}].dependsOn[${dependencyIndex}]`, "任务不得依赖自身");
             if (!taskIds.has(dependency))
-                fail(`tasks.json[${index}].dependsOn[${dependencyIndex}]`, `不存在依赖任务 ${dependency}`);
+                fail(`plan.json.tasks[${index}].dependsOn[${dependencyIndex}]`, `不存在依赖任务 ${dependency}`);
         });
     });
     const visiting = new Set();
@@ -82,7 +82,7 @@ export function parseTasks(raw) {
         if (visited.has(taskId))
             return;
         if (visiting.has(taskId))
-            fail("tasks.json", `任务依赖图存在环：${taskId}`);
+            fail("plan.json.tasks", `任务依赖图存在环：${taskId}`);
         visiting.add(taskId);
         for (const dependency of byId.get(taskId)?.dependsOn ?? [])
             visit(dependency);

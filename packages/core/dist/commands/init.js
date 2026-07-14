@@ -22,18 +22,6 @@ import { timeoutMilliseconds, withTimeout } from "./timeout.js";
  * init 负责创建 `.sdd/` 基础目录、安装宿主集成文件，并初始化代码库索引。
  * 它是整个仓库进入受控工作流的入口。
  */
-const REQUIRED_DIRECTORIES = [
-    "index",
-    "changes",
-    "context-packs",
-    "runs",
-    "logs",
-    "plugins",
-    "adapters",
-    "schemas",
-    "project",
-    "loop",
-];
 const configSchema = z
     .object({
     schemaVersion: z.literal(CURRENT_CONFIG_SCHEMA_VERSION),
@@ -71,7 +59,8 @@ export async function runInit(root, codebase, args, signal) {
             assertRecoverableCommandState(await store.read(), "sdd init");
         }
         const sddRoot = join(root, ".sdd");
-        await Promise.all(REQUIRED_DIRECTORIES.map((directory) => mkdir(join(sddRoot, directory), { recursive: true })));
+        // 子目录由实际使用它的组件惰性创建，避免 init 产生大量空目录。
+        await mkdir(sddRoot, { recursive: true });
         if (!(await exists(store.path)))
             await store.write(createInitialState());
         await store.update((state) => ({
