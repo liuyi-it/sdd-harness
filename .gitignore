@@ -4,6 +4,7 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 .worktrees/
+# CI 在 macOS、Linux、Windows 分别解析平台原生可选依赖；不要配合 npm ci 使用。
 package-lock.json
 /.sdd/
 

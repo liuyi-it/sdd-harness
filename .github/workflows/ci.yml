@@ -18,7 +18,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: npm ci
+      # package-lock.json 有意不提交：三个系统需分别解析平台原生可选依赖。
+      # 不要改为 npm ci，否则缺少 lockfile 时所有 CI 任务会在安装阶段失败。
+      - run: npm install
       - run: npm run format:check
       - run: npm run lint
       - run: npm run typecheck
