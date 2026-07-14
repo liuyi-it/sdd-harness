@@ -4,6 +4,10 @@ import { dirname, isAbsolute, join } from "node:path";
 import { AuditLogger } from "../audit/audit-logger.js";
 import { artifactInputHash } from "../artifacts/artifact-writer.js";
 import {
+  readCompactPlan,
+  readCompactSpec,
+} from "../artifacts/change-artifacts.js";
+import {
   readContextPackMetadata,
   renderContextPack,
   stripManagedSections,
@@ -97,9 +101,8 @@ export async function runBuild(
     const businessRoot = resolveBusinessRoot(root, state);
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = parseTasks(
-      await readFile(join(change, "tasks.json"), "utf8"),
+      JSON.stringify((await readCompactPlan(change)).tasks),
     );
-    await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
     const previousResults = await readResults(
       join(change, "task-results.json"),
       { ignoreInvalid: state.currentPhase === "FAILED" },
@@ -163,6 +166,12 @@ export async function runBuild(
       const executions = await Promise.all(
         batch.map(async (task) => {
           const startedAt = new Date().toISOString();
+          await ensureFreshContextPacks(
+            root,
+            changeId,
+            [task],
+            readHost(rawArgs),
+          );
           const contextPack = await readFile(
             join(root, ".sdd", "context-packs", changeId, `${task.id}.md`),
             "utf8",
@@ -502,16 +511,18 @@ async function ensureFreshContextPacks(
   tasks: TaskDefinition[],
   host: RuleHost,
 ): Promise<void> {
-  const [spec, design, impact, tasksMarkdown, rawTasksJson, codebaseSummary] =
+  const change = join(root, ".sdd", "changes", changeId);
+  const [spec, design, compactSpec, compactPlan, codebaseSummary] =
     await Promise.all([
       readFile(join(root, ".sdd", "changes", changeId, "spec.md"), "utf8"),
       readFile(join(root, ".sdd", "changes", changeId, "design.md"), "utf8"),
-      readFile(join(root, ".sdd", "changes", changeId, "impact.md"), "utf8"),
-      readFile(join(root, ".sdd", "changes", changeId, "tasks.md"), "utf8"),
-      readFile(join(root, ".sdd", "changes", changeId, "tasks.json"), "utf8"),
+      readCompactSpec(change),
+      readCompactPlan(change),
       readFile(join(root, ".sdd", "index", "codebase-summary.md"), "utf8"),
     ]);
-  const tasksJson = JSON.stringify(JSON.parse(rawTasksJson), null, 2);
+  const impact = compactSpec.impact;
+  const tasksMarkdown = compactPlan.tasksMarkdown;
+  const tasksJson = JSON.stringify(compactPlan.tasks, null, 2);
   const expectedCodebaseHash = artifactInputHash(codebaseSummary);
   const expectedSourceHash = artifactInputHash({
     spec,
@@ -548,6 +559,7 @@ async function ensureFreshContextPacks(
       metadata.projectRulesHash !== rules.hash ||
       metadata.projectConventionsHash !== projectConventionsHash
     ) {
+      await mkdir(dirname(path), { recursive: true });
       await writeFile(
         path,
         renderContextPack({
@@ -591,8 +603,8 @@ function contextPackReferences(changeId: string) {
   return {
     spec: `.sdd/changes/${changeId}/spec.md`,
     design: `.sdd/changes/${changeId}/design.md`,
-    plan: `.sdd/changes/${changeId}/tasks.md`,
-    impact: `.sdd/changes/${changeId}/impact.md`,
+    plan: `.sdd/changes/${changeId}/plan.json`,
+    impact: `.sdd/changes/${changeId}/spec.json`,
     codebase: ".sdd/index/codebase-summary.md",
   };
 }
@@ -828,11 +840,16 @@ async function buildNextTask(
         const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
         const change = join(root, ".sdd", "changes", changeId);
         const tasks = parseTasks(
-          await readFile(join(change, "tasks.json"), "utf8"),
+          JSON.stringify((await readCompactPlan(change)).tasks),
         );
-        await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
         const task = tasks.find((t) => t.id === existingTaskId);
         if (task) {
+          await ensureFreshContextPacks(
+            root,
+            changeId,
+            [task],
+            readHost(rawArgs),
+          );
           const contextPackPath = `.sdd/context-packs/${changeId}/${existingTaskId}.md`;
           await mkdir(
             join(
@@ -904,9 +921,8 @@ async function buildNextTask(
     const changeId = requireActiveChangeId(state.currentChangeId, rawArgs);
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = parseTasks(
-      await readFile(join(change, "tasks.json"), "utf8"),
+      JSON.stringify((await readCompactPlan(change)).tasks),
     );
-    await ensureFreshContextPacks(root, changeId, tasks, readHost(rawArgs));
 
     // 查找第一个可执行任务（排除 DONE 和 BUILDING）
     const taskStatuses = state.tasks;
@@ -941,6 +957,12 @@ async function buildNextTask(
       };
     }
 
+    await ensureFreshContextPacks(
+      root,
+      changeId,
+      [nextTask],
+      readHost(rawArgs),
+    );
     const runId = state.currentRunId ?? `run-${Date.now()}`;
     const contextPackPath = `.sdd/context-packs/${changeId}/${nextTask.id}.md`;
     await mkdir(join(root, ".sdd", "context-packs", changeId), {
@@ -1194,7 +1216,7 @@ async function buildCompleteTask(
 
     const change = join(root, ".sdd", "changes", changeId);
     const tasks = parseTasks(
-      await readFile(join(change, "tasks.json"), "utf8"),
+      JSON.stringify((await readCompactPlan(change)).tasks),
     );
     const task = tasks.find((t) => t.id === taskId);
     if (!task) {

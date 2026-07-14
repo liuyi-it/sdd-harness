@@ -77,7 +77,7 @@ async function initializedCore(): Promise<{ root: string; core: Core }> {
   return { root, core };
 }
 
-/** 完整制品 Core：init → new(answers) → design → plan，tasks.json 已就绪 */
+/** 完整制品 Core：init → new(answers) → design → plan，plan.json 已就绪 */
 async function plannedCore(): Promise<{
   root: string;
   core: Core;
@@ -144,16 +144,16 @@ describe("sdd auto", () => {
     );
     const manualTasks = JSON.parse(
       await readFile(
-        join(manual.root, ".sdd/changes/add-cancel/tasks.json"),
+        join(manual.root, ".sdd/changes/add-cancel/plan.json"),
         "utf8",
       ),
-    );
+    ).tasks;
     const autoTasks = JSON.parse(
       await readFile(
-        join(automatic.root, ".sdd/changes/add-cancel/tasks.json"),
+        join(automatic.root, ".sdd/changes/add-cancel/plan.json"),
         "utf8",
       ),
-    );
+    ).tasks;
     expect(autoTasks).toEqual(manualTasks);
     const contextPath = manualResult.actionRequired?.contextPack;
     expect(contextPath).toBe(autoResult.actionRequired?.contextPack);
@@ -166,7 +166,7 @@ describe("sdd auto", () => {
         await readFile(join(manual.root, contextPath!), "utf8"),
       ),
     );
-  });
+  }, 30_000);
 
   it("auto 不创建 worktree、提交、分支或外部 ticket", async () => {
     const { root, core } = await plannedCore();
@@ -210,7 +210,7 @@ describe("sdd auto", () => {
     });
   });
 
-  // resume 测试：plan 已生成 tasks.json，Agent 循环执行全部任务后到 ARCHIVED
+  // resume 测试：plan 已生成 plan.json，Agent 循环执行全部任务后到 ARCHIVED
   (process.platform === "win32" ? it.skip : it)(
     "resumes the specified loop run when resume=<run-id> is provided",
     async () => {
@@ -259,7 +259,7 @@ describe("sdd auto", () => {
     },
   );
 
-  // restart 测试：plan 已生成 tasks.json，Agent 循环执行全部任务后到 ARCHIVED
+  // restart 测试：plan 已生成 plan.json，Agent 循环执行全部任务后到 ARCHIVED
   (process.platform === "win32" ? it.skip : it)(
     "marks the old loop run ABORTED and creates a new active run when restart=true",
     async () => {

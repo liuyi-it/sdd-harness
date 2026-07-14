@@ -16,6 +16,7 @@ import { z } from "zod";
 
 import { AuditLogger } from "../audit/audit-logger.js";
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
+import { readCompactPlan } from "../artifacts/change-artifacts.js";
 import { PHASES, type Phase } from "../contracts.js";
 import { SddError } from "../errors.js";
 import { LoopStore } from "../loop/loop-store.js";
@@ -479,7 +480,8 @@ export class StateStore {
       else if (await reportPassed(join(change, "verify-report.md")))
         phase = "VERIFY_READY";
       else if (await allTasksDone(change)) phase = "BUILD_READY";
-      else if (await pathExists(join(change, "tasks.md"))) phase = "PLAN_READY";
+      else if (await pathExists(join(change, "plan.json")))
+        phase = "PLAN_READY";
       else if (await pathExists(join(change, "design.md")))
         phase = "DESIGN_READY";
       else if (await pathExists(join(change, "spec.md"))) phase = "SPEC_READY";
@@ -567,11 +569,11 @@ async function reportPassed(path: string): Promise<boolean> {
 
 async function allTasksDone(change: string): Promise<boolean> {
   try {
-    const [rawTasks, rawResults] = await Promise.all([
-      readFile(join(change, "tasks.json"), "utf8"),
+    const [plan, rawResults] = await Promise.all([
+      readCompactPlan(change),
       readFile(join(change, "task-results.json"), "utf8"),
     ]);
-    const tasks = JSON.parse(rawTasks) as unknown;
+    const tasks: unknown = plan.tasks;
     const results = JSON.parse(rawResults) as unknown;
     if (!Array.isArray(tasks) || tasks.length === 0 || !Array.isArray(results))
       return false;

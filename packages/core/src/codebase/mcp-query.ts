@@ -76,7 +76,7 @@ export interface McpQueryBuilder {
 }
 
 /**
- * ImpactPayload 是 intent=impact 时 payload 的稳定结构。Core 把它追加到 impact.md，
+ * ImpactPayload 是 intent=impact 时 payload 的稳定结构。Core 把它写入 spec.json 的 impact，
  * 同时只读取 stable 字段，不信任非枚举键。
  */
 export interface ImpactPayload {

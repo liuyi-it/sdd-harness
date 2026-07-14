@@ -22,10 +22,6 @@ async function project(): Promise<string> {
     join(root, "src/services/order.ts"),
     "export class OrderService {}\n",
   );
-  await writeFile(
-    join(root, "CLAUDE.md.meta.json"),
-    '{"createdAt":"2026-07-04T00:00:00.000Z"}\n',
-  );
   await writeFile(join(root, "src/application-prod.yml"), "password: secret\n");
   await writeFile(join(root, "src/server.pem"), "private key\n");
   await mkdir(join(root, "node_modules/ignored"), { recursive: true });
@@ -130,7 +126,6 @@ describe("CodebaseAdapter", () => {
     expect(result.codebaseSummary).not.toContain("node_modules");
     expect(result.codebaseSummary).not.toContain("application-prod.yml");
     expect(result.codebaseSummary).not.toContain("server.pem");
-    expect(result.codebaseSummary).not.toContain("CLAUDE.md.meta.json");
   });
 
   it("在 MCP 可见但调用失败时自动降级而不是直接失败", async () => {

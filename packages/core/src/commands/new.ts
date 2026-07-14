@@ -8,6 +8,7 @@ import {
   ArtifactWriter,
   artifactInputHash,
 } from "../artifacts/artifact-writer.js";
+import { readCompactSpec } from "../artifacts/change-artifacts.js";
 import { type CodebaseAdapter } from "../codebase/codebase-adapter.js";
 import { wrapUntrustedMcpOutput } from "../security/untrusted-content.js";
 import { type CommandResult } from "../contracts.js";
@@ -178,30 +179,30 @@ export async function runNew(
       requirement,
       answers: args.answers ?? {},
     };
-    await Promise.all([
-      writer.write(
-        join(changeDirectory, "proposal.md"),
-        preview.proposal,
-        requirementInputs,
-      ),
-      writer.write(
-        join(changeDirectory, "impact.md"),
-        await renderImpactWithMcp(
-          preview.impact,
-          codebase,
-          root,
-          changeId,
-          requirement,
-        ),
-        { requirement, codebaseSummary },
-      ),
-      writer.write(
-        join(changeDirectory, "questions.md"),
-        preview.questions,
-        requirementInputs,
-      ),
-    ]);
+    const previewImpact = await renderImpactWithMcp(
+      preview.impact,
+      codebase,
+      root,
+      changeId,
+      requirement,
+    );
     if (unansweredBlockers.length > 0) {
+      await writer.write(
+        join(changeDirectory, "spec.json"),
+        JSON.stringify(
+          {
+            schemaVersion: "2.0.0",
+            status: "CLARIFYING",
+            requirement,
+            proposal: preview.proposal,
+            impact: previewImpact,
+            questions: preview.questions,
+          },
+          null,
+          2,
+        ),
+        requirementInputs,
+      );
       if (args.nonInteractive) {
         await store.update((current) => ({
           ...current,
@@ -255,27 +256,25 @@ export async function runNew(
     if (!force) {
       let sameInput = false;
       try {
-        const metaPath = `${join(changeDirectory, "spec.md")}.meta.json`;
-        const metadata = JSON.parse(await readFile(metaPath, "utf8")) as {
-          inputHash: string;
-        };
+        const metadata = await writer.metadata(
+          join(changeDirectory, "spec.md"),
+        );
+        if (metadata === undefined) throw new Error("缺少 spec 制品摘要");
         if (metadata.inputHash === artifactInputHash(requirementInputs)) {
           sameInput = true;
         }
       } catch {
-        // 文件不存在或无 meta.json
+        // 文件不存在或无集中摘要
       }
       if (!sameInput) {
         try {
+          const compact = await readCompactSpec(changeDirectory);
+          if (compact.delta === undefined || compact.model === undefined)
+            throw new Error("spec.json 缺少完整规格");
           existingSpec = {
             spec: await readFile(join(changeDirectory, "spec.md"), "utf8"),
-            delta: await readFile(
-              join(changeDirectory, "spec.delta.md"),
-              "utf8",
-            ),
-            model: JSON.parse(
-              await readFile(join(changeDirectory, "spec.model.json"), "utf8"),
-            ),
+            delta: compact.delta,
+            model: compact.model,
           };
         } catch {
           // 制品不存在或无法读取
@@ -292,31 +291,43 @@ export async function runNew(
       "sdd new",
       signal,
     );
-    for (const [name, content] of Object.entries({
-      "answers.md": artifacts.answers,
-      "assumptions.md": artifacts.assumptions,
-    })) {
-      await writer.write(join(changeDirectory, name), content, {
-        requirement,
-        answers: args.answers ?? {},
-      });
-    }
-    await Promise.all([
-      writer.write(
-        join(changeDirectory, "spec.md"),
-        artifacts.spec,
-        requirementInputs,
-      ),
-      writer.write(
-        join(changeDirectory, "spec.delta.md"),
-        artifacts.delta,
-        requirementInputs,
-      ),
-      writer.write(
-        join(changeDirectory, "spec.model.json"),
-        JSON.stringify(artifacts.model, null, 2),
-        requirementInputs,
-      ),
+    const impact = await renderImpactWithMcp(
+      artifacts.impact,
+      codebase,
+      root,
+      changeId,
+      requirement,
+    );
+    const proposal =
+      parentChangeId === null
+        ? artifacts.proposal
+        : `${artifacts.proposal}\n\n## Based On Archived Change\n\n- ${parentChangeId}`;
+    await writer.writeGroupAtomically([
+      {
+        path: join(changeDirectory, "spec.md"),
+        content: artifacts.spec,
+        inputs: requirementInputs,
+      },
+      {
+        path: join(changeDirectory, "spec.json"),
+        content: JSON.stringify(
+          {
+            schemaVersion: "2.0.0",
+            status: "READY",
+            requirement,
+            proposal,
+            impact,
+            questions: artifacts.questions,
+            answers: artifacts.answers,
+            assumptions: artifacts.assumptions,
+            delta: artifacts.delta,
+            model: artifacts.model,
+          },
+          null,
+          2,
+        ),
+        inputs: { ...requirementInputs, codebaseSummary },
+      },
     ]);
     const ready = await store.update((current) => ({
       ...current,
@@ -420,7 +431,7 @@ function clarificationPreview(
 }
 
 /**
- * 调用 MCP intent=impact 查询并附加结构化发现到 impact.md。codebase 不可用或为 fallback
+ * 调用 MCP intent=impact 查询并将结构化发现写入 spec.json。codebase 不可用或为 fallback
  * 时仍然返回可读结果，仅附加 "degraded=true" 提示。
  */
 async function renderImpactWithMcp(

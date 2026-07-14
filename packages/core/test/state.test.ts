@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AuditLogger } from "../src/audit/audit-logger.js";
+import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { FileLock } from "../src/state/file-lock.js";
 import { createInitialState, StateStore } from "../src/state/state-store.js";
 
@@ -117,11 +118,8 @@ describe("StateStore", () => {
       await readFile(join(root, ".sdd/migration-report.md"), "utf8"),
     ).toContain(".sdd.migration.bak");
     expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/migration-report.md.meta.json"),
-          "utf8",
-        ),
+      await new ArtifactWriter().metadata(
+        join(root, ".sdd/migration-report.md"),
       ),
     ).toMatchObject({
       schemaVersion: "1.0.0",

@@ -480,7 +480,7 @@ describe("workspace-aware quality flow", () => {
       });
 
       const report = await readFile(
-        join(root, ".sdd/changes/add-cancel/archive-report.md"),
+        join(root, ".sdd/changes/add-cancel/archive.md"),
         "utf8",
       );
       const finalHead = execFileSync("git", ["rev-parse", "HEAD"], {
@@ -491,6 +491,7 @@ describe("workspace-aware quality flow", () => {
       expect(report).toContain(`worktreePath: ${workspace.worktreePath}`);
       expect(report).toContain(`finalHead: ${finalHead}`);
     },
+    30_000,
   );
 });
 

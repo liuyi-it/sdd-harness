@@ -445,6 +445,11 @@ describe("sdd build", () => {
       root,
       ".sdd/context-packs/add-cancel/TASK-001-RED.md",
     );
+    await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
     const before = await readFile(packPath, "utf8");
     await writeFile(
       join(root, "AGENTS.md"),
@@ -452,11 +457,15 @@ describe("sdd build", () => {
       "utf8",
     );
 
-    const result = await core.execute({ command: "build", cwd: root });
+    const result = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
 
     expect(result).toMatchObject({
       ok: true,
-      state: "BUILD_READY",
+      state: "BUILD_WAITING_AGENT",
     });
     const after = await readFile(packPath, "utf8");
     expect(projectRulesHash(after)).toMatch(/^sha256:[a-f0-9]{64}$/);
@@ -474,6 +483,11 @@ describe("sdd build", () => {
       root,
       ".sdd/context-packs/add-cancel/TASK-001-RED.md",
     );
+    await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
     const original = await readFile(packPath, "utf8");
     await writeFile(
       packPath,
@@ -481,9 +495,15 @@ describe("sdd build", () => {
       "utf8",
     );
 
-    expect(await core.execute({ command: "build", cwd: root })).toMatchObject({
+    expect(
+      await core.execute({
+        command: "build",
+        cwd: root,
+        args: { subcommand: "next" },
+      }),
+    ).toMatchObject({
       ok: true,
-      state: "BUILD_READY",
+      state: "BUILD_WAITING_AGENT",
     });
     const repaired = await readFile(packPath, "utf8");
     expect(repaired).toContain("- src/order.ts");
@@ -793,6 +813,11 @@ describe("sdd build", () => {
       root,
       ".sdd/context-packs/add-cancel/TASK-001-RED.md",
     );
+    await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
     const before = await readFile(packPath, "utf8");
     await writeFile(
       join(root, ".sdd/changes/add-cancel/design.md"),
@@ -800,16 +825,19 @@ describe("sdd build", () => {
       "utf8",
     );
 
-    const result = await core.execute({ command: "build", cwd: root });
+    const result = await core.execute({
+      command: "build",
+      cwd: root,
+      args: { subcommand: "next" },
+    });
 
     expect(result).toMatchObject({
       ok: true,
-      state: "BUILD_READY",
+      state: "BUILD_WAITING_AGENT",
     });
-    expect(execute).toHaveBeenCalled();
-    expect(projectRulesHash(await readFile(packPath, "utf8"))).toBe(
-      projectRulesHash(before),
-    );
+    const refreshed = await readFile(packPath, "utf8");
+    expect(refreshed).not.toBe(before);
+    expect(projectRulesHash(refreshed)).toBe(projectRulesHash(before));
   });
 
   it("当代码库索引变化导致 Context Pack 失效时自动刷新后继续执行", async () => {
@@ -1028,27 +1056,40 @@ describe("sdd build", () => {
         doneCriteria: ["done"],
       })),
     ];
-    await writeFile(
-      join(change, "tasks.json"),
-      `${JSON.stringify(tasks, null, 2)}\n`,
-      "utf8",
-    );
-    const [spec, design, impact, codebaseSummary] = await Promise.all([
+    const [spec, design, compactSpec, codebaseSummary] = await Promise.all([
       readFile(join(change, "spec.md"), "utf8"),
       readFile(join(change, "design.md"), "utf8"),
-      readFile(join(change, "impact.md"), "utf8"),
+      readFile(join(change, "spec.json"), "utf8").then(JSON.parse),
       readFile(join(root, ".sdd/index/codebase-summary.md"), "utf8"),
     ]);
+    const impact = compactSpec.impact as string;
     const tasksMarkdown = [
       "# Tasks",
       "",
       ...tasks.map((task) => `## ${task.id} ${task.title}\n`),
     ].join("\n");
-    await writeFile(join(change, "tasks.md"), tasksMarkdown, "utf8");
+    await writeFile(
+      join(change, "plan.json"),
+      `${JSON.stringify(
+        {
+          schemaVersion: "2.0.0",
+          tasks,
+          tasksMarkdown,
+          testPlan: "# Test Plan",
+          context: "# Context",
+        },
+        null,
+        2,
+      )}\n`,
+      "utf8",
+    );
     const projectConventionsHash = artifactInputHash(
       await readFile(join(root, ".sdd/project/conventions.json"), "utf8"),
     );
     const body = ["# TASK", "", "Allowed Files", "", "Risk", "", ""].join("\n");
+    await mkdir(join(root, ".sdd/context-packs/add-cancel"), {
+      recursive: true,
+    });
     await Promise.all(
       tasks.map(async (task) =>
         writeFile(
@@ -1070,8 +1111,8 @@ describe("sdd build", () => {
             references: {
               spec: ".sdd/changes/add-cancel/spec.md",
               design: ".sdd/changes/add-cancel/design.md",
-              plan: ".sdd/changes/add-cancel/tasks.md",
-              impact: ".sdd/changes/add-cancel/impact.md",
+              plan: ".sdd/changes/add-cancel/plan.json",
+              impact: ".sdd/changes/add-cancel/spec.json",
               codebase: ".sdd/index/codebase-summary.md",
             },
             task: {

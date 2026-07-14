@@ -14,6 +14,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
 import { TddEngine } from "../src/engines/tdd/tdd-engine.js";
+import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 
 // 这组测试验证 design/plan 是否会基于真实索引上下文生成稳定制品，并保持幂等/candidate 语义。
 const roots: string[] = [];
@@ -70,18 +71,9 @@ describe("design and plan", () => {
       join(root, ".sdd/changes/add-order-cancellation/design.md"),
       "utf8",
     );
-    const designMetadata = JSON.parse(
-      await readFile(
-        join(root, ".sdd/changes/add-order-cancellation/design.md.meta.json"),
-        "utf8",
-      ),
-    ) as {
-      schemaVersion: string;
-      generatedBy: string;
-      inputHash: string;
-      artifactHash: string;
-      createdAt: string;
-    };
+    const designMetadata = await new ArtifactWriter().metadata(
+      join(root, ".sdd/changes/add-order-cancellation/design.md"),
+    );
     for (const section of [
       "Current Code Structure",
       "Target Design",
@@ -126,7 +118,7 @@ describe("design and plan", () => {
     });
   });
 
-  it("creates requirement-linked tasks, test plan, context, and per-task Context Pack", async () => {
+  it("creates a compact plan and defers Context Pack generation until build", async () => {
     const { root, core } = await specifiedProject();
     await core.execute({ command: "design", cwd: root });
 
@@ -137,67 +129,24 @@ describe("design and plan", () => {
       state: "PLAN_READY",
       next: "sdd build next",
     });
-    const tasks = await readFile(
-      join(root, ".sdd/changes/add-order-cancellation/tasks.md"),
-      "utf8",
+    const planPath = join(
+      root,
+      ".sdd/changes/add-order-cancellation/plan.json",
     );
-    const tasksMetadata = JSON.parse(
-      await readFile(
-        join(root, ".sdd/changes/add-order-cancellation/tasks.md.meta.json"),
-        "utf8",
-      ),
-    ) as {
-      schemaVersion: string;
-      generatedBy: string;
-      inputHash: string;
-      artifactHash: string;
-      createdAt: string;
-    };
+    const plan = JSON.parse(await readFile(planPath, "utf8"));
+    const tasks = plan.tasksMarkdown as string;
+    const tasksMetadata = await new ArtifactWriter().metadata(planPath);
     expect(tasks).toContain("TASK-001-RED");
     expect(tasks).toContain("REQ-001");
     expect(tasks).toContain("Allowed Files");
     expect(tasks).toContain("Verification");
-    for (const artifact of ["test-plan.md", "context.md"]) {
-      await expect(
-        access(join(root, ".sdd/changes/add-order-cancellation", artifact)),
-      ).resolves.toBeUndefined();
-      expect(
-        JSON.parse(
-          await readFile(
-            join(
-              root,
-              ".sdd/changes/add-order-cancellation",
-              `${artifact}.meta.json`,
-            ),
-            "utf8",
-          ),
-        ),
-      ).toMatchObject({
-        schemaVersion: "1.0.0",
-        generatedBy: "sdd-harness",
-        inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        createdAt: expect.any(String),
-      });
-    }
-    const contextPack = await readFile(
-      join(root, ".sdd/context-packs/add-order-cancellation/TASK-001-RED.md"),
-      "utf8",
-    );
-    expect(contextPack).toContain("Allowed Files");
-    expect(contextPack).toContain("Risk");
-    expect(contextPack).toContain("Project Rules");
-    expect(contextPack).toContain("AGENTS.md");
-    expect(contextPack).toMatch(/Codebase Index Hash: sha256:[a-f0-9]{64}/);
-    expect(contextPack).toMatch(/Source Artifact Hash: sha256:[a-f0-9]{64}/);
-    expect(contextPack).toMatch(/Project Rules Hash: sha256:[a-f0-9]{64}/);
-    expect(contextPack).toMatch(
-      /Project Conventions Hash: sha256:[a-f0-9]{64}/,
-    );
-    expect(contextPack).toContain("Generated At:");
-    expect(contextPack).toContain("Schema Version: 2.0.0");
-    expect(contextPack).toContain("tdd-task-execution");
-    expect(Buffer.byteLength(contextPack)).toBeLessThanOrEqual(30 * 1024);
+    expect(plan.testPlan).toContain("Test Plan");
+    expect(plan.context).toBeTypeOf("string");
+    await expect(
+      access(
+        join(root, ".sdd/context-packs/add-order-cancellation/TASK-001-RED.md"),
+      ),
+    ).rejects.toThrow();
     expect(tasksMetadata).toMatchObject({
       schemaVersion: "1.0.0",
       generatedBy: "sdd-harness",
@@ -205,12 +154,9 @@ describe("design and plan", () => {
       artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       createdAt: expect.any(String),
     });
-    const taskDefinitions = JSON.parse(
-      await readFile(
-        join(root, ".sdd/changes/add-order-cancellation/tasks.json"),
-        "utf8",
-      ),
-    ) as Array<{ policyRefs?: Array<{ id: string }> }>;
+    const taskDefinitions = plan.tasks as Array<{
+      policyRefs?: Array<{ id: string }>;
+    }>;
     expect(taskDefinitions[0]?.policyRefs?.map(({ id }) => id)).toEqual([
       "core-authority",
       "tracer-bullet-planning",
@@ -289,7 +235,7 @@ describe("design and plan", () => {
     });
     await expect(
       access(
-        join(root, ".sdd/changes/add-order-cancellation/tasks.md.candidate.md"),
+        join(root, ".sdd/changes/add-order-cancellation/plan.candidate.json"),
       ),
     ).rejects.toThrow();
   });

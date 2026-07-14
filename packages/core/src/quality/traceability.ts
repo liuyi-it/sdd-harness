@@ -1,8 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-
 import type { TaskDefinition, TddPhase } from "../engines/tdd/tdd-engine.js";
 import type { SpecDocument } from "../engines/openspec/model.js";
+import { readCompactSpec } from "../artifacts/change-artifacts.js";
 import { parseSpec } from "../engines/openspec/parser.js";
 import { validateSpec } from "../engines/openspec/validator.js";
 import { SddError } from "../errors.js";
@@ -14,32 +12,16 @@ export async function readAuthoritativeSpec(
   change: string,
   markdown: string,
 ): Promise<{ document: SpecDocument; legacy: boolean }> {
-  let raw: string;
-  try {
-    raw = await readFile(join(change, "spec.model.json"), "utf8");
-  } catch (error) {
-    if (isMissing(error))
-      return {
-        document: isLegacySpec(markdown)
-          ? parseLegacySpec(markdown)
-          : parseAndValidate(markdown),
-        legacy: true,
-      };
-    throw error;
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch {
-    throw corrupted("spec.model.json 不是有效 JSON");
-  }
-  if (!isSpecDocument(value)) throw corrupted("spec.model.json 结构无效");
-  assertValid(value, "spec.model.json");
+  const compact = await readCompactSpec(change);
+  const value = compact.model;
+  if (compact.status !== "READY" || !isSpecDocument(value))
+    throw corrupted("spec.json 缺少有效的规格模型");
+  assertValid(value, "spec.json");
   assertStableIds(value);
   assertRenderSafe(value);
   const parsed = parseAndValidate(markdown);
   if (canonicalJson(value) !== canonicalJson(parsed))
-    throw corrupted("spec.model.json 与 spec.md 不一致");
+    throw corrupted("spec.json 与 spec.md 不一致");
   return { document: value, legacy: false };
 }
 
@@ -205,48 +187,18 @@ function parseAndValidate(markdown: string): SpecDocument {
   return document;
 }
 
-function isLegacySpec(markdown: string): boolean {
-  return /^### REQ-\d+:/m.test(markdown);
-}
-
-function parseLegacySpec(markdown: string): SpecDocument {
-  const ids: string[] = [];
-  const transformed = markdown.replace(
-    /^### (REQ-\d+):\s*(.+)$/gm,
-    (_heading, id: string, title: string) => {
-      ids.push(id);
-      return `### Requirement: ${title}`;
-    },
-  );
-  if (ids.length === 0 || new Set(ids).size !== ids.length)
-    throw corrupted("legacy spec.md 的 Requirement ID 缺失或重复");
-  const titleEnd = transformed.indexOf("\n");
-  const withDelta =
-    titleEnd < 0
-      ? transformed
-      : `${transformed.slice(0, titleEnd)}\n\n## ADDED Requirements${transformed.slice(titleEnd)}`;
-  const document = parseAndValidate(withDelta);
-  document.requirements.forEach((requirement, index) => {
-    requirement.id = ids[index]!;
-    requirement.scenarios.forEach((scenario, scenarioIndex) => {
-      scenario.id = `${requirement.id}-SC-${String(scenarioIndex + 1).padStart(3, "0")}`;
-    });
-  });
-  return document;
-}
-
 function assertStableIds(document: SpecDocument): void {
   document.requirements.forEach((requirement, requirementIndex) => {
     const expected = `REQ-${String(requirementIndex + 1).padStart(3, "0")}`;
     if (requirement.id !== expected)
       throw corrupted(
-        `spec.model.json requirements[${requirementIndex}].id 必须为 ${expected}`,
+        `spec.json requirements[${requirementIndex}].id 必须为 ${expected}`,
       );
     requirement.scenarios.forEach((scenario, scenarioIndex) => {
       const scenarioExpected = `${expected}-SC-${String(scenarioIndex + 1).padStart(3, "0")}`;
       if (scenario.id !== scenarioExpected)
         throw corrupted(
-          `spec.model.json requirements[${requirementIndex}].scenarios[${scenarioIndex}].id 必须为 ${scenarioExpected}`,
+          `spec.json requirements[${requirementIndex}].scenarios[${scenarioIndex}].id 必须为 ${scenarioExpected}`,
         );
     });
   });
@@ -265,7 +217,7 @@ function assertRenderSafe(document: SpecDocument): void {
     ]),
   ];
   if (values.some((value) => /[\r\n\0]/.test(value) || /^#/m.test(value)))
-    throw corrupted("spec.model.json 包含不可安全渲染的字段");
+    throw corrupted("spec.json 包含不可安全渲染的字段");
 }
 
 function assertValid(document: SpecDocument, name: string): void {
@@ -309,10 +261,6 @@ function isSpecDocument(value: unknown): value is SpecDocument {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isMissing(error: unknown): boolean {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function corrupted(message: string): SddError {

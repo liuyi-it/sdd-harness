@@ -197,8 +197,8 @@ export class SpecEngine {
 2. 仅因需求变更而需要调整的部分才更新。
 3. 输出完整的规格文件。`;
       impact += `\n\n### spec.md\n${input.existingSpec.spec}`;
-      impact += `\n\n### spec.delta.md\n${input.existingSpec.delta}`;
-      impact += `\n\n### spec.model.json\n${JSON.stringify(input.existingSpec.model, null, 2)}`;
+      impact += `\n\n### 既有规格增量\n${input.existingSpec.delta}`;
+      impact += `\n\n### 既有规格模型\n${JSON.stringify(input.existingSpec.model, null, 2)}`;
     }
     return {
       proposal: [

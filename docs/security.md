@@ -4,7 +4,7 @@
 - 启用 `workflow.gitIsolation` 后，Git worktree 只允许通过 `execFile` + 固定 argv 执行 `rev-parse/status/branch/worktree`；路径含空格和 Windows 分隔符由 Node 路径 API 处理，不依赖 shell。
 - `build` 结果必须通过任务允许文件、期望新增文件和禁止文件三类范围校验。
 - 只有批准的只读 Git 命令前缀和测试命令前缀可以作为验证证据；Shell 操作符、网络命令和破坏性命令都会被拒绝。
-- 仓库内容和 MCP 输出只被当作数据，不会被当成指令执行；`impact.md`、Context Pack 和 MCP 摘要都必须显式包裹在 `UNTRUSTED_*` 边界中，拒绝伪造结束标记。
+- 仓库内容和 MCP 输出只被当作数据，不会被当成指令执行；`spec.json` 中的 impact、Context Pack 和 MCP 摘要都必须显式包裹在 `UNTRUSTED_*` 边界中，拒绝伪造结束标记。
 - TaskExecutor 只接收结构化 `constraints`；`allowedCommands` 会在 `build` 前去重、裁剪并过滤含 shell 元字符的命令，不能由不可信上下文扩权。
 - 审计日志会对 token、密码、secret、API key 和授权字段做脱敏，并按配置大小轮转。
 - `review` 会重新扫描 current-run diff 中的真实文件内容；命中 GitHub token、私钥、JWT、Authorization、数据库密码等规则时生成 `SECRET_LEAK`，阻断归档且报告中不保留原值。

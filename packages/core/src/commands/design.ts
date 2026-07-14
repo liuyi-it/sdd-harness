@@ -8,6 +8,7 @@ import {
   ArtifactWriter,
   artifactInputHash,
 } from "../artifacts/artifact-writer.js";
+import { readCompactSpec } from "../artifacts/change-artifacts.js";
 import { type CommandResult } from "../contracts.js";
 import type { DesignInput, TddEngine } from "../engines/tdd/tdd-engine.js";
 import { SddError } from "../errors.js";
@@ -67,7 +68,7 @@ export async function runDesign(
     }));
     started = true;
     const spec = await readFile(join(change, "spec.md"), "utf8");
-    const impact = await readFile(join(change, "impact.md"), "utf8");
+    const impact = (await readCompactSpec(change)).impact;
     const input: DesignInput = {
       spec,
       impact,
@@ -99,9 +100,8 @@ export async function runDesign(
     let unchanged = false;
 
     try {
-      const metadata = JSON.parse(
-        await readFile(`${designPath}.meta.json`, "utf8"),
-      ) as { inputHash: string };
+      const metadata = await writer.metadata(designPath);
+      if (metadata === undefined) throw new Error("缺少 design 制品摘要");
       if (metadata.inputHash === inputHash) {
         unchanged = true;
       } else {

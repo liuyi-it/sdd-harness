@@ -24,8 +24,8 @@ const input = () => ({
   references: {
     spec: ".sdd/changes/change/spec.md",
     design: ".sdd/changes/change/design.md",
-    plan: ".sdd/changes/change/tasks.md",
-    impact: ".sdd/changes/change/impact.md",
+    plan: ".sdd/changes/change/plan.json",
+    impact: ".sdd/changes/change/spec.json",
     codebase: ".sdd/index/codebase-summary.md",
   },
   task: {

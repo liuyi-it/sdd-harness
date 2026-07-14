@@ -1,4 +1,4 @@
-import { access, mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { ArtifactWriter } from "../artifacts/artifact-writer.js";
@@ -187,13 +187,8 @@ async function ensureMetadata(
   path: string,
   inputs: Record<string, unknown>,
 ): Promise<void> {
-  try {
-    await access(`${path}.meta.json`);
-  } catch {
-    await new ArtifactWriter().write(
-      path,
-      await readFile(path, "utf8"),
-      inputs,
-    );
+  const writer = new ArtifactWriter();
+  if ((await writer.metadata(path)) === undefined) {
+    await writer.write(path, await readFile(path, "utf8"), inputs);
   }
 }

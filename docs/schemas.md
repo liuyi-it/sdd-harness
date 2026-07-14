@@ -5,7 +5,7 @@
 - `config.schema.json`：项目、插件、代码库、流程、质量和安全配置。
 - `state.schema.json`：带版本的工作流状态，以及任务/制品状态。
 - `task.schema.json`：关联需求编号的任务范围与验证契约。
-- `artifact-metadata.schema.json`：源输入摘要和生成制品摘要。
+- `artifact-metadata.schema.json`：`.sdd/artifacts.json` 中单个制品的源输入摘要和生成制品摘要。
 - `task-execution-result.schema.json`：运行级单任务结果制品，使用结构化命令证据和 `fileDelta`。
 - `loop.schema.json` / `loop-run.schema.json`：`auto` Loop 规格、运行状态与步骤审计。
 - `mcp-query-result.schema.json`：MCP V2 结构化查询结果，provider 只允许 `codebase-memory-mcp` 或 `fallback-file-scan`。
@@ -22,4 +22,4 @@
 - 字符串命令只允许在严格白名单下拆分为普通 argv；出现管道、重定向、命令替换等 shell 语义时直接返回 `E_SECURITY_BLOCKED`。
 - `verify` / `review` 先写 `.v1.2.json` 与 `.v1.2.md`，再决定是否推进阶段；失败时也必须留下可读报告。
 
-`npm run validate:schemas` 不再使用手写 happy path 对象，而是运行真实小仓库流程，读取实际生成的 `tasks.json`、单任务运行结果、Loop run、`verify-report.v1.2.json`、`review-report.v1.2.json` 和 MCP query result 进行校验。
+`npm run validate:schemas` 不再使用手写 happy path 对象，而是运行真实小仓库流程，读取 `plan.json` 中的任务、`.sdd/artifacts.json` 中的制品摘要、单任务运行结果、Loop run、`verify-report.v1.2.json`、`review-report.v1.2.json` 和 MCP query result 进行校验。

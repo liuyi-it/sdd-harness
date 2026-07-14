@@ -167,7 +167,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 ```
 sdd build next --json
-  → Core 读取 tasks.json → 找到下一个待执行任务
+  → Core 读取 plan.json → 找到下一个待执行任务
   → 返回 AgentActionRequired {
       type: "AGENT_TASK_EXECUTION",
       taskId, changeId, contextPack,
@@ -203,7 +203,7 @@ Build 使用 Context Pack v2 引用现有 spec/design/plan 制品，并携带文
 |                          | OpenSpec                                                                                                                                                    | Superpowers                                                                                                                                                                 |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **定位**                 | 需求规格形式化——将自然语言需求转换为结构化的 Requirement / Scenario / Delta 模型                                                                            | Agent 工作流编排——提供 brainstorming、planning、TDD 等多阶段 Agent 协作 Skill                                                                                               |
-| **核心能力**             | Requirement → Scenario → ADDED/MODIFIED/REMOVED delta → 可机读 spec.model.json                                                                              | RED → GREEN → REFACTOR → VERIFY 四阶段原子任务链，Context Pack 生成                                                                                                         |
+| **核心能力**             | Requirement → Scenario → ADDED/MODIFIED/REMOVED delta → 可机读 spec.json                                                                                    | RED → GREEN → REFACTOR → VERIFY 四阶段原子任务链，按需生成 Context Pack                                                                                                     |
 | **优势**                 | 规格结构严谨，可校验 Scenario 覆盖、幽灵引用、delta 一致性；适合做质量门禁的事实源                                                                          | 任务拆解粒度高，依赖图 + 并行批次控制；Context Pack 机制将代码上下文和项目规则注入每个任务                                                                                  |
 | **局限**                 | 规格输出依赖输入质量，自身不做需求澄清；流程编排能力弱，不管理 build/verify/review/archive 门禁                                                             | 偏向 Claude Code 生态，CLI 耦合宿主；插件安装模型（marketplace.json）不符合 CLI-first 架构                                                                                  |
 | **sdd-harness 借鉴方式** | 吸取其 Requirement / Scenario / Delta 规格模型，通过 `SpecEngine` 驱动 `sdd new` 的需求分析和规格生成，通过 `traceability` 做归档前的需求 → 任务 → 证据追踪 | 吸取其 TDD 四阶段任务模型和 Context Pack 机制，通过 `TddEngine` 和 `Planner` 驱动 `sdd plan` 的任务拆解，通过 `AgentActionRequired` 机制将 Context Pack 交给外部 Agent 执行 |

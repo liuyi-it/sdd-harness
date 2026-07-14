@@ -246,6 +246,15 @@ async function collectSchemaContext(fixtures) {
   const blockedReviewReport = JSON.parse(
     await readFile(join(blockedChange, "review-report.v2.json"), "utf8"),
   );
+  const archive = JSON.parse(
+    await readFile(join(archivedChange, "archive.json"), "utf8"),
+  );
+  const artifactManifest = JSON.parse(
+    await readFile(join(archived.root, ".sdd/artifacts.json"), "utf8"),
+  );
+  const artifactMetadata = Object.values(artifactManifest.artifacts)[0];
+  if (artifactMetadata === undefined)
+    throw new Error("missing artifact metadata");
 
   return {
     config: YAML.parse(
@@ -254,12 +263,8 @@ async function collectSchemaContext(fixtures) {
     state: JSON.parse(
       await readFile(join(archived.root, ".sdd/state.json"), "utf8"),
     ),
-    tasks: JSON.parse(
-      await readFile(join(archivedChange, "tasks.json"), "utf8"),
-    ),
-    artifactMetadata: JSON.parse(
-      await readFile(join(archivedChange, "spec.md.meta.json"), "utf8"),
-    ),
+    tasks: archive.plan.tasks,
+    artifactMetadata,
     taskExecutionResult: await readFile(
       join(archived.root, ".sdd/runs", runId, "tasks", taskResultName),
       "utf8",
@@ -299,9 +304,7 @@ async function collectSchemaContext(fixtures) {
       changeId: "add-cancel",
       requirement,
     }),
-    verifyReport: JSON.parse(
-      await readFile(join(archivedChange, "verify-report.v1.2.json"), "utf8"),
-    ),
+    verifyReport: archive.quality.verifyReportData,
     reviewReport: blockedReviewReport,
     reviewIssue: blockedReviewReport.issues[0],
   };

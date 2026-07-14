@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -30,6 +31,20 @@ type RmFunction = typeof rm;
 
 // 这组测试把 verify/review/archive 串起来，验证“完成证据”最终能沉淀成可追踪归档。
 const roots: string[] = [];
+
+async function readPlan(root: string) {
+  return JSON.parse(
+    await readFile(join(root, ".sdd/changes/add-cancel/plan.json"), "utf8"),
+  ) as { tasks: Array<Record<string, unknown>>; [key: string]: unknown };
+}
+
+async function writePlan(root: string, plan: Record<string, unknown>) {
+  await writeFile(
+    join(root, ".sdd/changes/add-cancel/plan.json"),
+    `${JSON.stringify(plan, null, 2)}\n`,
+    "utf8",
+  );
+}
 
 async function builtProject(): Promise<{ root: string; core: Core }> {
   const root = await mkdtemp(join(tmpdir(), "sdd-quality-"));
@@ -205,11 +220,8 @@ describe("quality commands", () => {
       ),
     ).toContain("## Result\n\nPASS");
     expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/changes/add-cancel/verify-report.md.meta.json"),
-          "utf8",
-        ),
+      await new ArtifactWriter().metadata(
+        join(root, ".sdd/changes/add-cancel/verify-report.md"),
       ),
     ).toMatchObject({
       schemaVersion: "1.0.0",
@@ -272,9 +284,7 @@ describe("quality commands", () => {
         "utf8",
       ),
     ).toContain("未跟踪到任务结果的变更文件：notes.txt");
-    const tasks = JSON.parse(
-      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
-    ) as Array<{
+    const tasks = (await readPlan(root)).tasks as Array<{
       sliceType?: string;
       failureContext?: { source: string; errorCode: string };
       policyRefs?: Array<{ id: string }>;
@@ -300,9 +310,7 @@ describe("quality commands", () => {
       state: "PLAN_READY",
       error: { code: "E_VERIFY_FAILED", next: "sdd build next" },
     });
-    const tasks = JSON.parse(
-      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
-    ) as Array<{
+    const tasks = (await readPlan(root)).tasks as Array<{
       sliceType?: string;
       failureContext?: { source: string; errorCode: string };
       policyRefs?: Array<{ id: string }>;
@@ -367,9 +375,7 @@ describe("quality commands", () => {
       currentPhase: "PAUSED",
       suggestedCommand: "sdd status",
     });
-    const tasks = JSON.parse(
-      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
-    ) as Array<{ sliceType?: string }>;
+    const tasks = (await readPlan(root)).tasks as Array<{ sliceType?: string }>;
     expect(tasks.filter((task) => task.sliceType === "REPAIR")).toHaveLength(8);
   });
 
@@ -393,13 +399,12 @@ describe("quality commands", () => {
     });
   });
 
-  it("spec.model.json 损坏时 verify 不回退到 Markdown", async () => {
+  it("spec.json 模型损坏时 verify 不回退到 Markdown", async () => {
     const { root, core } = await builtProject();
-    await writeFile(
-      join(root, ".sdd/changes/add-cancel/spec.model.json"),
-      '{"title":"损坏","requirements":"不是数组"}\n',
-      "utf8",
-    );
+    const path = join(root, ".sdd/changes/add-cancel/spec.json");
+    const compact = JSON.parse(await readFile(path, "utf8"));
+    compact.model = { title: "损坏", requirements: "不是数组" };
+    await writeFile(path, `${JSON.stringify(compact, null, 2)}\n`, "utf8");
 
     expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
       ok: false,
@@ -409,10 +414,9 @@ describe("quality commands", () => {
 
   it("verify 拒绝任务引用不存在的 Scenario", async () => {
     const { root, core } = await builtProject();
-    const path = join(root, ".sdd/changes/add-cancel/tasks.json");
-    const tasks = JSON.parse(await readFile(path, "utf8"));
-    tasks[0].scenarios = ["REQ-999-SC-001"];
-    await writeFile(path, `${JSON.stringify(tasks, null, 2)}\n`, "utf8");
+    const plan = await readPlan(root);
+    plan.tasks[0]!.scenarios = ["REQ-999-SC-001"];
+    await writePlan(root, plan);
 
     const result = await core.execute({ command: "verify", cwd: root });
 
@@ -423,41 +427,15 @@ describe("quality commands", () => {
     expect(result.error?.message).toContain("REQ-999-SC-001");
   });
 
-  it("legacy：缺少 spec.model.json 时兼容严格 Markdown 规格", async () => {
+  it("缺少 spec.json 时拒绝读取旧结构", async () => {
     const { root, core } = await builtProject();
     const change = join(root, ".sdd/changes/add-cancel");
-    await rm(join(change, "spec.model.json"));
-    await writeFile(
-      join(change, "spec.md"),
-      [
-        "# Legacy Spec",
-        "",
-        "### REQ-001: 旧格式需求",
-        "",
-        "系统 MUST 支持旧格式行为。",
-        "",
-        "#### Scenario: 旧格式场景",
-        "- GIVEN 条件成立",
-        "- WHEN 执行操作",
-        "- THEN 返回结果",
-        "",
-        "### REQ-002: 第二个旧格式需求",
-        "",
-        "系统 MUST 支持第二个旧格式行为。",
-        "",
-        "#### Scenario: 第二个旧格式场景",
-        "- GIVEN 第二个条件成立",
-        "- WHEN 执行第二个操作",
-        "- THEN 返回第二个结果",
-      ].join("\n"),
-      "utf8",
-    );
+    await rm(join(change, "spec.json"));
 
     const result = await core.execute({ command: "verify", cwd: root });
-    expect(result.error).toBeUndefined();
     expect(result).toMatchObject({
-      ok: true,
-      state: "VERIFY_READY",
+      ok: false,
+      error: { code: "E_STATE_CORRUPTED" },
     });
   });
 
@@ -505,11 +483,8 @@ describe("quality commands", () => {
       ),
     ).toContain("## Result\n\nPASS");
     expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/changes/add-cancel/review-report.md.meta.json"),
-          "utf8",
-        ),
+      await new ArtifactWriter().metadata(
+        join(root, ".sdd/changes/add-cancel/review-report.md"),
       ),
     ).toMatchObject({
       schemaVersion: "1.0.0",
@@ -579,9 +554,10 @@ describe("quality commands", () => {
         "utf8",
       ),
     ).toContain("SECRET_LEAK");
-    const tasks = JSON.parse(
-      await readFile(join(root, ".sdd/changes/add-cancel/tasks.json"), "utf8"),
-    ) as Array<{ sliceType?: string; failureContext?: { source: string } }>;
+    const tasks = (await readPlan(root)).tasks as Array<{
+      sliceType?: string;
+      failureContext?: { source: string };
+    }>;
     expect(
       tasks.find((task) => task.sliceType === "REPAIR")?.failureContext,
     ).toMatchObject({ source: "REVIEW" });
@@ -622,60 +598,32 @@ describe("quality commands", () => {
       const result = await core.execute({ command: "archive", cwd: root });
 
       expect(result).toMatchObject({ ok: true, state: "ARCHIVED" });
-      await expect(
-        access(join(root, ".sdd/changes/add-cancel/traceability.md")),
-      ).resolves.toBeUndefined();
-      await expect(
-        access(join(root, ".sdd/changes/add-cancel/archive-report.md")),
-      ).resolves.toBeUndefined();
-      expect(
-        JSON.parse(
-          await readFile(
-            join(root, ".sdd/changes/add-cancel/traceability.md.meta.json"),
-            "utf8",
-          ),
-        ),
-      ).toMatchObject({
-        schemaVersion: "1.0.0",
-        generatedBy: "sdd-harness",
-        inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        createdAt: expect.any(String),
-      });
-      expect(
-        JSON.parse(
-          await readFile(
-            join(root, ".sdd/changes/add-cancel/archive-report.md.meta.json"),
-            "utf8",
-          ),
-        ),
-      ).toMatchObject({
-        schemaVersion: "1.0.0",
-        generatedBy: "sdd-harness",
-        inputHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        createdAt: expect.any(String),
-      });
+      const change = join(root, ".sdd/changes/add-cancel");
+      expect((await readdir(change)).sort()).toEqual([
+        ".archived",
+        "archive.json",
+        "archive.md",
+      ]);
       await expect(
         access(join(root, ".sdd/changes/add-cancel/.archived")),
       ).resolves.toBeUndefined();
-      const traceability = await readFile(
-        join(root, ".sdd/changes/add-cancel/traceability.md"),
-        "utf8",
-      );
-      expect(traceability).toMatch(/## REQ-001[\s\S]*### REQ-001-SC-001/);
-      expect(traceability).toContain("RED 任务：");
-      expect(traceability).toContain("最终验证命令：");
-      const archiveReport = await readFile(
-        join(root, ".sdd/changes/add-cancel/archive-report.md"),
-        "utf8",
-      );
+      const archiveReport = await readFile(join(change, "archive.md"), "utf8");
+      expect(archiveReport).toMatch(/## REQ-001[\s\S]*### REQ-001-SC-001/);
+      expect(archiveReport).toContain("RED 任务：");
+      expect(archiveReport).toContain("最终验证命令：");
       expect(archiveReport).toContain("## Policy Traceability");
       expect(archiveReport).toContain("deep-module-design@1.0.0");
       expect(archiveReport).toContain("tdd-task-execution@1.0.0");
       expect(archiveReport).toContain("two-axis-review@1.0.0");
       expect(archiveReport).toContain("Policy Upstream Attribution");
       expect(archiveReport).toContain("Loop Run ID:");
+      expect(
+        JSON.parse(await readFile(join(change, "archive.json"), "utf8")),
+      ).toMatchObject({
+        schemaVersion: "2.0.0",
+        changeId: "add-cancel",
+        quality: { taskResults: expect.any(Array) },
+      });
       expect(
         JSON.parse(
           await readFile(
@@ -804,41 +752,44 @@ describe("quality commands", () => {
     },
   );
 
-  it("归档组写中途失败不会暴露半套主制品", async () => {
+  it("重复归档会清除 marker 发布后遗留的展开制品", async () => {
     const { root, core } = await builtProject();
     await core.execute({ command: "verify", cwd: root });
     await core.execute({ command: "review", cwd: root });
-    const originalWrite = ArtifactWriter.prototype.write;
-    vi.spyOn(ArtifactWriter.prototype, "write").mockImplementation(
-      async function (this: ArtifactWriter, path, ...args) {
-        if (path.includes("archive-report.md.tmp-"))
-          throw new Error("注入组写失败");
-        return originalWrite.call(this, path, ...args);
+    const change = join(root, ".sdd/changes/add-cancel");
+    expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
+      {
+        ok: true,
+        state: "ARCHIVED",
       },
     );
+    await writeFile(join(change, "遗留制品.md"), "stale\n", "utf8");
 
     expect(await core.execute({ command: "archive", cwd: root })).toMatchObject(
-      { ok: false },
+      {
+        ok: true,
+        state: "ARCHIVED",
+      },
     );
-    const change = join(root, ".sdd/changes/add-cancel");
-    await expect(access(join(change, "traceability.md"))).rejects.toThrow();
-    await expect(access(join(change, "archive-report.md"))).rejects.toThrow();
-    await expect(access(join(change, ".archived"))).rejects.toThrow();
+    expect((await readdir(change)).sort()).toEqual([
+      ".archived",
+      "archive.json",
+      "archive.md",
+    ]);
   });
 
   it("verify 对深层 task schema 错误返回稳定路径", async () => {
     const { root, core } = await builtProject();
-    const path = join(root, ".sdd/changes/add-cancel/tasks.json");
-    const tasks = JSON.parse(await readFile(path, "utf8"));
-    tasks[0].scenarios = null;
-    await writeFile(path, JSON.stringify(tasks));
+    const plan = await readPlan(root);
+    plan.tasks[0]!.scenarios = null;
+    await writePlan(root, plan);
 
     const result = await core.execute({ command: "verify", cwd: root });
     expect(result).toMatchObject({
       ok: false,
       error: { code: "E_STATE_CORRUPTED" },
     });
-    expect(result.error?.message).toContain("tasks.json[0].scenarios");
+    expect(result.error?.message).toContain("plan.json.tasks[0].scenarios");
   });
 
   it("review 重复执行前仍会深层校验持久化任务结果", async () => {
@@ -862,10 +813,9 @@ describe("quality commands", () => {
 
   it("verify 拒绝不存在的任务依赖", async () => {
     const { root, core } = await builtProject();
-    const path = join(root, ".sdd/changes/add-cancel/tasks.json");
-    const tasks = JSON.parse(await readFile(path, "utf8"));
-    tasks[0].dependsOn = ["TASK-GHOST"];
-    await writeFile(path, JSON.stringify(tasks));
+    const plan = await readPlan(root);
+    plan.tasks[0]!.dependsOn = ["TASK-GHOST"];
+    await writePlan(root, plan);
 
     const result = await core.execute({ command: "verify", cwd: root });
     expect(result).toMatchObject({
@@ -877,10 +827,10 @@ describe("quality commands", () => {
 
   it("verify 拒绝非稳定顺序的 model ID", async () => {
     const { root, core } = await builtProject();
-    const path = join(root, ".sdd/changes/add-cancel/spec.model.json");
-    const model = JSON.parse(await readFile(path, "utf8"));
-    model.requirements[0].id = "REQ-999";
-    await writeFile(path, JSON.stringify(model));
+    const path = join(root, ".sdd/changes/add-cancel/spec.json");
+    const compact = JSON.parse(await readFile(path, "utf8"));
+    compact.model.requirements[0].id = "REQ-999";
+    await writeFile(path, JSON.stringify(compact));
 
     const result = await core.execute({ command: "verify", cwd: root });
     expect(result).toMatchObject({
@@ -1018,10 +968,12 @@ describe("quality commands", () => {
         changeId: "extend-cancel",
       });
       expect(
-        await readFile(
-          join(root, ".sdd/changes/extend-cancel/proposal.md"),
-          "utf8",
-        ),
+        JSON.parse(
+          await readFile(
+            join(root, ".sdd/changes/extend-cancel/spec.json"),
+            "utf8",
+          ),
+        ).proposal,
       ).toContain("add-cancel");
     },
   );

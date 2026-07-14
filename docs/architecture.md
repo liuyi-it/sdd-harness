@@ -16,9 +16,9 @@ Codex Skill ──────┘                 ├─ SpecEngine
 - `.sdd/loop/`：`auto` Loop 规格与运行历史，记录当前运行、恢复、重启和逐步审计信息。
 - `.sdd/index/mcp-capabilities.json` / `codebase-diagnostics.json`：固定版 MCP 的能力发现和连接诊断。
 
-`build` 前会把项目规则、目录规范、代码摘要和变更制品重新打包为 Context Pack；只要规则哈希、目录规范哈希或源码输入哈希变化，Context Pack 就会自动刷新。
+`build next` 只为即将执行的任务把项目规则、目录规范、代码摘要和变更制品打包为 Context Pack；只要规则哈希、目录规范哈希或源码输入哈希变化，Context Pack 就会自动刷新。
 
-Core 会把所有流程事实写入 `.sdd/`。每个 Markdown 制品都配套元数据文件，记录输入摘要与制品 SHA-256。状态文件更新采用临时文件写入、落盘、重命名加备份恢复策略；所有写命令都必须先获取 `.sdd/lock`。
+Core 会把所有流程事实写入 `.sdd/`，并按命令实际需要惰性创建子目录。制品摘要集中记录在 `.sdd/artifacts.json`，不再为每个制品生成 sidecar 文件。状态文件更新采用临时文件写入、落盘、重命名加备份恢复策略；所有写命令都必须先获取 `.sdd/lock`。
 
 ## 上游能力内置边界
 
@@ -31,23 +31,23 @@ OpenSpec 快照 ──> openspec model/parser/validator/renderer ──> SpecEng
 Superpowers 快照 ──> protocol/planner/project-commands ──────> TddEngine
 ```
 
-SpecEngine 生成 Requirement、Scenario、delta 和 `spec.model.json`；TddEngine 根据真实代码路径生成 RED、GREEN、REFACTOR、VERIFY 原子任务。上游默认目录和宿主脚本不会成为事实源，最终制品仍只写入 `.sdd/`。
+SpecEngine 生成 Requirement、Scenario 和 delta，统一写入 `spec.json`；TddEngine 根据真实代码路径生成 RED、GREEN、REFACTOR、VERIFY 原子任务，统一写入 `plan.json`。上游默认目录和宿主脚本不会成为事实源，最终制品仍只写入 `.sdd/`。
 
 ## 质量与归档数据流
 
 ```text
-Spec model
+spec.json
   -> Requirement / Scenario
   -> 四阶段 Task 链
   -> Context Pack + 项目规则 / 目录规范
   -> TaskExecutor v2 / v1 normalize
   -> Git delta 裁决后的任务结果
   -> verifyGate / reviewGate / drift
-  -> traceability.md / archive-report.md
-  -> .archived + ARCHIVED state
+  -> archive.json / archive.md / .archived
+  -> ARCHIVED state
 ```
 
-任务结果在进入质量闸门前进行深层结构校验。TaskExecutor 仍可返回 v1 结果，但 Core 会统一归一化为 1.2.0 运行级制品，并仅允许结构化 `{ command, args }` 命令证据进入归档链路。归档会在同一写锁内重新验证报告 metadata、Git 快照、文件范围和追踪闭环。追踪与归档报告使用临时文件、fsync、备份和 rename 组提交；如果 marker 已写而状态更新失败，下一次 `archive` 会根据有效 marker 收敛状态，避免 `.archived` 与 `state.json` 分裂。
+任务结果在进入质量闸门前进行深层结构校验。TaskExecutor 仍可返回 v1 结果，但 Core 会统一归一化为 1.2.0 运行级制品，并仅允许结构化 `{ command, args }` 命令证据进入归档链路。归档会在同一写锁内重新验证报告摘要、Git 快照、文件范围和追踪闭环，再将全部规格、设计、计划、证据与快照压缩到 `archive.json`，将归档报告与追踪矩阵合并到 `archive.md`，最终仅保留这两个文件和 `.archived`。如果 marker 已写而状态更新失败，下一次 `archive` 会根据有效 marker 收敛状态。
 
 二期 B 在这条链路上增加了三层安全/质量边界：
 
@@ -60,10 +60,10 @@ Spec model
 - `workflow.gitIsolation` 可声明 `createBranch`、`createWorktree`、`branchPattern` 和 `worktreeDir`。
 - `GitIsolationManager` 负责创建或安全复用 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`；遇到脏 worktree、基线漂移或注册不一致时直接阻断。
 - `build` / `verify` / `review` 读取 `state.workspace`，把业务目录切到 worktree；`.sdd/` 制品和状态仍只写 controlRoot。
-- `archive-report.md` 会额外记录 `branchName`、`worktreePath` 和业务目录最终 `HEAD`，但不会自动 merge、push 或删除 worktree。
+- `archive.md` 会额外记录 `branchName`、`worktreePath` 和业务目录最终 `HEAD`，但不会自动 merge、push 或删除 worktree。
 
 # 第五期 Policy 层
 
 Core/LoopEngine 仍是唯一流程编排者。每个现有命令通过 `PhasePolicyRegistry` 解析 Policy ID，由 `@sdd-harness/agent-policies` 编译为 `PolicyBundle`；Adapter 只声明宿主 capability 和安装位置。依赖方向固定为 `core → agent-policies → agent-protocol types`，Policy 包不得依赖 StateStore、Git writer 或 worktree manager。
 
-Context Pack v2 只引用仓库内的 spec、design、plan、impact 和 codebase 制品，并记录任务范围、verification、Policy refs 与 digest。`verify`/`review` 的可恢复失败追加 `REPAIR` 任务，仍由现有 Build 协议执行；失败签名预算耗尽或需要扩大范围时暂停等待用户决策。
+Context Pack v2 只引用仓库内的 `spec.json`、`design.md`、`plan.json` 和 codebase 制品，并记录任务范围、verification、Policy refs 与 digest。它在 `build next` 时按任务生成，不在 `plan` 阶段批量落盘。`verify`/`review` 的可恢复失败追加 `REPAIR` 任务，仍由现有 Build 协议执行；失败签名预算耗尽或需要扩大范围时暂停等待用户决策。

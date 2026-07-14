@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { CodebaseAdapter } from "../src/codebase/codebase-adapter.js";
 import { Core } from "../src/core.js";
+import { ArtifactWriter } from "../src/artifacts/artifact-writer.js";
 import { sha256Hex } from "../src/dependency-integrity.js";
 
 // 初始化测试覆盖首次建仓、幂等修复以及生成文件与版本元数据的契约。
@@ -197,41 +198,27 @@ describe("init and status", () => {
     for (const path of [
       ".sdd/config.yml",
       ".sdd/state.json",
+      ".sdd/artifacts.json",
       ".sdd/index/codebase-summary.md",
-      ".sdd/index/codebase-summary.md.meta.json",
       ".sdd/index/package-structure.md",
-      ".sdd/index/package-structure.md.meta.json",
       ".sdd/index/architecture.md",
-      ".sdd/index/architecture.md.meta.json",
       ".sdd/index/codebase-diagnostics.json",
       ".sdd/logs/audit.log",
-      ".sdd/changes",
-      ".sdd/context-packs",
-      ".sdd/runs",
-      ".sdd/plugins",
       ".sdd/adapters",
       ".sdd/adapters/codebase-memory-mcp/integrity.json",
       ".sdd/schemas/config.schema.json",
       ".sdd/schemas/state.schema.json",
       "CLAUDE.md",
-      "CLAUDE.md.meta.json",
       "AGENTS.md",
-      "AGENTS.md.meta.json",
       ".claude/commands/sdd.init.md",
-      ".claude/commands/sdd.init.md.meta.json",
       ".claude/commands/sdd.status.md",
       ".claude/skills/sdd-harness/SKILL.md",
-      ".claude/skills/sdd-harness/SKILL.md.meta.json",
       ".codex/commands/sdd.init.md",
-      ".codex/commands/sdd.init.md.meta.json",
       ".codex/commands/sdd.status.md",
       ".codex/skills/sdd-harness/SKILL.md",
-      ".codex/skills/sdd-harness/SKILL.md.meta.json",
       ".opencode/commands/sdd.init.md",
-      ".opencode/commands/sdd.init.md.meta.json",
       ".opencode/commands/sdd.status.md",
       ".opencode/skills/sdd-harness/SKILL.md",
-      ".opencode/skills/sdd-harness/SKILL.md.meta.json",
     ]) {
       await expect(access(join(root, path))).resolves.toBeUndefined();
     }
@@ -262,11 +249,8 @@ describe("init and status", () => {
       indexed: false,
     });
     expect(
-      JSON.parse(
-        await readFile(
-          join(root, ".sdd/index/codebase-summary.md.meta.json"),
-          "utf8",
-        ),
+      await new ArtifactWriter().metadata(
+        join(root, ".sdd/index/codebase-summary.md"),
       ),
     ).toMatchObject({
       schemaVersion: "1.0.0",

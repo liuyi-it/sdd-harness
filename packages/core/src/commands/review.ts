@@ -6,6 +6,7 @@ import {
   ArtifactWriter,
   artifactInputHash,
 } from "../artifacts/artifact-writer.js";
+import { readCompactPlan } from "../artifacts/change-artifacts.js";
 import { type CommandResult } from "../contracts.js";
 import { SddError } from "../errors.js";
 import {
@@ -88,11 +89,11 @@ export async function runReview(
     const resultBundle = await withTimeout(
       (async () => {
         const currentSnapshot = await new GitInspector(businessRoot).snapshot();
-        const [rawTasks, rawResults] = await Promise.all([
-          readFile(join(change, "tasks.json"), "utf8"),
+        const [plan, rawResults] = await Promise.all([
+          readCompactPlan(change),
           readFile(join(change, "task-results.json"), "utf8"),
         ]);
-        const tasks = parseTasks(rawTasks);
+        const tasks = parseTasks(JSON.stringify(plan.tasks));
         const results = parseTaskResults(rawResults);
         assertTaskResultIds(tasks, results);
         const rawSpec = await readFile(join(change, "spec.md"), "utf8");

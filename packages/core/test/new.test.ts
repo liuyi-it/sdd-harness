@@ -50,19 +50,21 @@ describe("sdd new", () => {
       state: "CLARIFYING",
       next: "sdd new",
     });
-    expect(
-      await readFile(
-        join(root, ".sdd/changes/add-cancel/questions.md"),
-        "utf8",
-      ),
-    ).toContain("BLOCKER");
+    const compact = JSON.parse(
+      await readFile(join(root, ".sdd/changes/add-cancel/spec.json"), "utf8"),
+    );
+    expect(compact).toMatchObject({
+      schemaVersion: "2.0.0",
+      status: "CLARIFYING",
+    });
+    expect(compact.questions).toContain("BLOCKER");
     const [runId] = await readdir(join(root, ".sdd/runs"));
     expect(runId).toBeDefined();
     await expect(
       access(join(root, ".sdd/runs", runId!, "input.md")),
     ).resolves.toBeUndefined();
     await expect(
-      access(join(root, ".sdd/runs", runId!, "input.md.meta.json")),
+      access(join(root, ".sdd/artifacts.json")),
     ).resolves.toBeUndefined();
     await expect(
       access(join(root, ".sdd/changes/add-cancel/spec.md")),
@@ -104,7 +106,7 @@ describe("sdd new", () => {
     expect(spec).toContain("### Requirement:");
     expect(spec).toContain("#### Scenario:");
     await expect(
-      access(join(root, ".sdd/changes/add-cancel/spec.md.meta.json")),
+      access(join(root, ".sdd/artifacts.json")),
     ).resolves.toBeUndefined();
   });
 
@@ -142,29 +144,13 @@ describe("sdd new", () => {
     });
 
     expect(result.state).toBe("SPEC_READY");
-    for (const artifact of [
-      "proposal.md",
-      "questions.md",
-      "answers.md",
-      "assumptions.md",
-      "impact.md",
-      "spec.md",
-      "spec.delta.md",
-      "spec.model.json",
-    ]) {
+    for (const artifact of ["spec.md", "spec.json"]) {
       await expect(
         access(join(root, ".sdd/changes/add-order-cancellation", artifact)),
       ).resolves.toBeUndefined();
       expect(
-        JSON.parse(
-          await readFile(
-            join(
-              root,
-              ".sdd/changes/add-order-cancellation",
-              `${artifact}.meta.json`,
-            ),
-            "utf8",
-          ),
+        await new ArtifactWriter().metadata(
+          join(root, ".sdd/changes/add-order-cancellation", artifact),
         ),
       ).toMatchObject({
         schemaVersion: "1.0.0",
@@ -176,18 +162,15 @@ describe("sdd new", () => {
     }
 
     const change = join(root, ".sdd/changes/add-order-cancellation");
-    const proposal = await readFile(join(change, "proposal.md"), "utf8");
-    expect(proposal).toContain("bounded-clarification");
-    expect(proposal).toContain("spec-authoring");
-    const spec = await readFile(join(change, "spec.md"), "utf8");
-    expect(await readFile(join(change, "spec.delta.md"), "utf8")).toBe(spec);
-    const model = JSON.parse(
-      await readFile(join(change, "spec.model.json"), "utf8"),
-    ) as { requirements: unknown[] };
-    expect(model.requirements.length).toBeGreaterThanOrEqual(3);
-    expect(await readFile(join(change, "spec.model.json"), "utf8")).toBe(
-      `${JSON.stringify(model, null, 2)}\n`,
+    const compact = JSON.parse(
+      await readFile(join(change, "spec.json"), "utf8"),
     );
+    expect(compact.proposal).toContain("bounded-clarification");
+    expect(compact.proposal).toContain("spec-authoring");
+    const spec = await readFile(join(change, "spec.md"), "utf8");
+    expect(compact.delta.trimEnd()).toBe(spec.trimEnd());
+    const model = compact.model as { requirements: unknown[] };
+    expect(model.requirements.length).toBeGreaterThanOrEqual(3);
   });
 
   it("protects manually edited structured artifacts and honors force", async () => {
@@ -197,17 +180,19 @@ describe("sdd new", () => {
     const firstChange = join(first.root, ".sdd/changes/protected-spec");
     const writer = new ArtifactWriter();
     await writer.write(join(firstChange, "spec.md"), "# old spec", {});
-    await writer.write(join(firstChange, "spec.delta.md"), "# old delta", {});
     await writer.write(
-      join(firstChange, "spec.model.json"),
-      '{"old":true}',
+      join(firstChange, "spec.json"),
+      JSON.stringify({
+        schemaVersion: "2.0.0",
+        status: "READY",
+        requirement,
+        proposal: "old",
+        impact: "old",
+        questions: "old",
+        delta: "# 人工修改",
+        model: { title: "old", requirements: [] },
+      }),
       {},
-    );
-    await writeFile(join(firstChange, "spec.delta.md"), "# 人工修改\n", "utf8");
-    await writeFile(
-      join(firstChange, "spec.model.json"),
-      '{"manual":true}\n',
-      "utf8",
     );
 
     const protectedResult = await first.core.execute({
@@ -221,30 +206,25 @@ describe("sdd new", () => {
     });
     // 没有 candidate 文件，直接就地合并覆盖
     await expect(
-      access(join(firstChange, "spec.delta.md.candidate.md")),
-    ).rejects.toThrow();
-    await expect(
-      access(join(firstChange, "spec.model.json.candidate.md")),
+      access(join(firstChange, "spec.json.candidate.json")),
     ).rejects.toThrow();
 
     const second = await initializedProject();
     const secondChange = join(second.root, ".sdd/changes/forced-spec");
     await writer.write(join(secondChange, "spec.md"), "# old spec", {});
-    await writer.write(join(secondChange, "spec.delta.md"), "# old delta", {});
     await writer.write(
-      join(secondChange, "spec.model.json"),
-      '{"old":true}',
+      join(secondChange, "spec.json"),
+      JSON.stringify({
+        schemaVersion: "2.0.0",
+        status: "READY",
+        requirement,
+        proposal: "old",
+        impact: "old",
+        questions: "old",
+        delta: "# 人工修改",
+        model: { title: "old", requirements: [] },
+      }),
       {},
-    );
-    await writeFile(
-      join(secondChange, "spec.delta.md"),
-      "# 人工修改\n",
-      "utf8",
-    );
-    await writeFile(
-      join(secondChange, "spec.model.json"),
-      '{"manual":true}\n',
-      "utf8",
     );
 
     const forcedResult = await second.core.execute({
@@ -254,12 +234,11 @@ describe("sdd new", () => {
     });
 
     expect(forcedResult.state).toBe("SPEC_READY");
-    expect(
-      await readFile(join(secondChange, "spec.delta.md"), "utf8"),
-    ).toContain("## ADDED Requirements");
-    expect(
-      JSON.parse(await readFile(join(secondChange, "spec.model.json"), "utf8")),
-    ).toMatchObject({ title: "Requested Change" });
+    const forced = JSON.parse(
+      await readFile(join(secondChange, "spec.json"), "utf8"),
+    );
+    expect(forced.delta).toContain("## ADDED Requirements");
+    expect(forced.model).toMatchObject({ title: "Requested Change" });
   });
 
   it("repeats structured artifact generation idempotently", async () => {
@@ -270,15 +249,12 @@ describe("sdd new", () => {
       changeId: "idempotent-spec",
     };
     await core.execute({ command: "new", cwd: root, args });
-    const metadataPath = join(
-      root,
-      ".sdd/changes/idempotent-spec/spec.model.json.meta.json",
-    );
+    const artifactPath = join(root, ".sdd/changes/idempotent-spec/spec.json");
 
     const repeated = await core.execute({ command: "new", cwd: root, args });
 
     expect(repeated).toMatchObject({ ok: true, state: "SPEC_READY" });
-    const after = JSON.parse(await readFile(metadataPath, "utf8"));
+    const after = await new ArtifactWriter().metadata(artifactPath);
     expect(after).toMatchObject({
       schemaVersion: "1.0.0",
       generatedBy: "sdd-harness",
@@ -323,21 +299,13 @@ describe("sdd new", () => {
     await core.execute({ command: "new", cwd: root, args });
     const change = join(root, ".sdd/changes/summary-isolation");
     const metadata = async (name: string) =>
-      JSON.parse(await readFile(join(change, `${name}.meta.json`), "utf8")) as {
-        inputHash: string;
-      };
+      (await new ArtifactWriter().metadata(join(change, name)))!;
     const before = Object.fromEntries(
       await Promise.all(
-        [
-          "proposal.md",
-          "questions.md",
-          "answers.md",
-          "assumptions.md",
-          "spec.md",
-          "spec.delta.md",
-          "spec.model.json",
-          "impact.md",
-        ].map(async (name) => [name, (await metadata(name)).inputHash]),
+        ["spec.md", "spec.json"].map(async (name) => [
+          name,
+          await metadata(name),
+        ]),
       ),
     );
     await writeFile(
@@ -348,25 +316,14 @@ describe("sdd new", () => {
 
     await core.execute({ command: "new", cwd: root, args });
 
-    for (const name of [
-      "proposal.md",
-      "questions.md",
-      "answers.md",
-      "assumptions.md",
-      "spec.md",
-      "spec.delta.md",
-      "spec.model.json",
-    ]) {
-      expect((await metadata(name)).inputHash).toBe(before[name]);
-    }
-    expect((await metadata("impact.md")).inputHash).not.toBe(
-      before["impact.md"],
+    expect((await metadata("spec.md")).inputHash).toBe(
+      (before["spec.md"] as { inputHash: string }).inputHash,
+    );
+    expect((await metadata("spec.json")).inputHash).not.toBe(
+      (before["spec.json"] as { inputHash: string }).inputHash,
     );
     await expect(
-      access(join(change, "spec.delta.md.candidate.md")),
-    ).rejects.toThrow();
-    await expect(
-      access(join(change, "spec.model.json.candidate.md")),
+      access(join(change, "spec.json.candidate.json")),
     ).rejects.toThrow();
   });
 

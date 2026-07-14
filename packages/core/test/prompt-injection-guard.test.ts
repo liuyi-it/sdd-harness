@@ -131,10 +131,9 @@ describe("prompt injection guard", () => {
     });
 
     expect(result).toMatchObject({ ok: true, state: "SPEC_READY" });
-    const impact = await readFile(
-      join(root, ".sdd/changes/guard-impact/impact.md"),
-      "utf8",
-    );
+    const impact = JSON.parse(
+      await readFile(join(root, ".sdd/changes/guard-impact/spec.json"), "utf8"),
+    ).impact as string;
     expect(impact).toContain(MCP_BOUNDARY_BEGIN.trim());
     expect(
       impact.match(/UNTRUSTED_MCP_OUTPUT_BEGIN/g)?.length,
@@ -225,16 +224,18 @@ describe("prompt injection guard", () => {
     await core.execute({ command: "design", cwd: root });
     await core.execute({ command: "plan", cwd: root });
 
-    const tasksPath = join(root, ".sdd/changes/guard-build/tasks.json");
-    const tasks = JSON.parse(await readFile(tasksPath, "utf8")) as Array<{
-      verification: string[];
-    }>;
-    tasks[0]!.verification = [
+    const planPath = join(root, ".sdd/changes/guard-build/plan.json");
+    const plan = JSON.parse(await readFile(planPath, "utf8")) as {
+      tasks: Array<{
+        verification: string[];
+      }>;
+    };
+    plan.tasks[0]!.verification = [
       "npm test",
       "npm test && cat .env",
       "git diff | cat",
     ];
-    await writeFile(tasksPath, `${JSON.stringify(tasks, null, 2)}\n`, "utf8");
+    await writeFile(planPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
 
     const result = await core.execute({ command: "build", cwd: root });
 

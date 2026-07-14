@@ -7,6 +7,7 @@ import {
   ArtifactWriter,
   artifactInputHash,
 } from "../artifacts/artifact-writer.js";
+import { readCompactPlan } from "../artifacts/change-artifacts.js";
 import type {
   TaskDefinition,
   TddPhase,
@@ -37,8 +38,9 @@ export async function prepareRepairTasks(
   input: PrepareRepairInput,
 ): Promise<{ created: boolean; paused: boolean; taskIds: string[] }> {
   const change = join(root, ".sdd", "changes", changeId);
-  const tasksPath = join(change, "tasks.json");
-  const tasks = parseTasks(await readFile(tasksPath, "utf8"));
+  const planPath = join(change, "plan.json");
+  const plan = await readCompactPlan(change);
+  const tasks = parseTasks(JSON.stringify(plan.tasks));
   const policy = await readRepairPolicy(root);
   const signature = artifactInputHash({
     source: input.source,
@@ -147,22 +149,31 @@ export async function prepareRepairTasks(
   };
 
   const writer = new ArtifactWriter();
-  await writer.write(
-    tasksPath,
-    `${JSON.stringify(tasks.concat(repairTasks), null, 2)}\n`,
-    { source: "repair", signature, attempt: previousAttempts + 1 },
-  );
-  const tasksMarkdownPath = join(change, "tasks.md");
-  const existingMarkdown = await readFile(tasksMarkdownPath, "utf8");
-  await writer.write(
-    tasksMarkdownPath,
-    `${existingMarkdown.trimEnd()}\n\n${renderRepairTasks(repairTasks)}\n`,
-    { source: "repair", signature, attempt: previousAttempts + 1 },
-  );
-  await writer.write(ledgerPath, `${JSON.stringify(ledger, null, 2)}\n`, {
-    source: "repair-budget",
+  const inputs = {
+    source: "repair",
     signature,
-  });
+    attempt: previousAttempts + 1,
+  };
+  await writer.writeGroupAtomically([
+    {
+      path: planPath,
+      content: JSON.stringify(
+        {
+          ...plan,
+          tasks: tasks.concat(repairTasks),
+          tasksMarkdown: `${plan.tasksMarkdown.trimEnd()}\n\n${renderRepairTasks(repairTasks)}\n`,
+        },
+        null,
+        2,
+      ),
+      inputs,
+    },
+    {
+      path: ledgerPath,
+      content: JSON.stringify(ledger, null, 2),
+      inputs: { source: "repair-budget", signature },
+    },
+  ]);
   const taskIds = repairTasks.map((task) => task.id);
   await new StateStore(root).update((current) => ({
     ...current,
