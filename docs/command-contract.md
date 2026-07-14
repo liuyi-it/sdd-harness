@@ -1,13 +1,53 @@
-# 命令契约
+# 命令与制品契约
 
-公开命令包括 `init`、`auto`、`new`、`design`、`plan`、`build`、`verify`、`review`、`archive` 与 `status`。
+公开工作流命令为 `init`、`status`、`new`、`design`、`plan`、`build`、`verify`、`review`、`archive`、`auto` 和 `codebase`。CLI、Adapter 与 Core API 最终都使用同一个 `CommandRequest` / `CommandResult` 契约。
 
-通用参数包括 `--json`、`--non-interactive`、`--force`、`--timeout <seconds>`、`--change <id>` 和 `--verbose`。Claude Code 使用 `/sdd.<command>`，Codex 使用 `sdd <command>`。两个适配器都会生成相同的 `CommandRequest`，并返回相同结构的 `CommandResult`。
+## CommandResult
 
-`CommandResult` 包含 `ok`、`state`、`exitCode`，以及可选的 `changeId`、`next`、`data`、`warnings` 和结构化 `error`。退出码定义遵循 `需求文档.md`，其中 `124` 表示超时，`130` 表示用户中断。
+每次调用返回：
 
-`new` 成功后生成供人工阅读的 `spec.md` 和机器事实源 `spec.json`；后者集中保存 proposal、impact、澄清信息、delta 与 Requirement/Scenario 模型。`plan` 只生成 `plan.json`，其中每个任务包含 `phase`、Requirement、Scenario、依赖、精确文件范围和验证命令，并同时保存可读计划、测试计划与上下文摘要。
+- `ok`、`state`、`exitCode`：必填结果字段。
+- `changeId`、`next`、`data`：可选流程信息。
+- `warnings`：降级或诊断信息。
+- `actionRequired`：需要 Agent 执行任务时返回。
+- `error`：稳定错误码、消息和建议命令。
 
-`TaskExecutor` 返回值必须包含 `tddEvidence`。RED 阶段至少有一条 `passed=false` 且 `expectedFailure=true` 的证据；GREEN、REFACTOR、VERIFY 必须通过且不得声明预期失败；VERIFY 还必须提供最终 `verification`。违反协议返回 `E_TDD_EVIDENCE_REQUIRED`（退出码 `7`）。
+CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
-`verify` 读取 `spec.json` 作为规格事实源，并检查场景级任务与证据覆盖。`archive` 不仅检查已有 PASS 报告，还会重新验证报告摘要、任务结果、Git 快照、漂移和追踪链，然后把机器数据压缩到 `archive.json`、把归档报告与追踪矩阵合并到 `archive.md`，最终仅保留这两个文件和 `.archived`。
+## 规格与计划
+
+- `new` 写入人工可读的 `spec.md` 和机器事实源 `spec.json`。
+- `design` 写入 `design.md`。
+- `plan` 只写入 `plan.json`，不批量创建 Context Pack。
+- `build next` 为选中的任务按需生成 Context Pack，并返回 `AGENT_TASK_EXECUTION`。
+
+新结构不读取旧的多文件规格/计划布局。
+
+## AgentTaskExecution
+
+`actionRequired` 至少包含任务 ID、变更 ID、Context Pack 路径、允许/期望新增/禁止文件、结构化 verification、结果文件路径、codebase 状态和可选 Policy Bundle。
+
+TaskExecutionResult 必须带有任务状态、文件变化、命令证据和 TDD evidence：
+
+- RED 至少包含一条 `passed=false`、`expectedFailure=true` 的证据。
+- GREEN、REFACTOR、VERIFY 的阶段证据必须通过，且不能声明预期失败。
+- VERIFY 必须提供最终 verification。
+- 实际文件范围以 Git delta 为事实源，Agent 声明不能扩大权限。
+
+违反任务证据契约返回 `E_TDD_EVIDENCE_REQUIRED`；越权文件或命令返回相应安全错误。
+
+## 验证、审查与修复
+
+`verify` 读取 `spec.json` 和 `plan.json`，检查场景级任务与证据覆盖。`review` 在 verify 快照基础上执行确定性审查、工程判断和敏感信息扫描。
+
+可恢复的 verify/review 失败会在 `plan.json` 中追加 REPAIR 任务，并回到构建协议；重复失败达到预算或需要扩大范围时进入 `PAUSED`。
+
+## 归档
+
+`archive` 重新验证 PASS 报告、任务结果、Git 快照、漂移和追踪链，然后生成：
+
+- `archive.json`：完整机器归档。
+- `archive.md`：归档报告与追踪矩阵。
+- `.archived`：归档时间、状态摘要和组合内容哈希。
+
+Marker 最后发布。有效 marker 存在但状态尚未更新时，再次执行命令会收敛状态；无效或被篡改的 marker 会被拒绝。

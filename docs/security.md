@@ -9,5 +9,5 @@
 - 审计日志会对 token、密码、secret、API key 和授权字段做脱敏，并按配置大小轮转。
 - `review` 会重新扫描 current-run diff 中的真实文件内容；命中 GitHub token、私钥、JWT、Authorization、数据库密码等规则时生成 `SECRET_LEAK`，阻断归档且报告中不保留原值。
 - worktree 复用时若发现基线漂移、注册路径不一致、路径被占用或存在脏改动，会直接阻断；系统不会自动 `reset`、`clean`、`merge`、`push` 或删除 worktree。
-- `review-report.v1.2.json` / `verify-report.v1.2.json` 是质量闸门的机器可读事实源；即使阶段失败也必须先落盘，避免“失败但无报告”。
+- `review-report.v2.json` / `verify-report.v1.2.json` 是质量闸门的机器可读事实源；即使阶段失败也必须先落盘，避免“失败但无报告”。
 - `codebase-memory-mcp` 的版本工件需要和固定校验清单进行完整性校验。

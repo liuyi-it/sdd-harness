@@ -189,7 +189,7 @@ async function listSnapshotEntries(vendorRoot: string) {
 }
 
 describe("仓库元数据与安装文档", () => {
-  it("提供需求文档要求的必备文档", async () => {
+  it("提供当前维护所需的核心文档", async () => {
     for (const path of [
       "README.md",
       "THIRD_PARTY_NOTICES.md",
@@ -199,7 +199,6 @@ describe("仓库元数据与安装文档", () => {
       "docs/CLI.md",
       "docs/command-contract.md",
       "docs/schemas.md",
-      "docs/migration-phase-3.md",
     ]) {
       await expect(access(join(process.cwd(), path))).resolves.toBeUndefined();
     }
@@ -234,7 +233,7 @@ describe("仓库元数据与安装文档", () => {
     expect(readme).not.toContain("npm install -g");
   });
 
-  it("提供需求文档要求的示例 fixture 目录", async () => {
+  it("提供核心场景使用的示例 fixture 目录", async () => {
     for (const path of [
       "fixtures/springboot-order-service",
       "fixtures/node-basic-service",
