@@ -243,7 +243,8 @@ function nonceValue(): string {
 }
 
 async function syncFile(path: string): Promise<void> {
-  const handle = await open(path, "r");
+  // Windows 的 FlushFileBuffers 不接受只读句柄，使用读写模式保证 fsync 跨平台可用。
+  const handle = await open(path, "r+");
   try {
     await handle.sync();
   } finally {
