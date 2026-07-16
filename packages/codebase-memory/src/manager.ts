@@ -1,5 +1,9 @@
 import type { CliWarning } from "@sdd-harness/core";
-import { startManagedMcp, stopManagedMcp } from "./lifecycle.js";
+import {
+  startManagedMcp,
+  stopManagedMcp,
+  type McpProgressReporter,
+} from "./lifecycle.js";
 import {
   createDiagnostics,
   createDiagError,
@@ -28,8 +32,8 @@ const DEFAULT_CONFIG: CodebaseConfig = {
   storageDir: ".sdd/index/codebase-memory",
   diagnosticsFile: ".sdd/adapters/codebase-memory-mcp/diagnostics.json",
   capabilitiesFile: ".sdd/adapters/codebase-memory-mcp/capabilities.json",
-  // 请求超时而非进程生命周期超时；默认值保证 CLI 在 MCP 不可达时快速降级。
-  timeoutMs: 5000,
+  // 首次 npx 下载和 MCP 冷启动需要留出足够时间。
+  timeoutMs: 60_000,
   fallback: {
     enabled: true,
     provider: "fallback-file-scan",
@@ -57,7 +61,10 @@ export class CodebaseMemoryManager {
   private config: CodebaseConfig;
   private lifecycleResult: McpLifecycleResult | null = null;
 
-  constructor(config: Partial<CodebaseConfig> = {}) {
+  constructor(
+    config: Partial<CodebaseConfig> = {},
+    private readonly onProgress?: McpProgressReporter,
+  ) {
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
 
@@ -80,18 +87,20 @@ export class CodebaseMemoryManager {
       };
     }
 
-    // managed 模式 — 启动 npx codebase-memory-mcp
+    // managed 模式 — 优先使用已安装版本，缺失或失败时回退 npx
     try {
       const result = await startManagedMcp(
         root,
         this.config.version,
         this.config.timeoutMs,
+        this.onProgress === undefined ? {} : { onProgress: this.onProgress },
       );
       this.lifecycleResult = result;
 
       if (result.status === "STARTED" || result.status === "ALREADY_RUNNING") {
         if (result.session === undefined)
           return this.handleUnavailable(root, "MCP 会话未建立", "initialize");
+        this.onProgress?.("MCP 工具可用，正在建立代码库索引…");
         await this.callWithTimeout(
           result.session.call("tools/call", {
             name: "index_repository",
@@ -103,6 +112,7 @@ export class CodebaseMemoryManager {
           }),
           "index_repository",
         );
+        this.onProgress?.("代码库索引已就绪");
         const diag = createDiagnostics({
           version: this.config.version,
           lastStartedAt: new Date().toISOString(),
