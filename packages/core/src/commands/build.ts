@@ -416,7 +416,49 @@ function isValidV2Envelope(record: Record<string, unknown>): boolean {
       (isRecord(mode) &&
         ["subagent", "main-agent"].includes(String(mode.requested)) &&
         ["subagent", "main-agent"].includes(String(mode.actual)))) &&
-    (record.notes === undefined || isStringArray(record.notes))
+    (record.notes === undefined || isStringArray(record.notes)) &&
+    (record.minimality === undefined ||
+      isValidMinimalityEvidence(record.minimality))
+  );
+}
+
+function isValidMinimalityEvidence(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    isStringArray(value.reusedExisting) &&
+    isStringArray(value.standardLibraryChoices) &&
+    isStringArray(value.nativePlatformChoices) &&
+    isRecordArray(value.dependenciesAdded, (item) =>
+      hasStringFields(item, ["name", "manifest", "reason"], ["requiredBy"]),
+    ) &&
+    isRecordArray(value.abstractionsAdded, (item) =>
+      hasStringFields(item, ["name", "file", "reason"], ["consumers"]),
+    ) &&
+    isRecordArray(value.deliberateDebts, (item) =>
+      hasStringFields(item, ["file", "ceiling", "trigger", "upgrade"]),
+    )
+  );
+}
+
+function isRecordArray(
+  value: unknown,
+  predicate: (item: Record<string, unknown>) => boolean,
+): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every((item) => isRecord(item) && predicate(item))
+  );
+}
+
+function hasStringFields(
+  value: Record<string, unknown>,
+  strings: readonly string[],
+  arrays: readonly string[] = [],
+): boolean {
+  return (
+    strings.every(
+      (key) => typeof value[key] === "string" && value[key].trim().length > 0,
+    ) && arrays.every((key) => isStringArray(value[key]))
   );
 }
 
@@ -778,7 +820,13 @@ function toLegacyResult(
   result: TaskExecutionOutput,
 ): TaskExecutionResult {
   if ("modifiedFiles" in result) return result;
-  if (result.legacy !== undefined) return result.legacy;
+  if (result.legacy !== undefined)
+    return {
+      ...result.legacy,
+      ...(result.minimality === undefined
+        ? {}
+        : { minimality: result.minimality }),
+    };
   throw new SddError(
     "E_TDD_EVIDENCE_REQUIRED",
     `任务 ${taskId} 的 v2 执行结果缺少 legacy 证据`,
@@ -1113,6 +1161,9 @@ function parseCompleteResult(
   const schemaVersion = isV2 ? result.schemaVersion : parsed.schemaVersion;
   const resultTaskId = isV2 ? result.taskId : parsed.taskId;
   const status = isV2 ? result.status : parsed.status;
+  const minimality = isV2
+    ? (result.minimality ?? parsed.minimality)
+    : parsed.minimality;
   if (
     typeof schemaVersion !== "string" ||
     resultTaskId !== taskId ||
@@ -1138,7 +1189,8 @@ function parseCompleteResult(
         !Array.isArray(entry) &&
         typeof (entry as Record<string, unknown>).command === "string" &&
         typeof (entry as Record<string, unknown>).passed === "boolean",
-    )
+    ) ||
+    (minimality !== undefined && !isValidMinimalityEvidence(minimality))
   )
     return invalidCompleteResult("TaskExecutionResult 字段类型不合法");
   return {
@@ -1149,6 +1201,7 @@ function parseCompleteResult(
     modifiedFiles: [...parsed.modifiedFiles] as string[],
     tddEvidence: [...parsed.tddEvidence] as TaskResult["tddEvidence"],
     verification: [...parsed.verification] as TaskResult["verification"],
+    ...(minimality === undefined ? {} : { minimality }),
   } as TaskResult;
 }
 
@@ -1383,6 +1436,9 @@ async function buildCompleteTask(
       commandsRun: resultJson.commandsRun ?? [],
       tddEvidence,
       verification,
+      ...(resultJson.minimality === undefined
+        ? {}
+        : { minimality: resultJson.minimality }),
     };
     const idx = existingResults.findIndex((r) => r.taskId === taskId);
     if (idx >= 0) existingResults[idx] = resultEntry;

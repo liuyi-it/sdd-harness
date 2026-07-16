@@ -68,7 +68,7 @@ sdd design --change add-order-cancel
 
 ### `sdd plan`
 
-生成 `plan.json`，其中包含任务、可读计划、测试计划和上下文摘要。此阶段不会批量创建 Context Pack。
+生成 `plan.json`，其中包含任务、可读计划、测试计划、上下文摘要和可选依赖决策。此阶段不会批量创建 Context Pack。
 
 ```bash
 sdd plan --change add-order-cancel
@@ -99,7 +99,7 @@ sdd verify --json
 
 ### `sdd review`
 
-执行确定性代码审查、范围复核和敏感信息扫描。可恢复失败会生成 REPAIR 任务或暂停等待用户决策。
+执行确定性代码审查、范围复核、敏感信息扫描和最小正确实现审查。新增 `package.json` 依赖未在计划中声明时以 `E_UNPLANNED_DEPENDENCY` 阻断；代码规模、依赖升级和 `sdd-debt` 只记录为非阻断 finding。可恢复失败会生成 REPAIR 任务或暂停等待用户决策。
 
 ```bash
 sdd review --json
@@ -107,7 +107,7 @@ sdd review --json
 
 ### `sdd archive`
 
-重新验证质量报告、Git 快照、漂移和追踪闭环，然后将变更目录压缩为 `archive.json`、`archive.md`、`.archived`。
+重新验证质量报告、Git 快照、漂移和追踪闭环，并把改动规模、依赖 delta、`sdd-debt` 与 Policy 来源写入归档，然后将变更目录压缩为 `archive.json`、`archive.md`、`.archived`。
 
 ```bash
 sdd archive --json

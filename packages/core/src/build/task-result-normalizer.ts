@@ -96,6 +96,7 @@ export function normalizeTaskExecutionResult(
       : {
           notes: [options.degradedReason],
         }),
+    ...(raw.minimality === undefined ? {} : { minimality: raw.minimality }),
     legacy: raw,
   };
 }

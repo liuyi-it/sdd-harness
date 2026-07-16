@@ -12,6 +12,7 @@ const policiesRoot = resolve(
 const UPSTREAM_COMMITS = {
   superpowers: "d884ae04edebef577e82ff7c4e143debd0bbec99",
   "mattpocock-skills": "391a2701dd948f94f56a39f7533f8eea9a859c87",
+  ponytail: "14a0d79548d4de8fc2de95c1b94bb0de63a739d3",
 } as const;
 
 export function loadPolicyPrompt(promptFile: string): string {
@@ -153,11 +154,42 @@ export const POLICIES: readonly PhasePolicyDefinition[] = [
     ["superpowers/systematic-debugging", "mattpocock/diagnosing-bugs"],
   ),
   definition(
+    "minimal-implementation",
+    "shared/minimal-implementation.md",
+    ["design", "plan", "build"],
+    ["reuse-decision", "dependency-decision"],
+    "ponytail",
+    [
+      "已确认是否存在可复用实现",
+      "新增依赖具有明确依据",
+      "没有引入无使用者的扩展结构",
+    ],
+    ["ponytail/AGENTS.md", "ponytail/skills/ponytail/SKILL.md"],
+  ),
+  definition(
+    "root-cause-minimal-fix",
+    "failure/root-cause-minimal-fix.md",
+    [],
+    ["root-cause", "affected-callers", "regression-test"],
+    "ponytail",
+    ["已定位共享根因", "已检查相邻调用路径", "已留下回归测试"],
+    ["ponytail/AGENTS.md"],
+  ),
+  definition(
     "two-axis-review",
     "review/two-axis-review.md",
     ["review"],
     ["spec-axis", "standards-axis"],
     "mattpocock-skills",
+  ),
+  definition(
+    "simplicity-review",
+    "review/simplicity-review.md",
+    ["review"],
+    ["simplicity-findings"],
+    "ponytail",
+    ["已完成简洁性审查"],
+    ["ponytail/skills/ponytail-review/SKILL.md"],
   ),
   definition(
     "handoff-and-traceability",
@@ -175,29 +207,36 @@ export const policiesByCommand = {
     "bounded-clarification",
     "spec-authoring",
   ],
-  design: ["core-authority", "deep-module-design"],
+  design: ["core-authority", "deep-module-design", "minimal-implementation"],
   plan: [
     "core-authority",
     "tracer-bullet-planning",
     "expand-contract-migration",
+    "minimal-implementation",
   ],
   build: [
     "core-authority",
     "security-boundaries",
     "context-pack-consumer",
     "tdd-task-execution",
+    "minimal-implementation",
     "evidence-before-completion",
   ],
   verify: ["core-authority", "evidence-before-completion"],
-  review: ["core-authority", "two-axis-review", "evidence-before-completion"],
+  review: [
+    "core-authority",
+    "two-axis-review",
+    "simplicity-review",
+    "evidence-before-completion",
+  ],
   archive: ["core-authority", "handoff-and-traceability"],
 } as const satisfies Record<string, readonly PhasePolicyId[]>;
 
 export const policiesByFailureCode = {
-  E_TEST_FAILED: ["systematic-diagnosis"],
-  E_VERIFY_FAILED: ["systematic-diagnosis"],
-  E_REVIEW_FAILED: ["systematic-diagnosis"],
-  E_BUILD_RESULT_REJECTED: ["systematic-diagnosis"],
+  E_TEST_FAILED: ["systematic-diagnosis", "root-cause-minimal-fix"],
+  E_VERIFY_FAILED: ["systematic-diagnosis", "root-cause-minimal-fix"],
+  E_REVIEW_FAILED: ["systematic-diagnosis", "root-cause-minimal-fix"],
+  E_BUILD_RESULT_REJECTED: ["systematic-diagnosis", "root-cause-minimal-fix"],
 } as const satisfies Record<string, readonly PhasePolicyId[]>;
 
 export const policiesByActionType = {

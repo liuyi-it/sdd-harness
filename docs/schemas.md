@@ -16,7 +16,9 @@
 | `review-issue.schema.json`          | 确定性审查问题                        |
 | `review-report.schema.json`         | `review-report.v2.json`，版本 `2.0.0` |
 
-`spec.json`、`plan.json` 和 `archive.json` 使用各自的 `schemaVersion: "2.0.0"`，由 Core 在读取时执行结构校验。它们不兼容旧的展开式规格/计划目录。
+`spec.json`、`plan.json` 和 `archive.json` 使用各自的 `schemaVersion: "2.0.0"`，由 Core 在读取时执行结构校验。`plan.json.dependencies` 是可选依赖决策数组；`review-report.v2.json.minimality` 是可选的改动规模、依赖 delta 与债务记录。它们不兼容旧的展开式规格/计划目录。
+
+Agent 结果的可选 `minimality` 字段记录复用、标准库/平台选择、依赖、抽象与债务声明。Core 不信任自由文本或 Agent 声明：依赖变化仍由 Git 快照中的 `package.json` 解析确定。
 
 ## 兼容边界
 

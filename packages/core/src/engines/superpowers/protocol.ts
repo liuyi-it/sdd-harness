@@ -34,6 +34,15 @@ export interface PlanArtifacts {
   testPlan: string;
   context: string;
   contextPacks: Record<string, string>;
+  dependencies?: PlannedDependency[];
+}
+
+export interface PlannedDependency {
+  name: string;
+  manifest: string;
+  action: "ADD" | "UPDATE" | "REMOVE";
+  reason: string;
+  requirementIds: string[];
 }
 
 export interface PlanningInput {
@@ -46,6 +55,7 @@ export interface PlanningInput {
     tasksMarkdown: string;
     testPlan: string;
     context: string;
+    dependencies?: PlannedDependency[];
   };
 }
 import type { PolicyBundle, PolicyRef } from "@sdd-harness/agent-policies";

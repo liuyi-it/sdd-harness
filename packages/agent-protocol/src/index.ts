@@ -6,6 +6,10 @@ export type {
   AgentCommandRun,
   AgentTddEvidence,
   AgentVerification,
+  MinimalityEvidence,
+  DependencyDecision,
+  AbstractionDecision,
+  DeliberateDebtDeclaration,
 } from "./types/task-result.js";
 export {
   AgentCapabilityLevel,

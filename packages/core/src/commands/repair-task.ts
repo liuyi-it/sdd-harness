@@ -25,7 +25,7 @@ interface RepairLedger {
 
 export interface PrepareRepairInput {
   source: "VERIFY" | "REVIEW";
-  errorCode: "E_VERIFY_FAILED" | "E_REVIEW_FAILED";
+  errorCode: "E_VERIFY_FAILED" | "E_REVIEW_FAILED" | "E_UNPLANNED_DEPENDENCY";
   message: string;
   failingCommand?: string;
   findingIds?: string[];

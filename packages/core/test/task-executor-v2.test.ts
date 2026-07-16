@@ -111,6 +111,46 @@ describe("task result normalizer", () => {
     });
   });
 
+  it("将 legacy 最小化证据提升到 v2 制品", () => {
+    const minimality = {
+      reusedExisting: ["src/helper.ts"],
+      standardLibraryChoices: ["node:fs"],
+      nativePlatformChoices: [],
+      dependenciesAdded: [],
+      abstractionsAdded: [],
+      deliberateDebts: [],
+    };
+    const artifact = normalizeTaskExecutionResult(
+      {
+        taskId: "TASK-001-GREEN",
+        modifiedFiles: ["src/order.ts"],
+        tddEvidence: [
+          {
+            phase: "GREEN",
+            command: "npm test",
+            passed: true,
+            output: "通过",
+          },
+        ],
+        verification: [],
+        minimality,
+      },
+      {
+        actualFileDelta: {
+          added: [],
+          modified: ["src/order.ts"],
+          deleted: [],
+        },
+        startedAt: "2026-07-06T00:00:00.000Z",
+        endedAt: "2026-07-06T00:00:01.000Z",
+        requestedMode: "main-agent",
+        actualMode: "main-agent",
+      },
+    );
+
+    expect(artifact.minimality).toEqual(minimality);
+  });
+
   it("危险字符串命令会被安全阻断", () => {
     expect(() =>
       normalizeTaskExecutionResult(

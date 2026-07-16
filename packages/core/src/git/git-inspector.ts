@@ -15,6 +15,8 @@ export interface GitSnapshot {
   files: string[];
   hashes: Record<string, string>;
   tracked: string[];
+  /** 仅保留 package.json 快照，以便 review 在不读取历史工作区的情况下比较依赖变化。 */
+  manifests?: Record<string, string | null>;
 }
 
 export class GitInspector {
@@ -52,7 +54,10 @@ export class GitInspector {
         .map((file) => file.replaceAll("\\", "/"))
         .filter((file) => !isInternal(file))
         .sort();
-      return { available: true, files, hashes, tracked };
+      const manifests = await snapshotManifests(this.root, [
+        ...new Set([...tracked, ...files]),
+      ]);
+      return { available: true, files, hashes, tracked, manifests };
     } catch {
       return { available: false, files: [], hashes: {}, tracked: [] };
     }
@@ -83,6 +88,7 @@ export function snapshotFromJson(input: unknown): GitSnapshot | null {
     files?: unknown;
     hashes?: unknown;
     tracked?: unknown;
+    manifests?: unknown;
   };
   if (
     typeof candidate.available !== "boolean" ||
@@ -107,7 +113,44 @@ export function snapshotFromJson(input: unknown): GitSnapshot | null {
           (file): file is string => typeof file === "string",
         )
       : [],
+    ...(isManifestSnapshot(candidate.manifests)
+      ? { manifests: candidate.manifests }
+      : {}),
   };
+}
+
+async function snapshotManifests(
+  root: string,
+  files: readonly string[],
+): Promise<Record<string, string | null>> {
+  const manifests = files.filter(
+    (file) => file === "package.json" || file.endsWith("/package.json"),
+  );
+  const entries = await Promise.all(
+    manifests.map(async (file) => {
+      try {
+        return [file, await readFile(join(root, file), "utf8")] as const;
+      } catch {
+        return [file, null] as const;
+      }
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
+function isManifestSnapshot(
+  value: unknown,
+): value is Record<string, string | null> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.entries(value).every(
+      ([key, content]) =>
+        (key === "package.json" || key.endsWith("/package.json")) &&
+        (typeof content === "string" || content === null),
+    )
+  );
 }
 
 function parsePorcelain(output: string): string[] {

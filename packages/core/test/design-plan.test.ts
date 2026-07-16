@@ -161,6 +161,7 @@ describe("design and plan", () => {
       "core-authority",
       "tracer-bullet-planning",
       "expand-contract-migration",
+      "minimal-implementation",
     ]);
     const state = JSON.parse(
       await readFile(join(root, ".sdd/state.json"), "utf8"),

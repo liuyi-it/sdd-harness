@@ -12,7 +12,10 @@ export type PhasePolicyId =
   | "context-pack-consumer"
   | "systematic-diagnosis"
   | "two-axis-review"
-  | "handoff-and-traceability";
+  | "handoff-and-traceability"
+  | "minimal-implementation"
+  | "root-cause-minimal-fix"
+  | "simplicity-review";
 
 export interface PolicyRef {
   id: PhasePolicyId;

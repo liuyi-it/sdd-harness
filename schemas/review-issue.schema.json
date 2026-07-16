@@ -14,12 +14,16 @@
         "SECURITY",
         "TESTING",
         "BLOCKER",
-        "SECRET_LEAK"
+        "SECRET_LEAK",
+        "UNPLANNED_DEPENDENCY",
+        "COMPLEXITY",
+        "DELIBERATE_DEBT"
       ]
     },
     "severity": { "enum": ["MAJOR", "MINOR", "INFO"] },
     "file": { "type": "string" },
     "task": { "type": "string" },
+    "deterministic": { "type": "boolean" },
     "message": { "type": "string", "minLength": 1 }
   },
   "additionalProperties": false

@@ -277,6 +277,26 @@ export const CANONICAL_SCHEMAS = {
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "minimality": {
+      "type": "object",
+      "required": [
+        "reusedExisting",
+        "standardLibraryChoices",
+        "nativePlatformChoices",
+        "dependenciesAdded",
+        "abstractionsAdded",
+        "deliberateDebts"
+      ],
+      "properties": {
+        "reusedExisting": { "type": "array", "items": { "type": "string" } },
+        "standardLibraryChoices": { "type": "array", "items": { "type": "string" } },
+        "nativePlatformChoices": { "type": "array", "items": { "type": "string" } },
+        "dependenciesAdded": { "type": "array", "items": { "type": "object" } },
+        "abstractionsAdded": { "type": "array", "items": { "type": "object" } },
+        "deliberateDebts": { "type": "array", "items": { "type": "object" } }
+      },
+      "additionalProperties": false
+    },
     "legacy": {
       "type": "object"
     }

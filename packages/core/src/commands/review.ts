@@ -22,6 +22,7 @@ import {
   writeReviewReport,
 } from "../quality/review-report.js";
 import { runDeterministicReview } from "../quality/deterministic-review.js";
+import { runMinimalityReview } from "../quality/minimality-review.js";
 import {
   assertTaskResultIds,
   parseTaskResults,
@@ -118,38 +119,59 @@ export async function runReview(
           baseline,
           currentSnapshot,
         );
+        const minimality = await runMinimalityReview({
+          root: businessRoot,
+          baseline: baseline ?? emptySnapshot(),
+          current: currentSnapshot ?? emptySnapshot(),
+          plannedDependencies: plan.dependencies ?? [],
+          taskResults: results,
+        });
         const reviewReport = createReviewReport({
           changeId,
           fixedPoint: artifactInputHash(currentSnapshot),
-          issues: deterministic.issues.concat(secretIssues),
+          issues: deterministic.issues.concat(secretIssues, minimality.issues),
+          minimality: {
+            metrics: minimality.metrics,
+            dependencyDelta: minimality.dependencies,
+            deliberateDebts: minimality.debts,
+          },
           ...(gate.failures.length === 0
             ? {}
             : {
-                issues: deterministic.issues.concat(secretIssues).concat(
-                  gate.failures.map((failure) =>
-                    failure.includes("未跟踪")
-                      ? {
-                          id: "RV-" + failure,
-                          category: "UNRELATED_CHANGE" as const,
-                          severity: "MAJOR" as const,
-                          axis: "STANDARDS" as const,
-                          message: failure,
-                        }
-                      : {
-                          id: "RV-" + failure,
-                          category: "FILE_SCOPE" as const,
-                          severity: "MAJOR" as const,
-                          axis: "STANDARDS" as const,
-                          message: failure,
-                        },
+                issues: deterministic.issues
+                  .concat(secretIssues, minimality.issues)
+                  .concat(
+                    gate.failures.map((failure) =>
+                      failure.includes("未跟踪")
+                        ? {
+                            id: "RV-" + failure,
+                            category: "UNRELATED_CHANGE" as const,
+                            severity: "MAJOR" as const,
+                            axis: "STANDARDS" as const,
+                            message: failure,
+                          }
+                        : {
+                            id: "RV-" + failure,
+                            category: "FILE_SCOPE" as const,
+                            severity: "MAJOR" as const,
+                            axis: "STANDARDS" as const,
+                            message: failure,
+                          },
+                    ),
                   ),
-                ),
               }),
         });
         await writeReviewReport(root, changeId, reviewReport);
         if (reviewReport.result === "BLOCK") {
+          const code = reviewReport.issues.some(
+            (issue) =>
+              issue.category === "UNPLANNED_DEPENDENCY" &&
+              issue.severity === "MAJOR",
+          )
+            ? "E_UNPLANNED_DEPENDENCY"
+            : "E_REVIEW_FAILED";
           const reviewError = new SddError(
-            "E_REVIEW_FAILED",
+            code,
             reviewReport.message,
             "sdd review",
           ) as SddError & { repairFiles?: string[]; findingIds?: string[] };
@@ -308,12 +330,13 @@ export async function runReview(
     );
     if (started) {
       if (
-        normalized.code === "E_REVIEW_FAILED" &&
+        (normalized.code === "E_REVIEW_FAILED" ||
+          normalized.code === "E_UNPLANNED_DEPENDENCY") &&
         activeChangeId !== undefined
       ) {
         const repair = await prepareRepairTasks(root, activeChangeId, {
           source: "REVIEW",
-          errorCode: "E_REVIEW_FAILED",
+          errorCode: normalized.code,
           message: normalized.message,
           ...(repairFilesFrom(error) === undefined
             ? {}
@@ -357,6 +380,10 @@ function changedUnreportedFiles(
     (file) =>
       baseline.hashes[file] !== current.hashes[file] && !reported.has(file),
   );
+}
+
+function emptySnapshot(): GitSnapshot {
+  return { available: false, files: [], hashes: {}, tracked: [] };
 }
 
 function repairFilesFrom(error: unknown): string[] | undefined {

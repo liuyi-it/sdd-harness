@@ -54,6 +54,19 @@ describe("第三方依赖元数据", () => {
     expect(upstream).toContain("Adapted policies:");
   });
 
+  it("Ponytail 方法论来源、提交与许可证可审计", async () => {
+    const [notice, upstream] = await Promise.all([
+      readFile(join(process.cwd(), "THIRD_PARTY_NOTICES.md"), "utf8"),
+      readFile(join(process.cwd(), "docs/upstream/ponytail.md"), "utf8"),
+    ]);
+    for (const content of [notice, upstream]) {
+      expect(content).toContain("Ponytail");
+      expect(content).toContain("14a0d79548d4de8fc2de95c1b94bb0de63a739d3");
+      expect(content).toContain("MIT");
+    }
+    expect(upstream).toContain("不包含 Ponytail 的 Hooks");
+  });
+
   it("固定完整上游快照的来源、版本与本地修改声明", async () => {
     const expected = {
       openspec: {
@@ -199,6 +212,7 @@ describe("仓库元数据与安装文档", () => {
       "docs/CLI.md",
       "docs/command-contract.md",
       "docs/schemas.md",
+      "docs/upstream/ponytail.md",
     ]) {
       await expect(access(join(process.cwd(), path))).resolves.toBeUndefined();
     }

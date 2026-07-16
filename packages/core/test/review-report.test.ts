@@ -312,6 +312,9 @@ describe("ReviewReport v2 + deterministic review", () => {
       "TESTING",
       "BLOCKER",
       "SECRET_LEAK",
+      "UNPLANNED_DEPENDENCY",
+      "COMPLEXITY",
+      "DELIBERATE_DEBT",
     ]);
   });
 

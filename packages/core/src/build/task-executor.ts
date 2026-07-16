@@ -40,6 +40,31 @@ export interface TaskExecutionResult {
   modifiedFiles: string[];
   tddEvidence: TddEvidence[];
   verification: VerificationEvidence[];
+  minimality?: MinimalityEvidence;
+}
+
+export interface MinimalityEvidence {
+  reusedExisting: string[];
+  standardLibraryChoices: string[];
+  nativePlatformChoices: string[];
+  dependenciesAdded: Array<{
+    name: string;
+    manifest: string;
+    reason: string;
+    requiredBy: string[];
+  }>;
+  abstractionsAdded: Array<{
+    name: string;
+    file: string;
+    consumers: string[];
+    reason: string;
+  }>;
+  deliberateDebts: Array<{
+    file: string;
+    ceiling: string;
+    trigger: string;
+    upgrade: string;
+  }>;
 }
 
 export interface AllowedCommand {
@@ -74,6 +99,7 @@ export interface TaskExecutionResultV2 {
     actual: "subagent" | "main-agent";
   };
   notes?: string[];
+  minimality?: MinimalityEvidence;
   legacy?: TaskExecutionResult;
 }
 

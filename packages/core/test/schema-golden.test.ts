@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { TddEngine } from "../src/engines/tdd/tdd-engine.js";
+import { CANONICAL_SCHEMAS } from "../src/install/canonical-schemas.js";
 
 const rootDir = fileURLToPath(new URL("../../..", import.meta.url));
 
@@ -54,6 +55,13 @@ describe("Schema 1.2.0", () => {
     expect(() =>
       validateNode(loopRunSchema, validLoopRun(), "loopRun"),
     ).not.toThrow();
+  });
+
+  it("安装到项目的执行结果 Schema 也允许最小化证据", () => {
+    const schema = JSON.parse(
+      CANONICAL_SCHEMAS["task-execution-result.schema.json"],
+    ) as { properties?: Record<string, unknown> };
+    expect(schema.properties?.minimality).toBeDefined();
   });
 });
 

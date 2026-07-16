@@ -105,6 +105,56 @@ export function validateTaskResult(data: unknown): AgentTaskResult {
 
   // 校验 notes
   assertStringArray(obj.notes, "notes");
+  if (obj.minimality !== undefined) assertMinimalityEvidence(obj.minimality);
 
   return obj as unknown as AgentTaskResult;
+}
+
+function assertMinimalityEvidence(value: unknown): void {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("E_SCHEMA_VALIDATION_FAILED: minimality 必须是对象");
+  const evidence = value as Record<string, unknown>;
+  for (const field of [
+    "reusedExisting",
+    "standardLibraryChoices",
+    "nativePlatformChoices",
+  ])
+    assertStringArray(evidence[field], `minimality.${field}`);
+  assertDecisionList(
+    evidence.dependenciesAdded,
+    "minimality.dependenciesAdded",
+    ["name", "manifest", "reason", "requiredBy"],
+  );
+  assertDecisionList(
+    evidence.abstractionsAdded,
+    "minimality.abstractionsAdded",
+    ["name", "file", "consumers", "reason"],
+  );
+  assertDecisionList(evidence.deliberateDebts, "minimality.deliberateDebts", [
+    "file",
+    "ceiling",
+    "trigger",
+    "upgrade",
+  ]);
+}
+
+function assertDecisionList(
+  value: unknown,
+  field: string,
+  fields: readonly string[],
+): void {
+  if (!Array.isArray(value))
+    throw new Error(`E_SCHEMA_VALIDATION_FAILED: ${field} 必须是数组`);
+  value.forEach((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry))
+      throw new Error(
+        `E_SCHEMA_VALIDATION_FAILED: ${field}[${index}] 必须是对象`,
+      );
+    const decision = entry as Record<string, unknown>;
+    for (const name of fields) {
+      if (name === "requiredBy" || name === "consumers")
+        assertStringArray(decision[name], `${field}[${index}].${name}`);
+      else assertString(decision[name], `${field}[${index}].${name}`);
+    }
+  });
 }

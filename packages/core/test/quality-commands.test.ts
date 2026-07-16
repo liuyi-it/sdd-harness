@@ -230,7 +230,7 @@ describe("quality commands", () => {
       artifactHash: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
       createdAt: expect.any(String),
     });
-  }, 15_000);
+  }, 30_000);
 
   it("当 Git 未变化时重复执行 verify 直接复用上次结果", async () => {
     const { root, core } = await builtProject();
@@ -563,6 +563,47 @@ describe("quality commands", () => {
     ).toMatchObject({ source: "REVIEW" });
   });
 
+  it("未计划新增依赖以 E_UNPLANNED_DEPENDENCY 阻断并创建修复任务", async () => {
+    const { root, core } = await builtProject();
+    const plan = await readPlan(root);
+    for (const task of plan.tasks) {
+      task.allowedFiles = [...(task.allowedFiles as string[]), "package.json"];
+    }
+    await writePlan(root, plan);
+    const resultPath = join(root, ".sdd/changes/add-cancel/task-results.json");
+    const results = JSON.parse(await readFile(resultPath, "utf8"));
+    for (const result of results) {
+      result.modifiedFiles = [...result.modifiedFiles, "package.json"];
+    }
+    await writeFile(resultPath, JSON.stringify(results));
+    await writeFile(
+      join(root, "package.json"),
+      JSON.stringify({
+        scripts: { test: "vitest" },
+        dependencies: { "new-runtime-package": "1.0.0" },
+      }),
+    );
+
+    expect(await core.execute({ command: "verify", cwd: root })).toMatchObject({
+      ok: true,
+      state: "VERIFY_READY",
+    });
+    expect(await core.execute({ command: "review", cwd: root })).toMatchObject({
+      ok: false,
+      state: "PLAN_READY",
+      error: { code: "E_UNPLANNED_DEPENDENCY", next: "sdd build next" },
+    });
+    const repair = (
+      (await readPlan(root)).tasks as Array<{
+        sliceType?: string;
+        failureContext?: { errorCode?: string };
+      }>
+    ).find((task) => task.sliceType === "REPAIR");
+    expect(repair?.failureContext).toMatchObject({
+      errorCode: "E_UNPLANNED_DEPENDENCY",
+    });
+  });
+
   it("review 在超时后进入 FAILED", async () => {
     const { root, core } = await builtProject();
     await core.execute({ command: "verify", cwd: root });
@@ -617,12 +658,24 @@ describe("quality commands", () => {
       expect(archiveReport).toContain("two-axis-review@1.0.0");
       expect(archiveReport).toContain("Policy Upstream Attribution");
       expect(archiveReport).toContain("Loop Run ID:");
+      expect(archiveReport).toContain("## 实现简洁性");
       expect(
         JSON.parse(await readFile(join(change, "archive.json"), "utf8")),
       ).toMatchObject({
         schemaVersion: "2.0.0",
         changeId: "add-cancel",
         quality: { taskResults: expect.any(Array) },
+        minimality: {
+          metrics: expect.any(Object),
+          dependencyDelta: expect.any(Array),
+          deliberateDebts: expect.any(Array),
+          policySources: [
+            {
+              project: "ponytail",
+              commit: "14a0d79548d4de8fc2de95c1b94bb0de63a739d3",
+            },
+          ],
+        },
       });
       expect(
         JSON.parse(

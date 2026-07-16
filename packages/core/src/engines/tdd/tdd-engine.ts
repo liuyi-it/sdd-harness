@@ -1,5 +1,5 @@
-import { createAtomicTasks, extractPaths } from "../superpowers/planner.js";
 import type { PolicyBundle } from "@sdd-harness/agent-policies";
+import { createAtomicTasks, extractPaths } from "../superpowers/planner.js";
 import type {
   PlanArtifacts,
   PlanningInput,
@@ -179,6 +179,7 @@ export class TddEngine {
       contextPacks: Object.fromEntries(
         tasks.map((task) => [task.id, renderContextPack(task)]),
       ),
+      dependencies: input.existingPlan?.dependencies ?? [],
     };
   }
 }

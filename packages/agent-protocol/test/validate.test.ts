@@ -49,4 +49,30 @@ describe("validateTaskResult", () => {
       taskId: "TASK-001",
     });
   });
+
+  it("接受可选的最小化证据并拒绝不完整债务声明", () => {
+    const value = validResult();
+    value.minimality = {
+      reusedExisting: ["src/helper.ts"],
+      standardLibraryChoices: ["node:fs"],
+      nativePlatformChoices: [],
+      dependenciesAdded: [],
+      abstractionsAdded: [],
+      deliberateDebts: [
+        {
+          file: "src/lock.ts",
+          ceiling: "全局锁",
+          trigger: "等待超过 5%",
+          upgrade: "项目分片锁",
+        },
+      ],
+    };
+    expect(validateTaskResult(value).minimality?.reusedExisting).toEqual([
+      "src/helper.ts",
+    ]);
+    value.minimality.deliberateDebts[0]!.trigger = "";
+    expect(() => validateTaskResult(value)).toThrow(
+      "E_SCHEMA_VALIDATION_FAILED",
+    );
+  });
 });

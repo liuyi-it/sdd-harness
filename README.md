@@ -9,6 +9,7 @@
 - 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
 - 代码库理解：自动托管 `codebase-memory-mcp`，不可用时显式降级到文件扫描。
 - 安全可追溯：校验路径、命令、文件范围、Git delta、TDD 证据和敏感信息。
+- 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
 - 精简制品：目录按需创建，Context Pack 按任务生成，归档最终收敛为三个文件。
 
 ## 环境要求
@@ -91,8 +92,8 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 | `sdd plan`                | 生成任务、测试计划和上下文摘要              |
 | `sdd build next/complete` | 获取任务或提交 Agent 结果                   |
 | `sdd verify`              | 验证规格、任务和证据覆盖                    |
-| `sdd review`              | 执行确定性与工程质量审查                    |
-| `sdd archive`             | 校验并压缩归档当前变更                      |
+| `sdd review`              | 审查范围、安全、依赖计划、改动规模与债务    |
+| `sdd archive`             | 校验并压缩归档，保留简洁性与来源追踪        |
 | `sdd auto <需求>`         | 按状态机自动推进流程                        |
 | `sdd codebase ...`        | 查看、诊断、查询或重建代码库索引            |
 
@@ -119,8 +120,8 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 ```text
 .sdd/changes/<change-id>/
-├── archive.json   # 规格、设计、计划、任务结果、质量报告与 Git 快照
-├── archive.md     # 人工可读归档报告与追踪矩阵
+├── archive.json   # 规格、计划、质量、简洁性指标、债务与 Git 快照
+├── archive.md     # 人工可读归档报告、简洁性摘要与追踪矩阵
 └── .archived      # 完整性标记
 ```
 

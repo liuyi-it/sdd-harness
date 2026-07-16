@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { ChangeComplexityMetrics } from "./change-complexity.js";
+import type { DeliberateDebt } from "./deliberate-debt.js";
+import type { DependencyDelta } from "./dependency-delta.js";
+
 /**
  * 二期确定性审查：所有 issue 必须是结构化的 ReviewIssue，ID 由稳定字段哈希得出；
  * LLM review 不进入 Core 路径。
@@ -13,6 +17,9 @@ export const REVIEW_CATEGORIES = [
   "TESTING",
   "BLOCKER",
   "SECRET_LEAK",
+  "UNPLANNED_DEPENDENCY",
+  "COMPLEXITY",
+  "DELIBERATE_DEBT",
 ] as const;
 
 export type ReviewCategory = (typeof REVIEW_CATEGORIES)[number];
@@ -29,6 +36,7 @@ export interface ReviewIssue {
   file?: string;
   task?: string;
   message: string;
+  deterministic?: boolean;
 }
 
 export interface ReviewReport {
@@ -47,6 +55,12 @@ export interface ReviewReport {
     standardsFindingCount: number;
     specFindingCount: number;
   };
+  minimality?: {
+    metrics: ChangeComplexityMetrics;
+    dependencyDelta: DependencyDelta[];
+    deliberateDebts: DeliberateDebt[];
+    estimatedRemovableLines?: number;
+  };
 }
 
 export interface ReviewAxis {
@@ -61,6 +75,7 @@ export interface ReviewIssueInput {
   file?: string;
   task?: string;
   axis?: ReviewAxisName;
+  deterministic?: boolean;
 }
 
 export function createReviewIssue(input: ReviewIssueInput): ReviewIssue {
@@ -70,6 +85,7 @@ export function createReviewIssue(input: ReviewIssueInput): ReviewIssue {
     severity: input.severity,
     axis: input.axis ?? "STANDARDS",
     message: input.message.trim(),
+    deterministic: input.deterministic ?? true,
     ...(input.file === undefined ? {} : { file: input.file }),
     ...(input.task === undefined ? {} : { task: input.task }),
   };
@@ -82,6 +98,7 @@ export function stableId(input: ReviewIssueInput): string {
     file: input.file ?? null,
     task: input.task ?? null,
     message: input.message.trim(),
+    deterministic: input.deterministic ?? true,
   });
   return "RV-" + createHash("sha256").update(seed).digest("hex").slice(0, 12);
 }
@@ -91,10 +108,17 @@ export interface ReviewReportInput {
   issues: ReviewIssue[];
   fixedPoint?: string;
   generatedAt?: string;
+  minimality?: ReviewReport["minimality"];
 }
 
 const BLOCKING_CATEGORIES: ReadonlySet<ReviewCategory> =
-  new Set<ReviewCategory>(["BLOCKER", "SECRET_LEAK", "SECURITY", "FILE_SCOPE"]);
+  new Set<ReviewCategory>([
+    "BLOCKER",
+    "SECRET_LEAK",
+    "SECURITY",
+    "FILE_SCOPE",
+    "UNPLANNED_DEPENDENCY",
+  ]);
 
 const BLOCKING_SEVERITIES: ReadonlySet<ReviewSeverity> =
   new Set<ReviewSeverity>(["MAJOR"]);
@@ -133,6 +157,7 @@ export function createReviewReport(input: ReviewReportInput): ReviewReport {
       standardsFindingCount: standardsFindings.length,
       specFindingCount: specFindings.length,
     },
+    ...(input.minimality === undefined ? {} : { minimality: input.minimality }),
   };
 }
 
@@ -185,6 +210,32 @@ export function renderReviewMarkdown(report: ReviewReport): string {
     report.spec.status,
     "",
   ];
+  if (report.minimality !== undefined) {
+    const { metrics, dependencyDelta, deliberateDebts } = report.minimality;
+    lines.push(
+      "## 实现简洁性",
+      "",
+      `- 文件：新增 ${metrics.filesAdded}，修改 ${metrics.filesModified}，删除 ${metrics.filesDeleted}`,
+      `- 行数：新增 ${metrics.linesAdded ?? "未记录"}，删除 ${metrics.linesDeleted ?? "未记录"}`,
+      `- 依赖：新增 ${metrics.dependenciesAdded}，删除 ${metrics.dependenciesRemoved}`,
+      `- 有意债务：${metrics.deliberateDebtCount}`,
+      "",
+      dependencyDelta.length === 0 ? "依赖变化：未记录。" : "依赖变化：",
+      ...dependencyDelta.map(
+        (item) =>
+          `- ${item.change} ${item.manifest} ${item.section}.${item.name}：${item.before ?? "(none)"} → ${item.after ?? "(none)"}`,
+      ),
+      "",
+      deliberateDebts.length === 0
+        ? "有意接受的工程限制：未记录。"
+        : "有意接受的工程限制：",
+      ...deliberateDebts.map(
+        (item) =>
+          `- ${item.file}:${item.line}：${item.ceiling}；触发条件=${item.trigger}；升级=${item.upgrade}`,
+      ),
+      "",
+    );
+  }
   if (report.issues.length === 0) {
     lines.push("无问题。");
   } else {

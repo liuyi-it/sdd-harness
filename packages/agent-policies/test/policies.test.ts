@@ -58,6 +58,7 @@ describe("agent policies", () => {
       "security-boundaries",
       "context-pack-consumer",
       "tdd-task-execution",
+      "minimal-implementation",
       "evidence-before-completion",
     ]);
     expect(bundle.instructions).toContain("不得修改 `.sdd/state.json`");

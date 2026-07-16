@@ -105,6 +105,9 @@ export async function runPlan(
             tasksMarkdown: plan.tasksMarkdown,
             testPlan: plan.testPlan,
             context: plan.context,
+            ...(plan.dependencies === undefined
+              ? {}
+              : { dependencies: plan.dependencies }),
           };
           unchanged = true;
         } catch {
@@ -146,6 +149,9 @@ export async function runPlan(
             tasksMarkdown: plan.tasksMarkdown,
             testPlan: plan.testPlan,
             context: plan.context,
+            ...(plan.dependencies === undefined
+              ? {}
+              : { dependencies: plan.dependencies }),
           };
         } catch {
           // 文件不存在，不用合并
@@ -171,6 +177,7 @@ export async function runPlan(
           tasksMarkdown: artifacts.tasksMarkdown,
           testPlan: artifacts.testPlan,
           context: artifacts.context,
+          dependencies: artifacts.dependencies ?? [],
         },
         null,
         2,

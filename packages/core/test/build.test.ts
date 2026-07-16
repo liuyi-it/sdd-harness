@@ -121,11 +121,20 @@ describe("sdd build", () => {
       resultFile: first.actionRequired?.resultFile,
     });
     const taskId = first.actionRequired!.taskId;
+    const minimality = {
+      reusedExisting: ["src/order.ts"],
+      standardLibraryChoices: [],
+      nativePlatformChoices: [],
+      dependenciesAdded: [],
+      abstractionsAdded: [],
+      deliberateDebts: [],
+    };
     const artifact = normalizeTaskExecutionResult(
       {
         taskId,
         modifiedFiles: [],
         ...evidenceFor("RED"),
+        minimality,
       } as Parameters<typeof normalizeTaskExecutionResult>[0],
       {
         actualFileDelta: { added: [], modified: [], deleted: [] },
@@ -154,8 +163,17 @@ describe("sdd build", () => {
       timestamps: artifact.timestamps,
       mode: artifact.mode,
       fileDelta: { added: [], modified: [], deleted: [] },
+      minimality,
       legacy: { modifiedFiles: [] },
     });
+    expect(
+      JSON.parse(
+        await readFile(
+          join(root, ".sdd/changes/add-cancel/task-results.json"),
+          "utf8",
+        ),
+      )[0],
+    ).toMatchObject({ taskId, minimality });
   });
 
   it("外部 Agent 隐瞒越权文件修改时按真实 Git delta 阻断", async () => {

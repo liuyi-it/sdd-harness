@@ -48,6 +48,48 @@
         "specFindingCount": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false
+    },
+    "minimality": {
+      "type": "object",
+      "required": ["metrics", "dependencyDelta", "deliberateDebts"],
+      "properties": {
+        "metrics": {
+          "type": "object",
+          "required": [
+            "filesAdded",
+            "filesModified",
+            "filesDeleted",
+            "linesAdded",
+            "linesDeleted",
+            "netLines",
+            "dependenciesAdded",
+            "dependenciesRemoved",
+            "deliberateDebtCount"
+          ],
+          "properties": {
+            "filesAdded": { "type": "integer", "minimum": 0 },
+            "filesModified": { "type": "integer", "minimum": 0 },
+            "filesDeleted": { "type": "integer", "minimum": 0 },
+            "linesAdded": { "type": ["integer", "null"], "minimum": 0 },
+            "linesDeleted": { "type": ["integer", "null"], "minimum": 0 },
+            "netLines": { "type": ["integer", "null"] },
+            "dependenciesAdded": { "type": "integer", "minimum": 0 },
+            "dependenciesRemoved": { "type": "integer", "minimum": 0 },
+            "deliberateDebtCount": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "dependencyDelta": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDelta" }
+        },
+        "deliberateDebts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/deliberateDebt" }
+        },
+        "estimatedRemovableLines": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
     }
   },
   "$defs": {
@@ -60,6 +102,38 @@
           "type": "array",
           "items": { "$ref": "review-issue.schema.json" }
         }
+      },
+      "additionalProperties": false
+    },
+    "dependencyDelta": {
+      "type": "object",
+      "required": ["manifest", "section", "name", "before", "after", "change"],
+      "properties": {
+        "manifest": { "type": "string", "minLength": 1 },
+        "section": {
+          "enum": [
+            "dependencies",
+            "devDependencies",
+            "peerDependencies",
+            "optionalDependencies"
+          ]
+        },
+        "name": { "type": "string", "minLength": 1 },
+        "before": { "type": ["string", "null"] },
+        "after": { "type": ["string", "null"] },
+        "change": { "enum": ["ADDED", "REMOVED", "UPDATED"] }
+      },
+      "additionalProperties": false
+    },
+    "deliberateDebt": {
+      "type": "object",
+      "required": ["file", "line", "ceiling", "trigger", "upgrade"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "ceiling": { "type": "string", "minLength": 1 },
+        "trigger": { "type": "string", "minLength": 1 },
+        "upgrade": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }

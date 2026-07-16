@@ -20,7 +20,7 @@ export interface PhasePolicyDefinition {
   requiredEvidence: string[];
   completionCriteria: string[];
   source: {
-    project: "sdd-harness" | "superpowers" | "mattpocock-skills";
+    project: "sdd-harness" | "superpowers" | "mattpocock-skills" | "ponytail";
     upstreamCommit?: string;
     adaptedFrom?: string[];
   };

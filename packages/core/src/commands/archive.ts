@@ -209,6 +209,26 @@ export async function runArchive(
           );
         const traceability = renderTraceability(document, tasks, parsedResults);
         const policyRefs = collectPolicyRefs(tasks, design);
+        const minimality = readMinimality(JSON.parse(reviewReportData));
+        const policySources = [
+          ...new Map(
+            policyRefs.flatMap((policy) => {
+              const source = getPolicy(policy.id).source;
+              return source.project === "ponytail" &&
+                source.upstreamCommit !== undefined
+                ? [
+                    [
+                      `${source.project}:${source.upstreamCommit}`,
+                      {
+                        project: source.project,
+                        commit: source.upstreamCommit,
+                      },
+                    ] as const,
+                  ]
+                : [];
+            }),
+          ).values(),
+        ];
         const archiveReport = [
           "# 归档报告",
           "",
@@ -231,6 +251,25 @@ export async function runArchive(
           "## 审查结果",
           "",
           "PASS",
+          "",
+          "## 实现简洁性",
+          "",
+          `- 新增文件：${minimality.metrics.filesAdded}`,
+          `- 修改文件：${minimality.metrics.filesModified}`,
+          `- 删除文件：${minimality.metrics.filesDeleted}`,
+          `- 新增行：${minimality.metrics.linesAdded ?? "未记录"}`,
+          `- 删除行：${minimality.metrics.linesDeleted ?? "未记录"}`,
+          `- 新增依赖：${minimality.metrics.dependenciesAdded}`,
+          `- 删除依赖：${minimality.metrics.dependenciesRemoved}`,
+          "",
+          "## 有意接受的工程限制",
+          "",
+          ...(minimality.deliberateDebts.length === 0
+            ? ["未记录。"]
+            : minimality.deliberateDebts.map(
+                (debt) =>
+                  `- ${debt.file}:${debt.line}：${debt.ceiling}；触发条件=${debt.trigger}；升级=${debt.upgrade}`,
+              )),
           "",
           "## 隔离工作区",
           "",
@@ -292,6 +331,12 @@ export async function runArchive(
               finalHead,
             },
             policyRefs,
+            minimality: {
+              metrics: minimality.metrics,
+              dependencyDelta: minimality.dependencyDelta,
+              deliberateDebts: minimality.deliberateDebts,
+              policySources,
+            },
           },
           null,
           2,
@@ -356,6 +401,56 @@ export async function runArchive(
   } finally {
     await lock.release();
   }
+}
+
+function readMinimality(value: unknown): {
+  metrics: {
+    filesAdded: number;
+    filesModified: number;
+    filesDeleted: number;
+    linesAdded: number | null;
+    linesDeleted: number | null;
+    netLines: number | null;
+    dependenciesAdded: number;
+    dependenciesRemoved: number;
+    deliberateDebtCount: number;
+  };
+  dependencyDelta: unknown[];
+  deliberateDebts: Array<{
+    file: string;
+    line: number;
+    ceiling: string;
+    trigger: string;
+    upgrade: string;
+  }>;
+} {
+  const fallback = {
+    metrics: {
+      filesAdded: 0,
+      filesModified: 0,
+      filesDeleted: 0,
+      linesAdded: null,
+      linesDeleted: null,
+      netLines: null,
+      dependenciesAdded: 0,
+      dependenciesRemoved: 0,
+      deliberateDebtCount: 0,
+    },
+    dependencyDelta: [],
+    deliberateDebts: [],
+  };
+  if (typeof value !== "object" || value === null) return fallback;
+  const minimality = (value as { minimality?: unknown }).minimality;
+  if (typeof minimality !== "object" || minimality === null) return fallback;
+  const candidate = minimality as Partial<typeof fallback>;
+  if (
+    typeof candidate.metrics !== "object" ||
+    candidate.metrics === null ||
+    !Array.isArray(candidate.dependencyDelta) ||
+    !Array.isArray(candidate.deliberateDebts)
+  )
+    return fallback;
+  return candidate as typeof fallback;
 }
 
 function collectPolicyRefs(

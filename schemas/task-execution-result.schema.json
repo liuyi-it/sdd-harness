@@ -72,8 +72,79 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "minimality": { "$ref": "#/$defs/minimalityEvidence" },
     "legacy": {
       "type": "object"
+    }
+  },
+  "$defs": {
+    "minimalityEvidence": {
+      "type": "object",
+      "required": [
+        "reusedExisting",
+        "standardLibraryChoices",
+        "nativePlatformChoices",
+        "dependenciesAdded",
+        "abstractionsAdded",
+        "deliberateDebts"
+      ],
+      "properties": {
+        "reusedExisting": { "type": "array", "items": { "type": "string" } },
+        "standardLibraryChoices": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "nativePlatformChoices": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "dependenciesAdded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/dependencyDecision" }
+        },
+        "abstractionsAdded": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/abstractionDecision" }
+        },
+        "deliberateDebts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/debtDeclaration" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "dependencyDecision": {
+      "type": "object",
+      "required": ["name", "manifest", "reason", "requiredBy"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "manifest": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "requiredBy": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "abstractionDecision": {
+      "type": "object",
+      "required": ["name", "file", "consumers", "reason"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "consumers": { "type": "array", "items": { "type": "string" } },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "debtDeclaration": {
+      "type": "object",
+      "required": ["file", "ceiling", "trigger", "upgrade"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "ceiling": { "type": "string", "minLength": 1 },
+        "trigger": { "type": "string", "minLength": 1 },
+        "upgrade": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

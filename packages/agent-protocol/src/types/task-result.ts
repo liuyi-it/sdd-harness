@@ -17,6 +17,38 @@ export interface AgentTaskResult {
   tddEvidence: AgentTddEvidence[];
   verification: AgentVerification[];
   notes: string[];
+  minimality?: MinimalityEvidence;
+}
+
+/** Agent 对复用、依赖和有意限制的结构化说明；Core 仍以 Git 与 manifest 为事实源。 */
+export interface MinimalityEvidence {
+  reusedExisting: string[];
+  standardLibraryChoices: string[];
+  nativePlatformChoices: string[];
+  dependenciesAdded: DependencyDecision[];
+  abstractionsAdded: AbstractionDecision[];
+  deliberateDebts: DeliberateDebtDeclaration[];
+}
+
+export interface DependencyDecision {
+  name: string;
+  manifest: string;
+  reason: string;
+  requiredBy: string[];
+}
+
+export interface AbstractionDecision {
+  name: string;
+  file: string;
+  consumers: string[];
+  reason: string;
+}
+
+export interface DeliberateDebtDeclaration {
+  file: string;
+  ceiling: string;
+  trigger: string;
+  upgrade: string;
 }
 
 export interface AgentCommandRun {
