@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { execSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -53,8 +55,14 @@ describe("sdd CLI", () => {
   });
 
   it("codebase status 可用", () => {
-    const out = sdd("codebase status");
-    expect(out).toContain("State:");
+    // 集成测试不依赖外网下载 MCP；短超时后应正常进入 fallback。
+    const cwd = mkdtempSync(path.join(tmpdir(), "sdd-cli-codebase-"));
+    try {
+      const out = sdd(`codebase status --cwd ${cwd} --timeout 1`);
+      expect(out).toContain("State:");
+    } finally {
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("--json 输出有效 JSON", () => {

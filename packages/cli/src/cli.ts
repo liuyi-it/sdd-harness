@@ -123,7 +123,13 @@ async function main(): Promise<void> {
   }
 
   // 构造 MCP transport → CodebaseAdapter → Core 的完整依赖链
-  const codebaseManager = new CodebaseMemoryManager();
+  const requestedTimeout = Number(values.timeout);
+  const codebaseManager = new CodebaseMemoryManager(
+    Number.isFinite(requestedTimeout) && requestedTimeout > 0
+      ? { timeoutMs: requestedTimeout * 1_000 }
+      : {},
+    (message) => process.stderr.write(`[codebase] ${message}\n`),
+  );
   const codebaseTransport = new CodebaseMemoryTransport(codebaseManager);
   const core = new Core({
     codebase: new CodebaseAdapter(codebaseTransport),

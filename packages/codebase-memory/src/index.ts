@@ -1,7 +1,15 @@
 export * from "./types.js";
 export { CodebaseMemoryManager } from "./manager.js";
 export type { InitResult } from "./manager.js";
-export { startManagedMcp, stopManagedMcp } from "./lifecycle.js";
+export {
+  startManagedMcp,
+  stopManagedMcp,
+  resolveInstalledMcp,
+  type InstalledMcp,
+  type McpSpawnSpec,
+  type McpProgressReporter,
+  type StartManagedMcpOptions,
+} from "./lifecycle.js";
 export {
   writeDiagnostics,
   createDiagnostics,

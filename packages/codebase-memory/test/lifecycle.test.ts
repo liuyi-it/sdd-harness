@@ -1,6 +1,13 @@
+import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
-import { listAllTools, managedSpawnSpec } from "../src/lifecycle.js";
+import {
+  listAllTools,
+  managedSpawnSpec,
+  resolveInstalledMcp,
+} from "../src/lifecycle.js";
 import type { McpSession } from "../src/types.js";
 import { CodebaseMemoryTransport } from "../src/transport.js";
 import type { CodebaseMemoryManager } from "../src/manager.js";
@@ -26,6 +33,37 @@ describe("MCP lifecycle", () => {
       "codebase-memory-mcp@0.9.0",
     ]);
     expect(windows.options).not.toHaveProperty("timeout");
+  });
+
+  it("优先解析项目本地安装，再解析 npm 全局安装", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-mcp-resolution-"));
+    const globalRoot = join(root, "global-node-modules");
+    await writeFakeMcp(join(globalRoot, "codebase-memory-mcp"), "0.9.0");
+
+    const global = await resolveInstalledMcp(root, "0.9.0", { globalRoot });
+    expect(global).toMatchObject({ source: "global", version: "0.9.0" });
+
+    await writeFakeMcp(
+      join(root, "node_modules", "codebase-memory-mcp"),
+      "0.9.0",
+    );
+    const local = await resolveInstalledMcp(root, "0.9.0", { globalRoot });
+    expect(local).toMatchObject({ source: "local", version: "0.9.0" });
+    expect(local?.spawnSpec.command).toBe(process.execPath);
+  });
+
+  it("忽略与锁定版本不一致的本地和全局安装", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-mcp-version-"));
+    const globalRoot = join(root, "global-node-modules");
+    await writeFakeMcp(
+      join(root, "node_modules", "codebase-memory-mcp"),
+      "1.0.0",
+    );
+    await writeFakeMcp(join(globalRoot, "codebase-memory-mcp"), "1.0.0");
+
+    await expect(
+      resolveInstalledMcp(root, "0.9.0", { globalRoot }),
+    ).resolves.toBeUndefined();
   });
 
   it("遍历 tools/list 全部分页并保留后续页工具", async () => {
@@ -58,6 +96,22 @@ describe("MCP lifecycle", () => {
     });
   });
 });
+
+async function writeFakeMcp(
+  packageRoot: string,
+  version: string,
+): Promise<void> {
+  await mkdir(join(packageRoot, "dist"), { recursive: true });
+  await writeFile(
+    join(packageRoot, "package.json"),
+    JSON.stringify({
+      name: "codebase-memory-mcp",
+      version,
+      bin: { "codebase-memory-mcp": "dist/index.js" },
+    }),
+  );
+  await writeFile(join(packageRoot, "dist", "index.js"), "");
+}
 
 describe("MCP transport contract", () => {
   it("根据 has_more 自动请求后续查询页", async () => {

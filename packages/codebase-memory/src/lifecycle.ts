@@ -1,5 +1,27 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { access, readFile } from "node:fs/promises";
+import { isAbsolute, join, resolve } from "node:path";
 import type { McpLifecycleResult, McpSession } from "./types.js";
+
+export type McpProgressReporter = (message: string) => void;
+
+export interface McpSpawnSpec {
+  command: string;
+  args: string[];
+  options: { stdio: ["pipe", "pipe", "pipe"] };
+}
+
+export interface InstalledMcp {
+  source: "local" | "global";
+  version: string;
+  packageRoot: string;
+  spawnSpec: McpSpawnSpec;
+}
+
+export interface StartManagedMcpOptions {
+  onProgress?: McpProgressReporter;
+  globalRoot?: string;
+}
 
 export function managedSpawnSpec(
   version: string,
@@ -25,6 +47,82 @@ export function managedSpawnSpec(
       };
 }
 
+/** 优先解析项目本地安装，其次解析 npm 全局安装。 */
+export async function resolveInstalledMcp(
+  root: string,
+  expectedVersion: string,
+  options: { globalRoot?: string } = {},
+): Promise<InstalledMcp | undefined> {
+  const local = await installedMcpAt(
+    join(root, "node_modules", "codebase-memory-mcp"),
+    "local",
+    expectedVersion,
+  );
+  if (local !== undefined) return local;
+
+  const globalRoot = options.globalRoot ?? (await npmGlobalRoot());
+  if (globalRoot === undefined) return undefined;
+  return installedMcpAt(
+    join(globalRoot, "codebase-memory-mcp"),
+    "global",
+    expectedVersion,
+  );
+}
+
+async function installedMcpAt(
+  packageRoot: string,
+  source: "local" | "global",
+  expectedVersion: string,
+): Promise<InstalledMcp | undefined> {
+  try {
+    const packageJson = JSON.parse(
+      await readFile(join(packageRoot, "package.json"), "utf8"),
+    ) as { name?: unknown; version?: unknown; bin?: unknown };
+    if (
+      packageJson.name !== "codebase-memory-mcp" ||
+      packageJson.version !== expectedVersion
+    )
+      return undefined;
+    const bin = packageBin(packageJson.bin);
+    if (bin === undefined) return undefined;
+    const entry = isAbsolute(bin) ? bin : resolve(packageRoot, bin);
+    await access(entry);
+    return {
+      source,
+      version: expectedVersion,
+      packageRoot,
+      spawnSpec: {
+        command: process.execPath,
+        args: [entry],
+        options: { stdio: ["pipe", "pipe", "pipe"] },
+      },
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function packageBin(bin: unknown): string | undefined {
+  if (typeof bin === "string") return bin;
+  if (bin === null || typeof bin !== "object") return undefined;
+  const entries = bin as Record<string, unknown>;
+  const preferred = entries["codebase-memory-mcp"];
+  if (typeof preferred === "string") return preferred;
+  return Object.values(entries).find(
+    (value): value is string => typeof value === "string",
+  );
+}
+
+async function npmGlobalRoot(): Promise<string | undefined> {
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+  return new Promise((resolveGlobalRoot) => {
+    execFile(npm, ["root", "-g"], { timeout: 10_000 }, (error, stdout) => {
+      const root = stdout.trim();
+      resolveGlobalRoot(error === null && root.length > 0 ? root : undefined);
+    });
+  });
+}
+
 class StdioMcpSession implements McpSession {
   private nextId = 1;
   private buffer = "";
@@ -41,6 +139,7 @@ class StdioMcpSession implements McpSession {
       this.close();
       for (const listener of this.exitListeners) listener();
     });
+    child.on("error", (error) => this.rejectPending(error));
   }
 
   async call(
@@ -60,8 +159,11 @@ class StdioMcpSession implements McpSession {
   }
 
   close(): void {
-    for (const { reject } of this.pending.values())
-      reject(new Error("MCP stdio 会话已关闭"));
+    this.rejectPending(new Error("MCP stdio 会话已关闭"));
+  }
+
+  private rejectPending(error: Error): void {
+    for (const { reject } of this.pending.values()) reject(error);
     this.pending.clear();
   }
 
@@ -194,15 +296,60 @@ export async function startManagedMcp(
   root: string,
   version: string,
   timeoutMs: number,
+  options: StartManagedMcpOptions = {},
 ): Promise<McpLifecycleResult> {
-  const { command, args, options } = managedSpawnSpec(version);
-  const child: ChildProcess = spawn(command, args, {
-    ...options,
+  options.onProgress?.("正在检查项目本地及 npm 全局安装…");
+  const installed = await resolveInstalledMcp(root, version, {
+    ...(options.globalRoot === undefined
+      ? {}
+      : { globalRoot: options.globalRoot }),
+  });
+  if (installed !== undefined) {
+    options.onProgress?.(
+      `发现${installed.source === "local" ? "项目本地" : "npm 全局"}安装 v${installed.version}，正在启动…`,
+    );
+    const direct = await startMcpProcess(
+      root,
+      installed.spawnSpec,
+      timeoutMs,
+      options.onProgress,
+    );
+    if (direct.status === "STARTED") return direct;
+    options.onProgress?.(`已安装版本启动失败，改用 npx：${direct.message}`);
+  } else {
+    options.onProgress?.(
+      `未找到匹配的已安装版本 v${version}，将通过 npx 获取并启动…`,
+    );
+  }
+  return startMcpProcess(
+    root,
+    managedSpawnSpec(version),
+    timeoutMs,
+    options.onProgress,
+  );
+}
+
+async function startMcpProcess(
+  root: string,
+  spec: McpSpawnSpec,
+  timeoutMs: number,
+  onProgress?: McpProgressReporter,
+): Promise<McpLifecycleResult> {
+  const child: ChildProcess = spawn(spec.command, spec.args, {
+    ...spec.options,
     cwd: root,
   });
-  // 消费 stderr，避免 MCP 的诊断输出填满 pipe 后阻塞协议进程。
-  child.stderr?.resume();
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderr = `${stderr}${chunk}`.slice(-8_192);
+  });
   const session = new StdioMcpSession(child);
+  const startedAt = Date.now();
+  const progressTimer = setInterval(() => {
+    const seconds = Math.max(1, Math.round((Date.now() - startedAt) / 1_000));
+    onProgress?.(`MCP 仍在启动，已等待 ${seconds} 秒…`);
+  }, 5_000);
   try {
     await callWithTimeout(
       session.call("initialize", {
@@ -213,6 +360,7 @@ export async function startManagedMcp(
       timeoutMs,
       "initialize",
     );
+    onProgress?.("MCP 已连接，正在读取工具清单…");
     session.notify("notifications/initialized");
     const tools = await listAllTools(session, timeoutMs);
     const lifecycle: McpLifecycleResult = {
@@ -223,6 +371,7 @@ export async function startManagedMcp(
       session,
       tools,
     };
+    onProgress?.(`MCP 启动完成，已发现 ${tools.length} 个工具`);
     session.onExit(() => {
       lifecycle.status = "FAILED";
       lifecycle.message = "MCP 进程已退出";
@@ -236,9 +385,22 @@ export async function startManagedMcp(
       mode: "managed",
       status: "UNAVAILABLE",
       ...(child.pid === undefined ? {} : { pid: child.pid }),
-      message: error instanceof Error ? error.message : String(error),
+      message: failureMessage(error, stderr),
     };
+  } finally {
+    clearInterval(progressTimer);
   }
+}
+
+function failureMessage(error: unknown, stderr: string): string {
+  const reason = error instanceof Error ? error.message : String(error);
+  const detail = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-3)
+    .join(" | ");
+  return detail.length === 0 ? reason : `${reason}；进程输出：${detail}`;
 }
 
 /** 停止 managed MCP 进程 */
