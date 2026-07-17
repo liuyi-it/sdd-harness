@@ -20,6 +20,9 @@ export interface InstalledMcp {
 
 export interface ResolveInstalledMcpOptions {
   globalRoot?: string;
+  globalRootResolver?: (
+    platform: NodeJS.Platform,
+  ) => Promise<string | undefined>;
   executablePath?: string;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -69,7 +72,12 @@ export async function resolveInstalledMcp(
   );
   if (local !== undefined) return local;
 
-  const globalRoot = options.globalRoot ?? (await npmGlobalRoot(platform));
+  const globalRoot =
+    options.globalRoot ??
+    (await resolveGlobalRootSafely(
+      options.globalRootResolver ?? npmGlobalRoot,
+      platform,
+    ));
   if (globalRoot !== undefined) {
     const global = await installedMcpAt(
       join(globalRoot, "codebase-memory-mcp"),
@@ -239,13 +247,48 @@ function packageBin(bin: unknown): string | undefined {
 async function npmGlobalRoot(
   platform: NodeJS.Platform,
 ): Promise<string | undefined> {
-  const npm = platform === "win32" ? "npm.cmd" : "npm";
+  const spec = npmGlobalRootSpec(platform);
   return new Promise((resolveGlobalRoot) => {
-    execFile(npm, ["root", "-g"], { timeout: 10_000 }, (error, stdout) => {
-      const root = stdout.trim();
-      resolveGlobalRoot(error === null && root.length > 0 ? root : undefined);
-    });
+    try {
+      execFile(
+        spec.command,
+        spec.args,
+        { timeout: 10_000, encoding: "utf8", windowsHide: true },
+        (error, stdout) => {
+          const root = stdout.trim();
+          resolveGlobalRoot(
+            error === null && root.length > 0 ? root : undefined,
+          );
+        },
+      );
+    } catch {
+      // Windows 无法直接启动 .cmd 等同步异常时，继续探测独立二进制。
+      resolveGlobalRoot(undefined);
+    }
   });
+}
+
+export function npmGlobalRootSpec(
+  platform: NodeJS.Platform,
+  comspec = process.env.ComSpec,
+): { command: string; args: string[] } {
+  return platform === "win32"
+    ? {
+        command: comspec ?? "cmd.exe",
+        args: ["/d", "/s", "/c", "npm", "root", "--global"],
+      }
+    : { command: "npm", args: ["root", "--global"] };
+}
+
+async function resolveGlobalRootSafely(
+  resolver: (platform: NodeJS.Platform) => Promise<string | undefined>,
+  platform: NodeJS.Platform,
+): Promise<string | undefined> {
+  try {
+    return await resolver(platform);
+  } catch {
+    return undefined;
+  }
 }
 
 class StdioMcpSession implements McpSession {

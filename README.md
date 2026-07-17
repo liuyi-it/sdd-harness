@@ -26,7 +26,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会先移除旧版全局 CLI、依赖和构建产物，再通过 lockfile 全新安装、构建并注册全局命令 `sdd` 和 `sdd-harness`。安装失败时会自动回滚未完成的安装产物。项目不发布到 npm。
+安装脚本会先移除当前 npm 前缀及 `PATH` 中属于本项目的旧版 CLI、依赖和构建产物，再通过 lockfile 全新安装、构建并注册全局命令 `sdd` 和 `sdd-harness`。安装完成时会显示实际命令位置并验证它们指向当前仓库；若同名命令被其他目录遮蔽，安装会明确失败，不再出现“安装成功但运行旧版”的情况。安装失败时会自动回滚未完成的安装产物。项目不发布到 npm。
 
 Windows 下启动 codebase-memory-mcp 时，会依次检查项目本地 npm 包、npm 全局包中的真实 `.exe`、`CODEBASE_MEMORY_MCP_PATH`、`%LOCALAPPDATA%\Programs\codebase-memory-mcp\codebase-memory-mcp.exe` 和 `PATH`，最后才使用 `npx`。npm wrapper 的真实二进制缺失时不会再误判为可用安装。
 

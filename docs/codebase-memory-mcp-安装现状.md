@@ -4,6 +4,13 @@
 > 生成日期：2026-07-16
 > 场景：`sdd init` 报 "降级模式：codebase-memory-mcp 当前不可用" 的排查记录
 
+> 更新：当前主分支已支持发现 Windows 独立二进制。若重新安装后仍看到
+> `[codebase] 正在检查项目本地及 npm 全局安装…`，说明实际运行的仍是旧 CLI；
+> 新版提示为“正在检查项目本地、npm 全局及独立二进制…”。安装脚本现在会
+> 清理 `PATH` 中属于本项目的旧入口、显示实际命令位置，并在同名命令遮蔽时失败。
+> Windows 下 npm 全局目录改由 `cmd.exe` 查询；即使查询失败，也会继续检查独立
+> `.exe`，不会在探测中途直接降级。降级时 CLI 会额外输出真实失败原因。
+
 ---
 
 ## 一、一句话结论
@@ -13,7 +20,7 @@
 1. **独立安装的完整二进制** —— Claude 的 MCP 通道正在用它，工作正常（能索引、能查询）。
 2. **npm 全局安装的 wrapper 包** —— 只是个下载壳子，真正的二进制**没下载成功**（`bin/` 目录为空）。
 
-而 `sdd init` **只认 npm 包**、不认独立二进制、也不走 MCP 协议探测，所以它判定"不可用"并降级为受限文件扫描。
+原始故障发生时，实际执行的旧版 `sdd init` **只认 npm 包**、不认独立二进制，所以它判定"不可用"并降级为受限文件扫描。当前主分支已修复独立二进制探测；重新安装后仍出现旧提示时，应先排查 `PATH` 中是否残留另一套 `sdd`。
 
 **因此：Claude 侧一切正常，只有 `sdd` 侧报警告。二者互不冲突。**
 
@@ -94,9 +101,18 @@ Warning: 降级模式：codebase-memory-mcp 当前不可用，已切换为受限
 Warning: 安装建议：请先安装并配置 codebase-memory-mcp，官方项目地址：https://github.com/DeusData/codebase-memory-mcp
 ```
 
-- sdd 的检测方式是**查项目本地 `node_modules` 和 npm 全局**是否有可用的 `codebase-memory-mcp`。
-- 它**不识别**独立安装的那个 `.exe`，也**不通过 MCP 协议**去探测已连接的服务。
+- 原始日志来自旧版 sdd，只检查项目本地 `node_modules` 和 npm 全局包。
+- 当前版本还会检查 `CODEBASE_MEMORY_MCP_PATH`、`%LOCALAPPDATA%\Programs\codebase-memory-mcp\codebase-memory-mcp.exe` 和 `PATH`，并直接启动发现的 `.exe` 完成 MCP 协议握手。
 - npm 全局虽装了包，但因为 `bin/` 里没有真正的二进制、且实际运行会挂起，sdd 判定其不可用 → 降级。
+
+若已拉取最新代码并重新安装，但日志仍是旧提示，请在 `cmd.exe` 执行：
+
+```bat
+where sdd
+where sdd-harness
+```
+
+旧安装脚本只验证 `sdd --version`，而所有开发版本均显示 `0.1.0`，因此可能误把 PATH 中旧命令当成新安装验证通过。新版安装脚本会显示命令位置，并阻止这种假成功。
 
 > 注意：这只是**降级提示**，`sdd init` 本身已成功（`State: INDEX_READY`），可以继续 `sdd new`。
 
@@ -130,11 +146,11 @@ npm install -g codebase-memory-mcp
 node "$(npm root -g)/codebase-memory-mcp/install.js"
 ```
 
-### 方案 C：让 sdd 指向已有二进制 / MCP
+### 方案 C：让 sdd 指向已有二进制
 
-若 sdd 支持配置外部可执行文件或已连接的 MCP，可直接指向：
-`C:\Users\viruser.v-desktop\AppData\Local\Programs\codebase-memory-mcp\codebase-memory-mcp.exe`
-（需查阅 sdd 配置项，官方地址：<https://github.com/DeusData/codebase-memory-mcp>）
+当前版本会自动检查：
+`C:\Users\viruser.v-desktop\AppData\Local\Programs\codebase-memory-mcp\codebase-memory-mcp.exe`。
+也可通过环境变量 `CODEBASE_MEMORY_MCP_PATH` 显式指定完整二进制路径。
 
 ---
 

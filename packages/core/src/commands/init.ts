@@ -457,6 +457,7 @@ function buildWarnings(
     warnings.push(
       "降级模式：codebase-memory-mcp 当前不可用，已切换为受限文件扫描",
     );
+    if (index.reason) warnings.push(`降级原因：${index.reason}`);
     warnings.push(
       `安装建议：请先安装并配置 codebase-memory-mcp，官方项目地址：${PINNED_DEPENDENCIES.codebaseMemoryMcp.repository}`,
     );

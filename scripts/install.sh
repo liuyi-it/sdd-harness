@@ -58,8 +58,7 @@ npm link --workspace=packages/cli
 
 # 验证安装
 echo "验证安装..."
-sdd --version
-sdd-harness --version
+sdd_verify_global_cli "$PROJECT_ROOT"
 
 INSTALL_SUCCEEDED=true
 trap - EXIT

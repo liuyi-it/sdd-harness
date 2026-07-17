@@ -374,7 +374,7 @@ export class CodebaseAdapter {
     return {
       provider: "fallback-file-scan",
       degraded: true,
-      reason: MCP_QUERY_UNAVAILABLE,
+      reason: diagnostics.message ?? MCP_QUERY_UNAVAILABLE,
       diagnostics,
       codebaseSummary: [
         "# 代码库摘要",

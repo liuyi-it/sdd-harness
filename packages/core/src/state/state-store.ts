@@ -340,15 +340,21 @@ export class StateStore {
       if (!isMissingFile(error)) throw error;
     }
     const handle = await open(temporaryPath, "w");
-    await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`, "utf8");
-    await handle.sync();
-    await handle.close();
+    try {
+      await handle.writeFile(`${JSON.stringify(validated, null, 2)}\n`, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     // 用 rename 做最终替换，尽量避免直接覆盖导致半写入损坏。
     await rename(temporaryPath, this.path);
     try {
       const directory = await open(dirname(this.path), "r");
-      await directory.sync();
-      await directory.close();
+      try {
+        await directory.sync();
+      } finally {
+        await directory.close();
+      }
     } catch {
       // Directory fsync is not supported by every Windows filesystem.
     }

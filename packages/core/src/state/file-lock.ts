@@ -57,8 +57,11 @@ export class FileLock {
     };
     try {
       const handle = await open(this.path, "wx");
-      await handle.writeFile(`${JSON.stringify(data)}\n`, "utf8");
-      await handle.close();
+      try {
+        await handle.writeFile(`${JSON.stringify(data)}\n`, "utf8");
+      } finally {
+        await handle.close();
+      }
       this.ownsLock = true;
       return;
     } catch (error) {

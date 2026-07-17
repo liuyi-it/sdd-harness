@@ -10,7 +10,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-重复安装会先清除旧版全局 CLI、本仓库依赖、workspace 构建目录和 TypeScript 构建缓存；失败安装会自动回滚。`bash scripts/uninstall.sh` 执行完整卸载，但不会删除业务项目中的 `.sdd/` 用户数据。
+重复安装会先清除当前 npm 前缀和 `PATH` 中属于本项目的旧版全局 CLI、本仓库依赖、workspace 构建目录和 TypeScript 构建缓存；安装后会验证实际命中的命令确实来自当前仓库，被其他同名命令遮蔽时直接报错。失败安装会自动回滚。`bash scripts/uninstall.sh` 执行完整卸载，但不会删除业务项目中的 `.sdd/` 用户数据。
 
 在业务项目中重新执行 `sdd init` 会刷新命令、Skill、Schema、Adapter 元数据和代码库索引；工作流状态、变更、运行、归档、有效用户配置和自定义 loop 配置会保留。`CLAUDE.md` / `AGENTS.md` 仅替换 sdd-harness 受管区块。Windows 会优先复用 npm 包中的真实二进制或 `%LOCALAPPDATA%\Programs\codebase-memory-mcp\codebase-memory-mcp.exe`；也可通过 `CODEBASE_MEMORY_MCP_PATH` 显式指定。
 

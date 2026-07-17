@@ -146,7 +146,7 @@ describe("CodebaseAdapter", () => {
     expect(result).toMatchObject({
       provider: "fallback-file-scan",
       degraded: true,
-      reason: MCP_UNAVAILABLE_REASON,
+      reason: "MCP 调用失败",
       diagnostics: {
         installed: true,
         configured: true,

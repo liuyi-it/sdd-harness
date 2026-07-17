@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   listAllTools,
   managedSpawnSpec,
+  npmGlobalRootSpec,
   resolveInstalledMcp,
 } from "../src/lifecycle.js";
 import type { McpSession } from "../src/types.js";
@@ -33,6 +34,17 @@ describe("MCP lifecycle", () => {
       "codebase-memory-mcp@0.9.0",
     ]);
     expect(windows.options).not.toHaveProperty("timeout");
+  });
+
+  it("Windows 通过 cmd.exe 查询 npm 全局目录", () => {
+    expect(npmGlobalRootSpec("win32", "C:\\Windows\\cmd.exe")).toEqual({
+      command: "C:\\Windows\\cmd.exe",
+      args: ["/d", "/s", "/c", "npm", "root", "--global"],
+    });
+    expect(npmGlobalRootSpec("darwin")).toEqual({
+      command: "npm",
+      args: ["root", "--global"],
+    });
   });
 
   it("优先解析项目本地安装，再解析 npm 全局安装", async () => {
@@ -76,6 +88,25 @@ describe("MCP lifecycle", () => {
     const installed = await resolveInstalledMcp(root, "0.9.0", {
       globalRoot,
       platform: "win32",
+      env: { CODEBASE_MEMORY_MCP_PATH: executablePath },
+    });
+
+    expect(installed).toMatchObject({
+      source: "standalone",
+      spawnSpec: { command: executablePath, args: [] },
+    });
+  });
+
+  it("Windows 查询 npm 全局目录失败后仍继续探测独立二进制", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-mcp-global-failure-"));
+    const executablePath = join(root, "codebase-memory-mcp.exe");
+    await writeFile(executablePath, "binary");
+
+    const installed = await resolveInstalledMcp(root, "0.9.0", {
+      platform: "win32",
+      globalRootResolver: async () => {
+        throw new Error("spawn EINVAL");
+      },
       env: { CODEBASE_MEMORY_MCP_PATH: executablePath },
     });
 

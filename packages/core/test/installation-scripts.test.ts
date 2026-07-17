@@ -113,14 +113,16 @@ case "$*" in
     echo fresh > "$SDD_TEST_ROOT/packages/cli/dist/cli.js"
     if [ "\${SDD_TEST_FAIL_BUILD:-}" = true ]; then exit 23; fi
     ;;
-  "link --workspace=packages/cli") ;;
+  "link --workspace=packages/cli")
+    mkdir -p "$SDD_TEST_GLOBAL_ROOT/@sdd-harness" "$SDD_TEST_GLOBAL_PREFIX/bin"
+    rm -rf "$SDD_TEST_GLOBAL_ROOT/@sdd-harness/cli"
+    ln -s "$SDD_TEST_ROOT/packages/cli" "$SDD_TEST_GLOBAL_ROOT/@sdd-harness/cli"
+    printf '#!/usr/bin/env bash\necho sdd v0.1.0\n' > "$SDD_TEST_GLOBAL_PREFIX/bin/sdd"
+    printf '#!/usr/bin/env bash\necho sdd-harness v0.1.0\n' > "$SDD_TEST_GLOBAL_PREFIX/bin/sdd-harness"
+    chmod +x "$SDD_TEST_GLOBAL_PREFIX/bin/sdd" "$SDD_TEST_GLOBAL_PREFIX/bin/sdd-harness"
+    ;;
 esac
 `,
-  );
-  await makeExecutable(join(bin, "sdd"), "#!/usr/bin/env bash\necho 0.1.0\n");
-  await makeExecutable(
-    join(bin, "sdd-harness"),
-    "#!/usr/bin/env bash\necho 0.1.0\n",
   );
 
   return {
@@ -130,7 +132,7 @@ esac
     globalPrefix,
     env: {
       ...process.env,
-      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      PATH: `${globalPrefix}/bin:${bin}:${process.env.PATH ?? ""}`,
       SDD_TEST_ROOT: root,
       SDD_TEST_LOG: log,
       SDD_TEST_GLOBAL_ROOT: globalRoot,
@@ -184,9 +186,9 @@ describe("安装与卸载脚本", () => {
       ),
     ).toBe(false);
     expect(await exists(join(fixture.globalRoot, "@sdd-harness", "cli"))).toBe(
-      false,
+      true,
     );
-    expect(await exists(join(fixture.globalPrefix, "bin", "sdd"))).toBe(false);
+    expect(await exists(join(fixture.globalPrefix, "bin", "sdd"))).toBe(true);
 
     const npmCalls = await readFile(fixture.log, "utf8");
     expect(npmCalls).toContain("uninstall --global @sdd-harness/cli");
@@ -194,6 +196,59 @@ describe("安装与卸载脚本", () => {
     expect(npmCalls.indexOf("run build")).toBeLessThan(
       npmCalls.indexOf("link --workspace=packages/cli"),
     );
+  });
+
+  it("安装后拒绝 PATH 中非本次安装的同名命令", async () => {
+    const fixture = await createFixture();
+    const conflictingBin = join(fixture.root, "conflicting-bin");
+    await mkdir(conflictingBin, { recursive: true });
+    await makeExecutable(
+      join(conflictingBin, "sdd"),
+      "#!/usr/bin/env bash\necho stale-sdd\n",
+    );
+
+    await expect(
+      execFileAsync("bash", [join(fixture.root, "scripts", "install.sh")], {
+        env: {
+          ...fixture.env,
+          PATH: `${conflictingBin}:${fixture.env.PATH ?? ""}`,
+        },
+      }),
+    ).rejects.toMatchObject({
+      stderr: expect.stringContaining("sdd 被 PATH 中的其他命令遮蔽"),
+    });
+  });
+
+  it("安装前清除其他 PATH 目录中的旧版 sdd 入口", async () => {
+    const fixture = await createFixture();
+    const staleBin = join(fixture.root, "stale-bin");
+    await mkdir(staleBin, { recursive: true });
+    await makeExecutable(
+      join(staleBin, "sdd"),
+      `#!/usr/bin/env node\nrequire('${fixture.root}/old/packages/cli')\n`,
+    );
+    await writeFile(
+      join(staleBin, "sdd.cmd"),
+      `node "${fixture.root}\\old\\packages\\cli\\dist\\cli.js" %*\n`,
+      "utf8",
+    );
+    await writeFile(
+      join(staleBin, "sdd.ps1"),
+      `& node "${fixture.root}\\old\\packages\\cli\\dist\\cli.js" $args\n`,
+      "utf8",
+    );
+
+    await execFileAsync("bash", [join(fixture.root, "scripts", "install.sh")], {
+      env: {
+        ...fixture.env,
+        PATH: `${staleBin}:${fixture.env.PATH ?? ""}`,
+      },
+    });
+
+    expect(await exists(join(staleBin, "sdd"))).toBe(false);
+    expect(await exists(join(staleBin, "sdd.cmd"))).toBe(false);
+    expect(await exists(join(staleBin, "sdd.ps1"))).toBe(false);
+    expect(await exists(join(fixture.globalPrefix, "bin", "sdd"))).toBe(true);
   });
 
   it("安装失败时清理所有未完成产物", async () => {
