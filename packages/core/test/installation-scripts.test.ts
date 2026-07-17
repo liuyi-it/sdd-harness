@@ -221,7 +221,7 @@ describe("安装与卸载脚本", () => {
     const fixture = await createFixture();
     await writeFile(
       join(fixture.globalPrefix, "bin", "sdd-harness"),
-      "#!/usr/bin/env node\nrequire('@sdd-harness/cli')\n",
+      "#!/usr/bin/env node\nrequire('@sdd-harness\\cli')\n",
       "utf8",
     );
 

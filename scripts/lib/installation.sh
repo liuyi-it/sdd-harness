@@ -81,14 +81,23 @@ sdd_is_owned_shim() {
   if [ -L "$path" ]; then
     local target
     target="$(readlink "$path" 2>/dev/null || true)"
+    target="$(printf '%s' "$target" | tr '\\' '/')"
+    local normalized_root
+    normalized_root="$(printf '%s' "$project_root" | tr '\\' '/')"
     case "$target" in
-      *"@sdd-harness/cli"*|*"$project_root/packages/cli"*) return 0 ;;
+      *"@sdd-harness/cli"*|*"$normalized_root/packages/cli"*|*"packages/cli"*) return 0 ;;
       *) return 1 ;;
     esac
   fi
 
-  grep -Fq '@sdd-harness/cli' "$path" 2>/dev/null ||
-    grep -Fq "$project_root/packages/cli" "$path" 2>/dev/null
+  local content
+  content="$(tr '\\' '/' <"$path" 2>/dev/null || true)"
+  local normalized_root
+  normalized_root="$(printf '%s' "$project_root" | tr '\\' '/')"
+  case "$content" in
+    *"@sdd-harness/cli"*|*"$normalized_root/packages/cli"*|*"packages/cli"*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 sdd_assert_no_local_artifacts() {
