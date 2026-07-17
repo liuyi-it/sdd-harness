@@ -80,6 +80,11 @@ describe("installProjectIntegration agent selection", () => {
       expect(manifest.instructionContent).toContain("policyBundle");
       expect(manifest.skillContent).not.toContain("RED 观察");
       expect(manifest.commandTemplate).not.toContain("Think Before Coding");
+      expect(manifest.instructionContent).toContain("仅供内部决策");
+      expect(manifest.commandTemplate).toContain("只用于判断和推进流程");
+      expect(manifest.commandTemplate).not.toContain(
+        "直接返回 Core CommandResult",
+      );
     }
   });
 

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   compileBaseSkill,
+  compileCommandTemplate,
+  compileInstruction,
   createPolicyRegistry,
   PolicyError,
   loadPolicyPrompt,
@@ -103,5 +105,13 @@ describe("agent policies", () => {
 
   it("常驻 Skill 保持最小化，不内联阶段 TDD 细则", () => {
     expect(compileBaseSkill()).not.toContain("RED 观察");
+  });
+
+  it("所有入口均将 Core 结果视为内部数据并输出用户摘要", () => {
+    expect(compileBaseSkill()).toContain("Do not show them to users");
+    expect(compileInstruction("claude")).toContain("仅供内部决策");
+    const command = compileCommandTemplate("claude");
+    expect(command).toContain("只用于判断和推进流程");
+    expect(command).not.toContain("直接返回 Core CommandResult");
   });
 });

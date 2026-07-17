@@ -2,7 +2,7 @@
 
 ## 步骤
 
-1. 运行：
+1. 运行以下命令读取内部流程结果；`--json` 仅用于解析，不能原样展示给用户：
 
 ```bash
 sdd auto "$ARGUMENTS" --json
@@ -25,6 +25,12 @@ sdd auto "$ARGUMENTS" --json
    h. 继续循环，直到 CLI 返回终止状态
 
 3. 终止状态：`ARCHIVED`、`CLARIFYING`、`FAILED`、`PAUSED`、`SECURITY_BLOCKED`
+
+## 用户回复
+
+- 不得直接展示 CLI JSON、Core CommandResult、`.sdd/state.json`、`policyBundle`、`actionRequired`、Context Pack、任务/运行标识、内部路径、错误码或调试字段，除非用户明确要求原始输出或排障细节。
+- 使用简洁中文，先说明结论；随后仅说明用户相关的变更、验证结果、阻塞原因和下一步。
+- 进入 `CLARIFYING` 时，解释需求中缺少的业务信息，并只列出需要用户回答的问题；必要时给出一条可直接回复的示例，不解释内部阶段或门禁实现。
 
 ## 安全规则
 
