@@ -27,6 +27,7 @@ export function compileInstruction(agent: string): string {
     "",
     "使用 sdd 命令通过已安装 Adapter 推进工作流。.sdd/ 与 Core CommandResult 是唯一事实源。",
     "不得绕过阶段、范围、锁、验证、审查或归档门禁；阶段工程方法由 policyBundle 渐进加载。",
+    "<!-- sdd-harness:managed:end -->",
   ].join("\n");
 }
 

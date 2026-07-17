@@ -62,8 +62,47 @@ describe("MCP lifecycle", () => {
     await writeFakeMcp(join(globalRoot, "codebase-memory-mcp"), "1.0.0");
 
     await expect(
-      resolveInstalledMcp(root, "0.9.0", { globalRoot }),
+      resolveInstalledMcp(root, "0.9.0", { globalRoot, env: {} }),
     ).resolves.toBeUndefined();
+  });
+
+  it("Windows npm 下载壳缺少真实二进制时复用独立安装", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-mcp-standalone-"));
+    const globalRoot = join(root, "global-node-modules");
+    await writeWrapperMcp(join(globalRoot, "codebase-memory-mcp"), "0.9.0");
+    const executablePath = join(root, "codebase-memory-mcp.exe");
+    await writeFile(executablePath, "binary");
+
+    const installed = await resolveInstalledMcp(root, "0.9.0", {
+      globalRoot,
+      platform: "win32",
+      env: { CODEBASE_MEMORY_MCP_PATH: executablePath },
+    });
+
+    expect(installed).toMatchObject({
+      source: "standalone",
+      spawnSpec: { command: executablePath, args: [] },
+    });
+  });
+
+  it("Windows npm 包存在真实二进制时绕过 bin.js 直接启动", async () => {
+    const root = await mkdtemp(join(tmpdir(), "sdd-mcp-wrapper-binary-"));
+    const globalRoot = join(root, "global-node-modules");
+    const packageRoot = join(globalRoot, "codebase-memory-mcp");
+    await writeWrapperMcp(packageRoot, "0.9.0");
+    const executablePath = join(packageRoot, "bin", "codebase-memory-mcp.exe");
+    await writeFile(executablePath, "binary");
+
+    const installed = await resolveInstalledMcp(root, "0.9.0", {
+      globalRoot,
+      platform: "win32",
+      env: {},
+    });
+
+    expect(installed).toMatchObject({
+      source: "global",
+      spawnSpec: { command: executablePath, args: [] },
+    });
   });
 
   it("遍历 tools/list 全部分页并保留后续页工具", async () => {
@@ -111,6 +150,22 @@ async function writeFakeMcp(
     }),
   );
   await writeFile(join(packageRoot, "dist", "index.js"), "");
+}
+
+async function writeWrapperMcp(
+  packageRoot: string,
+  version: string,
+): Promise<void> {
+  await mkdir(join(packageRoot, "bin"), { recursive: true });
+  await writeFile(
+    join(packageRoot, "package.json"),
+    JSON.stringify({
+      name: "codebase-memory-mcp",
+      version,
+      bin: { "codebase-memory-mcp": "bin.js" },
+    }),
+  );
+  await writeFile(join(packageRoot, "bin.js"), "");
 }
 
 describe("MCP transport contract", () => {

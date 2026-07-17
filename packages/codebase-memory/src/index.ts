@@ -8,6 +8,7 @@ export {
   type InstalledMcp,
   type McpSpawnSpec,
   type McpProgressReporter,
+  type ResolveInstalledMcpOptions,
   type StartManagedMcpOptions,
 } from "./lifecycle.js";
 export {

@@ -600,6 +600,10 @@ describe("init and status", () => {
     await expect(
       access(join(root, ".sdd/index/architecture.md")),
     ).resolves.toBeUndefined();
+    const config = await readFile(join(root, ".sdd/config.yml"), "utf8");
+    expect(config).toContain("name: fixture");
+    expect(config).toContain("custom: keep");
+    expect(config).toContain("contextPack:");
   });
 
   it("migrates legacy 1.0.0 state and config during init", async () => {
@@ -687,7 +691,7 @@ describe("init and status", () => {
     ).toContain("目标 schemaVersion：1.4.0");
   });
 
-  it("writes integration files with line-dedup merge for manually edited files", async () => {
+  it("重新生成固定集成文件，并保留指令文件中的用户内容", async () => {
     const root = await project();
     const core = new Core({ codebase: new CodebaseAdapter() });
     await core.execute({ command: "init", cwd: root });
@@ -708,7 +712,7 @@ describe("init and status", () => {
       ok: true,
       state: "INDEX_READY",
     });
-    // 指令文件采用行级去重追加，保留原有 "manual override" 行并追加缺失的受管行
+    // 指令文件只替换受管区块，保留用户内容；命令文件属于固定生成文件，直接重建。
     // 命令文件会被直接覆盖（属于受管文件）
     expect(
       await readFile(join(root, ".claude/commands/sdd.init.md"), "utf8"),
@@ -718,7 +722,7 @@ describe("init and status", () => {
     expect(claudeContent).toContain("## sdd-harness");
   });
 
-  it("传入 --force 时直接覆盖受管集成文件而不是生成 candidate", async () => {
+  it("传入 --force 时重建固定文件，但仍保留混合指令文件中的用户内容", async () => {
     const root = await project();
     const core = new Core({ codebase: new CodebaseAdapter() });
     await core.execute({ command: "init", cwd: root });
@@ -749,6 +753,9 @@ describe("init and status", () => {
     expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toContain(
       "<!-- sdd-harness:managed -->",
     );
+    expect(await readFile(join(root, "CLAUDE.md"), "utf8")).toContain(
+      "manual override",
+    );
     await expect(
       access(join(root, ".claude/commands/sdd.init.md.candidate.md")),
     ).rejects.toThrow();
@@ -757,7 +764,7 @@ describe("init and status", () => {
     ).rejects.toThrow();
   });
 
-  it("appends managed content to pre-existing instruction files via line dedup", async () => {
+  it("向既有指令文件安装可重复刷新的受管区块", async () => {
     const root = await project();
     await writeFile(join(root, "CLAUDE.md"), "# Existing guide\n", "utf8");
     await writeFile(join(root, "AGENTS.md"), "# Existing agents\n", "utf8");
@@ -771,11 +778,12 @@ describe("init and status", () => {
       ok: true,
       state: "INDEX_READY",
     });
-    // 指令文件采用行级去重追加：原有行保持不变，受管内容追加到末尾
+    // 原有用户行保持不变，受管内容带有明确的起止边界。
     const claudeContent = await readFile(join(root, "CLAUDE.md"), "utf8");
     expect(claudeContent).toContain("# Existing guide");
     expect(claudeContent).toContain("<!-- sdd-harness:managed -->");
     expect(claudeContent).toContain("## sdd-harness");
+    expect(claudeContent).toContain("<!-- sdd-harness:managed:end -->");
     // 原有行不应重复
     const guideLines = claudeContent
       .split("\n")
@@ -786,6 +794,7 @@ describe("init and status", () => {
     expect(agentsContent).toContain("# Existing agents");
     expect(agentsContent).toContain("<!-- sdd-harness:managed -->");
     expect(agentsContent).toContain("## sdd-harness");
+    expect(agentsContent).toContain("<!-- sdd-harness:managed:end -->");
     const agentsLines = agentsContent
       .split("\n")
       .filter((l) => l === "# Existing agents");
@@ -822,10 +831,16 @@ describe("init and status", () => {
     const result = await core.execute({ command: "init", cwd: root });
 
     expect(result).toMatchObject({ ok: true, state: "INDEX_READY" });
-    // init 直接覆盖 config.yml 为默认配置，不保留旧配置的未知字段
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("customFlag")]),
+    );
+    const config = await readFile(join(root, ".sdd/config.yml"), "utf8");
+    expect(config).toContain("name: custom");
+    expect(config).toContain("customFlag: true");
+    expect(config).toContain("contextPack:");
   });
 
-  it("recovers from invalid config.yml by overwriting with default config", async () => {
+  it("补齐不完整 config.yml 的默认项并保留已有值", async () => {
     const root = await project();
     const core = new Core({ codebase: new CodebaseAdapter() });
     await core.execute({ command: "init", cwd: root });
@@ -841,5 +856,25 @@ describe("init and status", () => {
       ok: true,
       state: "INDEX_READY",
     });
+    const config = await readFile(join(root, ".sdd/config.yml"), "utf8");
+    expect(config).toContain("name: invalid");
+    expect(config).toContain("workflow:");
+  });
+
+  it("语法损坏的 config.yml 会先备份再按默认值重建", async () => {
+    const root = await project();
+    const core = new Core({ codebase: new CodebaseAdapter() });
+    await core.execute({ command: "init", cwd: root });
+    await writeFile(join(root, ".sdd/config.yml"), "project: [\n", "utf8");
+
+    const result = await core.execute({ command: "init", cwd: root });
+
+    expect(result).toMatchObject({ ok: true, state: "INDEX_READY" });
+    expect(result.warnings).toEqual(
+      expect.arrayContaining([expect.stringContaining("invalid.bak")]),
+    );
+    expect(
+      await readFile(join(root, ".sdd/config.yml.invalid.bak"), "utf8"),
+    ).toBe("project: [\n");
   });
 });

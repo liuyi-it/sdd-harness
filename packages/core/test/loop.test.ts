@@ -27,7 +27,7 @@ afterEach(async () => {
 });
 
 describe("loop store", () => {
-  it("writes a default loop spec during init and overwrites on subsequent init", async () => {
+  it("首次 init 写入默认 loop 配置，后续 init 保留用户配置", async () => {
     const { root, core } = await initializedProject();
 
     expect(await core.execute({ command: "init", cwd: root })).toMatchObject({
@@ -55,13 +55,12 @@ describe("loop store", () => {
       ok: true,
       state: "INDEX_READY",
     });
-    const overwritten = JSON.parse(
+    const preserved = JSON.parse(
       await readFile(join(root, ".sdd/loop/loop.json"), "utf8"),
     );
-    expect(overwritten).toMatchObject({
+    expect(preserved).toMatchObject({
       schemaVersion: "1.3.0",
-      loopId: "auto-default",
-      mode: "auto",
+      manual: true,
     });
   });
 

@@ -6,6 +6,14 @@ import type { AdapterManifest } from "../adapters/types.js";
 import { COMMANDS } from "../contracts.js";
 import { CANONICAL_SCHEMAS } from "./canonical-schemas.js";
 
+const MANAGED_INSTRUCTION_START = "<!-- sdd-harness:managed -->";
+const MANAGED_INSTRUCTION_END = "<!-- sdd-harness:managed:end -->";
+const LEGACY_MANAGED_INSTRUCTION_LINES = new Set([
+  "## sdd-harness",
+  "使用 sdd 命令通过已安装 Adapter 推进工作流。.sdd/ 与 Core CommandResult 是唯一事实源。",
+  "不得绕过阶段、范围、锁、验证、审查或归档门禁；阶段工程方法由 policyBundle 渐进加载。",
+]);
+
 /**
  * 按选定的适配器清单安装项目集成文件。
  * 每个适配器独立安装其指令文件、commands、skills 和 rules。
@@ -16,6 +24,7 @@ export async function installProjectIntegration(
   manifests: AdapterManifest[],
   _options: { force?: boolean } = {},
 ): Promise<void> {
+  void _options;
   const instructions = [
     ...new Map(
       manifests.map((manifest) => [
@@ -26,11 +35,7 @@ export async function installProjectIntegration(
   ];
   await Promise.all([
     ...instructions.map(([instructionFile, instructionContent]) =>
-      installInstructions(
-        join(root, instructionFile),
-        instructionContent,
-        _options,
-      ),
+      installInstructions(join(root, instructionFile), instructionContent),
     ),
     ...manifests.flatMap((manifest) => [
       installAdapterCapabilities(root, manifest),
@@ -76,16 +81,15 @@ async function installAdapterCapabilities(
 }
 
 /**
- * 行级去重追加指令文件内容。
- * 文件不存在 → 创建；文件存在 → 仅追加不存在的行。
- * force=true 时全量覆盖。
+ * 刷新宿主指令文件中的 sdd-harness 受管区块。
+ * 用户区块始终保留；旧版只有起始标记的区块会迁移为带结束标记的新格式。
  */
 async function installInstructions(
   path: string,
   managedContent: string,
-  options: { force?: boolean },
 ): Promise<void> {
   const writer = new ArtifactWriter();
+  const normalizedManagedContent = normalizeManagedContent(managedContent);
   let existing = "";
   try {
     existing = await readFile(path, "utf8");
@@ -93,35 +97,64 @@ async function installInstructions(
     // 文件不存在是预期情况（首次 init）
   }
   if (existing === "") {
-    await writer.write(path, managedContent, managedInputs(managedContent));
+    await writer.write(
+      path,
+      normalizedManagedContent,
+      managedInputs(normalizedManagedContent),
+    );
     return;
   }
 
-  // 逐行比较：只追加 existing 中不存在的行，避免重复内容
-  const existingLines = new Set(
-    existing.split("\n").map((line) => line.trimEnd()),
+  const refreshed = refreshManagedInstruction(
+    existing,
+    normalizedManagedContent,
   );
-  const newLines = managedContent
+  if (refreshed === existing) {
+    await ensureMetadata(path, managedInputs(normalizedManagedContent));
+    return;
+  }
+  await writer.write(path, refreshed, managedInputs(normalizedManagedContent));
+}
+
+function normalizeManagedContent(content: string): string {
+  const withoutEnd = content
     .split("\n")
-    .filter((line) => !existingLines.has(line.trimEnd()));
+    .filter((line) => line.trim() !== MANAGED_INSTRUCTION_END)
+    .join("\n")
+    .trimEnd();
+  return `${withoutEnd}\n${MANAGED_INSTRUCTION_END}\n`;
+}
 
-  if (newLines.length === 0) {
-    await ensureMetadata(path, managedInputs(managedContent));
-    return;
-  }
+function refreshManagedInstruction(
+  existing: string,
+  managedContent: string,
+): string {
+  const start = existing.indexOf(MANAGED_INSTRUCTION_START);
+  if (start < 0) return `${existing.trimEnd()}\n\n${managedContent}`;
 
-  if (options.force === true) {
-    await writer.write(path, managedContent, managedInputs(managedContent));
-    return;
-  }
-
-  // 追加新行到文件末尾
-  const appendContent = `\n${newLines.join("\n")}`;
-  await writer.write(
-    path,
-    existing + appendContent,
-    managedInputs(managedContent),
+  const end = existing.indexOf(
+    MANAGED_INSTRUCTION_END,
+    start + MANAGED_INSTRUCTION_START.length,
   );
+  if (end >= 0) {
+    const suffix = existing.slice(end + MANAGED_INSTRUCTION_END.length);
+    return `${existing.slice(0, start)}${managedContent.trimEnd()}${suffix}`;
+  }
+
+  const managedLines = new Set(
+    managedContent
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter(Boolean),
+  );
+  for (const line of LEGACY_MANAGED_INSTRUCTION_LINES) managedLines.add(line);
+  const preservedLegacyTail = existing
+    .slice(start + MANAGED_INSTRUCTION_START.length)
+    .split("\n")
+    .filter((line) => !managedLines.has(line.trimEnd()))
+    .join("\n")
+    .replace(/^\n+/, "\n");
+  return `${existing.slice(0, start)}${managedContent.trimEnd()}${preservedLegacyTail}`;
 }
 
 /**

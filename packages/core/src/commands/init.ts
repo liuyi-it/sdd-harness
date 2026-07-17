@@ -110,18 +110,16 @@ export async function runInit(
     const allManifests = await getAvailableAdapters();
     const manifests = filterManifests(allManifests, selectedAgents);
     const writer = new ArtifactWriter();
-    await writer.write(
-      join(sddRoot, "config.yml"),
-      stringify(
-        defaultConfig(
-          root,
-          manifests.map((m) => m.agent),
-        ),
+    const configPath = join(sddRoot, "config.yml");
+    const configWarnings = await refreshConfig(
+      root,
+      configPath,
+      defaultConfig(
+        root,
+        manifests.map((manifest) => manifest.agent),
       ),
-      { generatedBy: "sdd-harness", purpose: "config" },
+      writer,
     );
-    await migrateConfigIfNeeded(root, join(sddRoot, "config.yml"));
-    const configWarnings = await validateConfig(join(sddRoot, "config.yml"));
     await installProjectIntegration(root, manifests, {
       force: args?.force === true,
     });
@@ -174,7 +172,8 @@ export async function runInit(
     await verifyDependencyIntegrityIfProvided(sddRoot, args);
     await writeDependencyMetadata(sddRoot, index.provider);
     const loopStore = new LoopStore(root);
-    await loopStore.writeSpec(createDefaultLoopSpec());
+    if (!(await exists(loopStore.specPath)))
+      await loopStore.writeSpec(createDefaultLoopSpec());
     const conventionsStore = new ProjectConventionsStore(root);
     const emptyProject = await isEmptyProject(root);
     const structurePolicy = readStructurePolicy(args);
@@ -545,29 +544,78 @@ async function validateConfig(path: string): Promise<string[]> {
     : [`config.yml 包含未知字段，已保留原值：${unknownKeys.join(", ")}`];
 }
 
-async function migrateConfigIfNeeded(
+async function refreshConfig(
   root: string,
   path: string,
-): Promise<void> {
-  const raw = parse(await readFile(path, "utf8"));
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new SddError(
-      "E_STATE_CORRUPTED",
-      "config.yml 必须是对象",
-      "sdd init",
-    );
+  defaults: Record<string, unknown>,
+  writer: ArtifactWriter,
+): Promise<string[]> {
+  let document = defaults;
+  const warnings: string[] = [];
+  if (await exists(path)) {
+    const existingContent = await readFile(path, "utf8");
+    let existing: unknown;
+    try {
+      existing = parse(existingContent);
+    } catch {
+      await copyFile(path, `${path}.invalid.bak`);
+      warnings.push(
+        "config.yml 无法解析，原文件已备份为 config.yml.invalid.bak，并按当前默认值重建",
+      );
+    }
+    if (isRecord(existing)) {
+      let migrated = existing;
+      if (existing.schemaVersion !== CURRENT_CONFIG_SCHEMA_VERSION) {
+        migrated = migrateConfigDocument(existing);
+        await copyFile(path, `${path}.migration.bak`);
+        await mkdir(join(root, ".sdd", "logs"), { recursive: true });
+        await appendFile(
+          join(root, ".sdd", "logs", "migration.log"),
+          `${new Date().toISOString()} ${String(existing.schemaVersion)} -> ${CURRENT_CONFIG_SCHEMA_VERSION} (config.yml)\n`,
+          "utf8",
+        );
+      }
+      const merged = mergeConfigDefaults(defaults, migrated);
+      if (configSchema.safeParse(merged).success) {
+        document = merged;
+      } else {
+        await copyFile(path, `${path}.invalid.bak`);
+        warnings.push(
+          "config.yml 结构无效，原文件已备份为 config.yml.invalid.bak，并按当前默认值重建",
+        );
+      }
+    } else if (existing !== undefined) {
+      await copyFile(path, `${path}.invalid.bak`);
+      warnings.push(
+        "config.yml 必须是对象，原文件已备份为 config.yml.invalid.bak，并按当前默认值重建",
+      );
+    }
   }
-  const document = raw as Record<string, unknown>;
-  if (document.schemaVersion === CURRENT_CONFIG_SCHEMA_VERSION) return;
-  const migrated = migrateConfigDocument(document);
-  await copyFile(path, `${path}.migration.bak`);
-  await writeFile(path, stringify(migrated), "utf8");
-  await mkdir(join(root, ".sdd", "logs"), { recursive: true });
-  await appendFile(
-    join(root, ".sdd", "logs", "migration.log"),
-    `${new Date().toISOString()} 1.0.0 -> 1.3.0 (config.yml)\n`,
-    "utf8",
-  );
+
+  await writer.write(path, stringify(document), {
+    generatedBy: "sdd-harness",
+    purpose: "config",
+  });
+  return warnings.concat(await validateConfig(path));
+}
+
+function mergeConfigDefaults(
+  defaults: Record<string, unknown>,
+  existing: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...defaults };
+  for (const [key, value] of Object.entries(existing)) {
+    const defaultValue = defaults[key];
+    merged[key] =
+      isRecord(defaultValue) && isRecord(value)
+        ? mergeConfigDefaults(defaultValue, value)
+        : value;
+  }
+  return merged;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function exists(path: string): Promise<boolean> {

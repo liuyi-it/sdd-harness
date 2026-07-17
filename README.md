@@ -26,13 +26,17 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会安装依赖、构建项目，并通过 `npm link` 注册全局命令 `sdd` 和 `sdd-harness`。项目不发布到 npm。
+安装脚本会先移除旧版全局 CLI、依赖和构建产物，再通过 lockfile 全新安装、构建并注册全局命令 `sdd` 和 `sdd-harness`。安装失败时会自动回滚未完成的安装产物。项目不发布到 npm。
+
+Windows 下启动 codebase-memory-mcp 时，会依次检查项目本地 npm 包、npm 全局包中的真实 `.exe`、`CODEBASE_MEMORY_MCP_PATH`、`%LOCALAPPDATA%\Programs\codebase-memory-mcp\codebase-memory-mcp.exe` 和 `PATH`，最后才使用 `npx`。npm wrapper 的真实二进制缺失时不会再误判为可用安装。
 
 卸载：
 
 ```bash
 bash scripts/uninstall.sh
 ```
+
+卸载脚本会移除全局 CLI、本仓库的 `node_modules`、各 workspace 的 `node_modules` / `dist` 以及 TypeScript 构建缓存。业务项目中的 `.sdd/` 保存用户规格、任务和归档，不属于安装残留，不会自动删除。
 
 ## 快速开始
 

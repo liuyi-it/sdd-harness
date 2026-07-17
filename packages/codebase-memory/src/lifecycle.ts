@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { access, readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve, win32 } from "node:path";
 import type { McpLifecycleResult, McpSession } from "./types.js";
 
 export type McpProgressReporter = (message: string) => void;
@@ -12,10 +12,17 @@ export interface McpSpawnSpec {
 }
 
 export interface InstalledMcp {
-  source: "local" | "global";
+  source: "local" | "global" | "standalone";
   version: string;
   packageRoot: string;
   spawnSpec: McpSpawnSpec;
+}
+
+export interface ResolveInstalledMcpOptions {
+  globalRoot?: string;
+  executablePath?: string;
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface StartManagedMcpOptions {
@@ -47,32 +54,43 @@ export function managedSpawnSpec(
       };
 }
 
-/** 优先解析项目本地安装，其次解析 npm 全局安装。 */
+/** 优先解析项目本地和 npm 全局安装，再查找独立二进制。 */
 export async function resolveInstalledMcp(
   root: string,
   expectedVersion: string,
-  options: { globalRoot?: string } = {},
+  options: ResolveInstalledMcpOptions = {},
 ): Promise<InstalledMcp | undefined> {
+  const platform = options.platform ?? process.platform;
   const local = await installedMcpAt(
     join(root, "node_modules", "codebase-memory-mcp"),
     "local",
     expectedVersion,
+    platform,
   );
   if (local !== undefined) return local;
 
-  const globalRoot = options.globalRoot ?? (await npmGlobalRoot());
-  if (globalRoot === undefined) return undefined;
-  return installedMcpAt(
-    join(globalRoot, "codebase-memory-mcp"),
-    "global",
-    expectedVersion,
-  );
+  const globalRoot = options.globalRoot ?? (await npmGlobalRoot(platform));
+  if (globalRoot !== undefined) {
+    const global = await installedMcpAt(
+      join(globalRoot, "codebase-memory-mcp"),
+      "global",
+      expectedVersion,
+      platform,
+    );
+    if (global !== undefined) return global;
+  }
+
+  return resolveStandaloneMcp(expectedVersion, {
+    ...options,
+    platform,
+  });
 }
 
 async function installedMcpAt(
   packageRoot: string,
   source: "local" | "global",
   expectedVersion: string,
+  platform: NodeJS.Platform,
 ): Promise<InstalledMcp | undefined> {
   try {
     const packageJson = JSON.parse(
@@ -86,6 +104,22 @@ async function installedMcpAt(
     const bin = packageBin(packageJson.bin);
     if (bin === undefined) return undefined;
     const entry = isAbsolute(bin) ? bin : resolve(packageRoot, bin);
+    const packagedExecutable = join(
+      packageRoot,
+      "bin",
+      platform === "win32" ? "codebase-memory-mcp.exe" : "codebase-memory-mcp",
+    );
+    if (await pathExists(packagedExecutable)) {
+      return {
+        source,
+        version: expectedVersion,
+        packageRoot,
+        spawnSpec: directSpawnSpec(packagedExecutable),
+      };
+    }
+    // 官方 npm 包的 bin.js 只是下载壳。真实二进制缺失时不能把它当作
+    // 可用安装，否则 Windows 会在启动阶段无限等待 GitHub Release 下载。
+    if (basename(entry).toLowerCase() === "bin.js") return undefined;
     await access(entry);
     return {
       source,
@@ -102,6 +136,95 @@ async function installedMcpAt(
   }
 }
 
+async function resolveStandaloneMcp(
+  expectedVersion: string,
+  options: ResolveInstalledMcpOptions & { platform: NodeJS.Platform },
+): Promise<InstalledMcp | undefined> {
+  for (const candidate of standaloneMcpCandidates(options)) {
+    if (!(await pathExists(candidate))) continue;
+    return {
+      source: "standalone",
+      version: expectedVersion,
+      packageRoot: candidate,
+      spawnSpec: directSpawnSpec(candidate),
+    };
+  }
+  return undefined;
+}
+
+function standaloneMcpCandidates(
+  options: ResolveInstalledMcpOptions & { platform: NodeJS.Platform },
+): string[] {
+  const env = options.env ?? process.env;
+  const candidates = [
+    options.executablePath,
+    envValue(env, "CODEBASE_MEMORY_MCP_PATH"),
+  ];
+  if (options.platform === "win32") {
+    const localAppData = envValue(env, "LOCALAPPDATA");
+    if (localAppData !== undefined) {
+      candidates.push(
+        win32.join(
+          localAppData,
+          "Programs",
+          "codebase-memory-mcp",
+          "codebase-memory-mcp.exe",
+        ),
+        win32.join(
+          localAppData,
+          "codebase-memory-mcp",
+          "codebase-memory-mcp.exe",
+        ),
+      );
+    }
+  }
+
+  const pathValue = envValue(env, "PATH");
+  if (pathValue !== undefined) {
+    const separator = options.platform === "win32" ? ";" : ":";
+    const executable =
+      options.platform === "win32"
+        ? "codebase-memory-mcp.exe"
+        : "codebase-memory-mcp";
+    for (const directory of pathValue.split(separator)) {
+      const normalized = directory.trim().replace(/^"|"$/g, "");
+      if (normalized.length === 0) continue;
+      candidates.push(
+        options.platform === "win32"
+          ? win32.join(normalized, executable)
+          : join(normalized, executable),
+      );
+    }
+  }
+  return [
+    ...new Set(candidates.filter((path): path is string => path !== undefined)),
+  ];
+}
+
+function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const entry = Object.entries(env).find(
+    ([key, value]) => key.toUpperCase() === name && value !== undefined,
+  );
+  return entry?.[1];
+}
+
+function directSpawnSpec(command: string): McpSpawnSpec {
+  return {
+    command,
+    args: [],
+    options: { stdio: ["pipe", "pipe", "pipe"] },
+  };
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function packageBin(bin: unknown): string | undefined {
   if (typeof bin === "string") return bin;
   if (bin === null || typeof bin !== "object") return undefined;
@@ -113,8 +236,10 @@ function packageBin(bin: unknown): string | undefined {
   );
 }
 
-async function npmGlobalRoot(): Promise<string | undefined> {
-  const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+async function npmGlobalRoot(
+  platform: NodeJS.Platform,
+): Promise<string | undefined> {
+  const npm = platform === "win32" ? "npm.cmd" : "npm";
   return new Promise((resolveGlobalRoot) => {
     execFile(npm, ["root", "-g"], { timeout: 10_000 }, (error, stdout) => {
       const root = stdout.trim();
@@ -298,16 +423,22 @@ export async function startManagedMcp(
   timeoutMs: number,
   options: StartManagedMcpOptions = {},
 ): Promise<McpLifecycleResult> {
-  options.onProgress?.("正在检查项目本地及 npm 全局安装…");
+  options.onProgress?.("正在检查项目本地、npm 全局及独立二进制…");
   const installed = await resolveInstalledMcp(root, version, {
     ...(options.globalRoot === undefined
       ? {}
       : { globalRoot: options.globalRoot }),
   });
   if (installed !== undefined) {
-    options.onProgress?.(
-      `发现${installed.source === "local" ? "项目本地" : "npm 全局"}安装 v${installed.version}，正在启动…`,
-    );
+    const sourceLabel =
+      installed.source === "local"
+        ? "项目本地"
+        : installed.source === "global"
+          ? "npm 全局"
+          : "独立二进制";
+    const versionLabel =
+      installed.source === "standalone" ? "" : ` v${installed.version}`;
+    options.onProgress?.(`发现${sourceLabel}${versionLabel}，正在启动…`);
     const direct = await startMcpProcess(
       root,
       installed.spawnSpec,

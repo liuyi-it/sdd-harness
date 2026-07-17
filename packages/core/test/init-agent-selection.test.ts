@@ -132,7 +132,7 @@ describe("installProjectIntegration agent selection", () => {
     ).resolves.toBeUndefined();
   });
 
-  it("追加模式下已存在的行不会重复", async () => {
+  it("旧版受管区块升级后不会重复", async () => {
     const root = await project();
     await writeFile(
       join(root, "CLAUDE.md"),
@@ -146,9 +146,10 @@ describe("installProjectIntegration agent selection", () => {
     const lines = content.split("\n");
     const instructionLines = lines.filter((l) => l === "Claude 指令内容");
     expect(instructionLines.length).toBe(1);
+    expect(content).toContain("<!-- sdd-harness:managed:end -->");
   });
 
-  it("追加模式：部分行已存在时仅追加新行", async () => {
+  it("旧版部分受管内容迁移时补全固定内容", async () => {
     const root = await project();
     await writeFile(
       join(root, "CLAUDE.md"),
@@ -165,6 +166,32 @@ describe("installProjectIntegration agent selection", () => {
       .split("\n")
       .filter((l) => l === "## sdd-harness").length;
     expect(h2Count).toBe(1);
+  });
+
+  it("重新 init 替换完整受管区块并保留前后用户内容", async () => {
+    const root = await project();
+    await writeFile(
+      join(root, "CLAUDE.md"),
+      [
+        "# 用户说明",
+        "",
+        "<!-- sdd-harness:managed -->",
+        "旧版固定内容",
+        "<!-- sdd-harness:managed:end -->",
+        "",
+        "## 用户附录",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    await installProjectIntegration(root, [makeClaudeManifest()]);
+
+    const content = await readFile(join(root, "CLAUDE.md"), "utf8");
+    expect(content).toContain("# 用户说明");
+    expect(content).toContain("## 用户附录");
+    expect(content).toContain("Claude 指令内容");
+    expect(content).not.toContain("旧版固定内容");
   });
 
   it("持久化 Adapter capability 与降级原因", async () => {
@@ -191,7 +218,7 @@ describe("installProjectIntegration agent selection", () => {
     });
   });
 
-  it("force 模式覆盖已有指令文件", async () => {
+  it("force 模式也只刷新受管区块，不覆盖用户说明", async () => {
     const root = await project();
     await writeFile(join(root, "CLAUDE.md"), "旧内容\n", "utf8");
 
@@ -202,7 +229,7 @@ describe("installProjectIntegration agent selection", () => {
     const content = await readFile(join(root, "CLAUDE.md"), "utf8");
     expect(content).toContain("<!-- sdd-harness:managed -->");
     expect(content).toContain("Claude 指令内容");
-    expect(content).not.toContain("旧内容");
+    expect(content).toContain("旧内容");
   });
 });
 
