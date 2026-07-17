@@ -75,7 +75,7 @@ export async function resolveInstalledMcp(
   const globalRoot =
     options.globalRoot ??
     (await resolveGlobalRootSafely(
-      options.globalRootResolver ?? npmGlobalRoot,
+      options.globalRootResolver ?? resolveNpmGlobalRoot,
       platform,
     ));
   if (globalRoot !== undefined) {
@@ -244,7 +244,7 @@ function packageBin(bin: unknown): string | undefined {
   );
 }
 
-async function npmGlobalRoot(
+export async function resolveNpmGlobalRoot(
   platform: NodeJS.Platform,
 ): Promise<string | undefined> {
   const spec = npmGlobalRootSpec(platform);

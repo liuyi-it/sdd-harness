@@ -8,6 +8,7 @@ import {
   managedSpawnSpec,
   npmGlobalRootSpec,
   resolveInstalledMcp,
+  resolveNpmGlobalRoot,
 } from "../src/lifecycle.js";
 import type { McpSession } from "../src/types.js";
 import { CodebaseMemoryTransport } from "../src/transport.js";
@@ -46,6 +47,15 @@ describe("MCP lifecycle", () => {
       args: ["root", "--global"],
     });
   });
+
+  it.runIf(process.platform === "win32")(
+    "在真实 Windows 进程中通过 cmd.exe 查询 npm 全局目录",
+    async () => {
+      await expect(resolveNpmGlobalRoot("win32")).resolves.toMatch(
+        /node_modules[\\/]?$/i,
+      );
+    },
+  );
 
   it("优先解析项目本地安装，再解析 npm 全局安装", async () => {
     const root = await mkdtemp(join(tmpdir(), "sdd-mcp-resolution-"));

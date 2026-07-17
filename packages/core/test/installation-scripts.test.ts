@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -116,7 +116,13 @@ case "$*" in
   "link --workspace=packages/cli")
     mkdir -p "$SDD_TEST_GLOBAL_ROOT/@sdd-harness" "$SDD_TEST_GLOBAL_PREFIX/bin"
     rm -rf "$SDD_TEST_GLOBAL_ROOT/@sdd-harness/cli"
-    ln -s "$SDD_TEST_ROOT/packages/cli" "$SDD_TEST_GLOBAL_ROOT/@sdd-harness/cli"
+    if [ "\${OS:-}" = "Windows_NT" ]; then
+      link_path="$(cygpath -w "$SDD_TEST_GLOBAL_ROOT/@sdd-harness/cli")"
+      target_path="$(cygpath -w "$SDD_TEST_ROOT/packages/cli")"
+      MSYS2_ARG_CONV_EXCL='*' cmd.exe /d /s /c mklink /J "$link_path" "$target_path" >/dev/null
+    else
+      ln -s "$SDD_TEST_ROOT/packages/cli" "$SDD_TEST_GLOBAL_ROOT/@sdd-harness/cli"
+    fi
     printf '#!/usr/bin/env bash\necho sdd v0.1.0\n' > "$SDD_TEST_GLOBAL_PREFIX/bin/sdd"
     printf '#!/usr/bin/env bash\necho sdd-harness v0.1.0\n' > "$SDD_TEST_GLOBAL_PREFIX/bin/sdd-harness"
     chmod +x "$SDD_TEST_GLOBAL_PREFIX/bin/sdd" "$SDD_TEST_GLOBAL_PREFIX/bin/sdd-harness"
@@ -132,7 +138,9 @@ esac
     globalPrefix,
     env: {
       ...process.env,
-      PATH: `${globalPrefix}/bin:${bin}:${process.env.PATH ?? ""}`,
+      PATH: [join(globalPrefix, "bin"), bin, process.env.PATH ?? ""].join(
+        delimiter,
+      ),
       SDD_TEST_ROOT: root,
       SDD_TEST_LOG: log,
       SDD_TEST_GLOBAL_ROOT: globalRoot,
@@ -211,7 +219,7 @@ describe("安装与卸载脚本", () => {
       execFileAsync("bash", [join(fixture.root, "scripts", "install.sh")], {
         env: {
           ...fixture.env,
-          PATH: `${conflictingBin}:${fixture.env.PATH ?? ""}`,
+          PATH: [conflictingBin, fixture.env.PATH ?? ""].join(delimiter),
         },
       }),
     ).rejects.toMatchObject({
@@ -241,7 +249,7 @@ describe("安装与卸载脚本", () => {
     await execFileAsync("bash", [join(fixture.root, "scripts", "install.sh")], {
       env: {
         ...fixture.env,
-        PATH: `${staleBin}:${fixture.env.PATH ?? ""}`,
+        PATH: [staleBin, fixture.env.PATH ?? ""].join(delimiter),
       },
     });
 
