@@ -248,6 +248,16 @@ export async function runNew(
         exitCode: 0,
         changeId,
         next: "sdd new",
+        // Adapter 只需要问题正文即可向用户发起自然语言澄清；完整 spec.json
+        // 仍保留在 Core 制品中，供审计和恢复使用。
+        data: {
+          clarification: {
+            questions: unansweredBlockers.map((question) => ({
+              id: question.id,
+              question: question.question,
+            })),
+          },
+        },
       };
     }
 

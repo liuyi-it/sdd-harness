@@ -18,19 +18,19 @@ bash scripts/install.sh
 
 ## 通用参数
 
-| 参数                | 说明                            |
-| ------------------- | ------------------------------- |
-| `--json`            | 输出稳定的 `CommandResult` JSON |
-| `--cwd <path>`      | 指定项目根目录，默认当前目录    |
-| `--change <id>`     | 指定变更 ID                     |
-| `--timeout <s>`     | 设置命令超时秒数                |
-| `--non-interactive` | 禁止交互式澄清                  |
-| `--force`           | 覆盖允许强制重建的制品          |
-| `--verbose`         | 输出详细信息                    |
-| `--help`            | 显示帮助                        |
-| `--version`         | 显示版本                        |
+| 参数                | 说明                                                                            |
+| ------------------- | ------------------------------------------------------------------------------- |
+| `--json`            | 输出稳定的 `CommandResult` JSON                                                 |
+| `--cwd <path>`      | 指定项目根目录，默认当前目录                                                    |
+| `--change <id>`     | 指定变更 ID                                                                     |
+| `--timeout <s>`     | 设置命令超时秒数                                                                |
+| `--non-interactive` | 仅用于允许需求不完整时直接失败的无人值守流程；遇到未回答的 BLOCKER 返回退出码 6 |
+| `--force`           | 覆盖允许强制重建的制品                                                          |
+| `--verbose`         | 输出详细信息                                                                    |
+| `--help`            | 显示帮助                                                                        |
+| `--version`         | 显示版本                                                                        |
 
-进程退出码始终等于 `CommandResult.exitCode`。常见值为：`0` 成功、`1` 状态损坏或一般错误、`2` 参数错误、`3` 状态冲突、`4` 缺少或无效制品、`7` 验证/TDD 失败、`8` 审查失败、`9` 并发锁冲突、`10` 安全阻断、`124` 超时、`130` 中断。
+进程退出码始终等于 `CommandResult.exitCode`。常见值为：`0` 成功、`1` 状态损坏或一般错误、`2` 参数错误、`3` 状态冲突、`4` 缺少或无效制品、`6` 非交互模式下存在未回答的 BLOCKER、`7` 验证/TDD 失败、`8` 审查失败、`9` 并发锁冲突、`10` 安全阻断、`124` 超时、`130` 中断。
 
 ## 工作流命令
 
@@ -55,11 +55,14 @@ sdd status --loop --json
 
 ### `sdd new <需求>`
 
-创建变更并生成 `spec.md`、`spec.json`。信息不足时进入 `CLARIFYING`。
+创建变更并生成 `spec.md`、`spec.json`。首次调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。
 
 ```bash
 sdd new "实现订单取消功能"
-sdd new "实现订单取消功能" --change add-order-cancel --non-interactive
+# 收到 CLARIFYING 的问题并向用户确认后继续
+sdd new --answers '{"Q-001":"仅订单创建人可取消待处理订单"}' --json
+# 仅无人值守且接受需求不完整时直接失败的场景使用
+sdd new "为待处理订单提供取消 API，包含权限、冲突响应、审计和测试" --non-interactive
 ```
 
 ### `sdd design`
@@ -121,7 +124,7 @@ sdd archive --json
 
 ### `sdd auto <需求>`
 
-根据状态机连续执行可确定的阶段，在需求澄清、Agent 编码、失败或归档完成时收敛。
+根据状态机连续执行可确定的阶段。首次调用必须传入非空需求；在需求澄清、Agent 编码、失败或归档完成时收敛。`--resume`、`--restart`、`--stop`、`--events` 和 `--loop-status` 则是控制已有 loop 的命令，不传需求。
 
 ```bash
 sdd auto "实现订单取消功能"

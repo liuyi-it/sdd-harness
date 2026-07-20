@@ -50,11 +50,19 @@ const HELP_TEXT = `sdd — SDD Agent Harness CLI
   --cwd <path>      项目根目录 (默认当前目录)
   --change <id>     指定变更 ID
   --timeout <s>     超时秒数
-  --non-interactive 禁止交互
+  --non-interactive 无人值守模式；遇到未回答的需求阻塞问题直接失败
   --force           强制
   --verbose         详细输出
   --help            帮助
   --version         版本
+
+需求与子命令规则:
+  首次执行 new 或 auto 必须传入非空 <需求>，例如:
+    sdd new "实现订单取消功能" --json
+  不要默认使用 --non-interactive；CLARIFYING 时应收集答案后执行:
+    sdd new --answers '{"Q-001":"答案"}' --json
+  build 使用 next，或 complete --task <id> --result <path>；
+  codebase 使用 status / doctor / index / query / rebuild 子命令。
 `;
 
 const COMMANDS = [

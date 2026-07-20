@@ -10,4 +10,4 @@
 
 ## 使用
 
-在 OpenCode 对话中请求 SDD 变更即可。OpenCode 会按规则调用 `sdd auto --json` 并遵循 Agent Task Protocol。
+在 OpenCode 对话中提供完整需求即可。OpenCode 会按规则调用 `sdd auto "<需求>" --json` 并遵循 Agent Task Protocol。需求存在阻塞问题时，OpenCode 会先提问；不应默认使用 `--non-interactive`，否则未回答的阻塞问题会直接失败。

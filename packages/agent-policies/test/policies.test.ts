@@ -109,9 +109,13 @@ describe("agent policies", () => {
 
   it("所有入口均将 Core 结果视为内部数据并输出用户摘要", () => {
     expect(compileBaseSkill()).toContain("Do not show them to users");
+    expect(compileBaseSkill()).toContain("non-empty requirement");
     expect(compileInstruction("claude")).toContain("仅供内部决策");
+    expect(compileInstruction("claude")).toContain("不要默认加");
     const command = compileCommandTemplate("claude");
     expect(command).toContain("只用于判断和推进流程");
     expect(command).not.toContain("直接返回 Core CommandResult");
+    expect(command).toContain("`sdd build` 必须使用 `next`");
+    expect(command).toContain("`sdd codebase` 必须使用");
   });
 });

@@ -377,6 +377,16 @@ describe("sdd auto", () => {
       state: "CLARIFYING",
       next: "sdd new",
     });
+    expect(result.data).toMatchObject({
+      clarification: {
+        questions: expect.arrayContaining([
+          {
+            id: "Q-ACTOR",
+            question: "请明确谁是执行该行为的业务角色。",
+          },
+        ]),
+      },
+    });
   });
 
   // 有 answers → 绕过 CLARIFYING → 推进到 BUILDING

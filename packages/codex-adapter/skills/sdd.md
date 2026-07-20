@@ -9,6 +9,14 @@
 - `sdd new "<需求>"` — 创建新变更
 - `sdd auto "<需求>"` — 完整 SDD 流程
 
+## 需求澄清与命令参数
+
+- 首次调用 `sdd new` 或 `sdd auto` 必须传入非空需求；没有需求时先询问用户，不得执行空命令。
+- 不要默认添加 `--non-interactive`。该参数仅用于允许需求不完整时直接失败的无人值守流程。
+- `CLARIFYING` 不是失败：将阻塞问题转成自然语言询问用户，收到答案后执行 `sdd new --answers '<JSON answers>' --json`。
+- `sdd auto --resume`、`--restart`、`--stop`、`--events`、`--loop-status` 用于控制已有 loop，不传需求。
+- `sdd build` 使用 `next`，或 `complete --task <id> --result <path>`；`sdd codebase` 必须带 `status`、`doctor`、`index`、`query` 或 `rebuild` 子命令。
+
 ## Build 任务协议
 
 当 `sdd build next --json` 返回 `AGENT_TASK_EXECUTION`：

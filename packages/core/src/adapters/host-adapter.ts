@@ -5,6 +5,8 @@ import {
   type CommandResult,
   type SddCore,
 } from "../contracts.js";
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import { SddError } from "../errors.js";
 
 /**
@@ -12,6 +14,12 @@ import { SddError } from "../errors.js";
  * 适配器层不保存工作流状态，也不改写 Core 的语义结果。
  */
 export type HostStyle = "claude-code" | "codex";
+export type HostOutputMode = "collaborative" | "strict-audit" | "diagnostic";
+
+export interface HostAdapterOptions {
+  /** 默认协作模式只输出用户需要决策的信息；审计和诊断模式保留协议字段。 */
+  outputMode?: HostOutputMode;
+}
 
 export interface PluginVersion {
   name: "sdd-harness";
@@ -24,6 +32,7 @@ export class HostAdapter {
   constructor(
     private readonly core: SddCore,
     private readonly style: HostStyle,
+    private readonly options: HostAdapterOptions = {},
   ) {}
 
   async execute(input: string, cwd: string): Promise<CommandResult> {
@@ -37,6 +46,7 @@ export class HostAdapter {
           data: this.version(),
         },
         parsed.args.json === true,
+        this.outputMode(),
       );
     }
     if (parsed.help) {
@@ -49,16 +59,44 @@ export class HostAdapter {
           data: helpDocument(parsed.command, this.style),
         },
         parsed.args.json === true,
+        this.outputMode(),
       );
     }
     return renderResult(
-      await this.core.execute({
-        command: parsed.command,
-        cwd,
-        ...(Object.keys(parsed.args).length === 0 ? {} : { args: parsed.args }),
-      }),
+      await this.executeCore(parsed, cwd),
       parsed.args.json === true,
+      this.outputMode(),
     );
+  }
+
+  private async executeCore(
+    parsed: ParsedCommand,
+    cwd: string,
+  ): Promise<CommandResult> {
+    const args = { ...parsed.args };
+    if (
+      parsed.command === "build" &&
+      args.subcommand === "complete" &&
+      typeof args.resultFile === "string"
+    ) {
+      try {
+        args.result = JSON.parse(
+          await readFile(resolve(cwd, args.resultFile), "utf8"),
+        );
+      } catch {
+        throw new SddError("E_MISSING_ARTIFACT", "无法读取或解析任务执行结果");
+      }
+      delete args.resultFile;
+    }
+    return this.core.execute({
+      command: parsed.command,
+      cwd,
+      ...(Object.keys(args).length === 0 ? {} : { args }),
+    });
+  }
+
+  private outputMode(): HostOutputMode {
+    return this.options.outputMode ?? "collaborative";
   }
 
   version(): PluginVersion {
@@ -120,6 +158,12 @@ export function parseHostCommand(
   }
   const command = rawCommand as CommandName;
   const args: Record<string, unknown> = {};
+  if (
+    (command === "build" || command === "codebase") &&
+    tokens[0]?.startsWith("--") === false
+  ) {
+    args.subcommand = tokens.shift();
+  }
   // new/auto 允许第一个非选项参数直接作为自然语言需求输入。
   if (
     (command === "new" || command === "auto") &&
@@ -149,6 +193,58 @@ export function parseHostCommand(
       case "--change":
         args.changeId = requireValue(tokens, token);
         break;
+      case "--answers":
+        args.answers = parseAnswers(requireValue(tokens, token));
+        break;
+      case "--task":
+        args.taskId = requireValue(tokens, token);
+        break;
+      case "--result":
+        args.resultFile = requireValue(tokens, token);
+        break;
+      case "--intent":
+        args.intent = requireValue(tokens, token);
+        break;
+      case "--agent":
+        args.agent = requireValue(tokens, token);
+        break;
+      case "--host":
+        args.host = requireValue(tokens, token);
+        break;
+      case "--structure-policy":
+        args.structurePolicy = requireValue(tokens, token);
+        break;
+      case "--resume":
+        args.resume = true;
+        break;
+      case "--restart":
+        args.restart = true;
+        break;
+      case "--stop":
+        args.stop = true;
+        break;
+      case "--events":
+        args.events = true;
+        break;
+      case "--loop-status":
+        args.loopStatus = true;
+        break;
+      case "--loop":
+        args.loop = true;
+        break;
+      case "--run":
+        args.resume = requireValue(tokens, token);
+        break;
+      case "--tail": {
+        const value = Number(requireValue(tokens, token));
+        if (!Number.isInteger(value) || value < 0)
+          throw new SddError(
+            "E_INVALID_PHASE_COMMAND",
+            "--tail 必须是非负整数",
+          );
+        args.tail = value;
+        break;
+      }
       case "--timeout": {
         const value = Number(requireValue(tokens, token));
         if (!Number.isFinite(value) || value < 0)
@@ -160,6 +256,10 @@ export function parseHostCommand(
         break;
       }
       default:
+        if (command === "codebase" && args.subcommand === "query") {
+          args.query = [token, ...tokens.splice(0)].join(" ");
+          break;
+        }
         throw new SddError(
           "E_INVALID_PHASE_COMMAND",
           `未知的选项：${token ?? ""}`,
@@ -190,6 +290,27 @@ function requireValue(tokens: string[], option: string): string {
     throw new SddError("E_INVALID_PHASE_COMMAND", `${option} 需要提供一个值`);
   }
   return value;
+}
+
+function parseAnswers(value: string): Record<string, string> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new SddError("E_INVALID_PHASE_COMMAND", "--answers 必须是 JSON 对象");
+  }
+  if (
+    parsed === null ||
+    Array.isArray(parsed) ||
+    typeof parsed !== "object" ||
+    !Object.values(parsed).every((answer) => typeof answer === "string")
+  ) {
+    throw new SddError(
+      "E_INVALID_PHASE_COMMAND",
+      "--answers 必须是字符串答案组成的 JSON 对象",
+    );
+  }
+  return parsed as Record<string, string>;
 }
 
 function helpDocument(command: CommandName, style: HostStyle): HelpDocument {
@@ -243,7 +364,11 @@ function helpDocument(command: CommandName, style: HostStyle): HelpDocument {
   };
 }
 
-function renderResult(result: CommandResult, asJson: boolean): CommandResult {
+function renderResult(
+  result: CommandResult,
+  asJson: boolean,
+  outputMode: HostOutputMode,
+): CommandResult {
   return {
     ...result,
     rendered: asJson
@@ -253,7 +378,10 @@ function renderResult(result: CommandResult, asJson: boolean): CommandResult {
         }
       : {
           format: "text",
-          content: textView(result),
+          content:
+            outputMode === "collaborative"
+              ? collaborativeView(result)
+              : auditTextView(result),
         },
   };
 }
@@ -271,7 +399,62 @@ function jsonView(result: CommandResult): Record<string, unknown> {
   };
 }
 
-function textView(result: CommandResult): string {
+function collaborativeView(result: CommandResult): string {
+  if (!result.ok) return `暂时无法继续：${userFacingError(result)}\n`;
+
+  if (result.state === "CLARIFYING") {
+    const questions = clarificationQuestions(result.data);
+    const lines = ["我需要先确认以下信息：", ...questions.map((q) => `- ${q}`)];
+    if (questions.length === 0)
+      lines.push("- 请补充完成这项需求所需的业务规则。");
+    return `${lines.join("\n")}\n`;
+  }
+  if (result.state === "BUILD_WAITING_AGENT")
+    return "已理解并推进：正在按既定范围实施并验证。\n";
+  if (result.state === "ARCHIVED")
+    return "已完成：变更、验证、审查和归档记录均已保留。\n";
+  if (result.state === "PAUSED") return "当前已暂停，等待你的下一步决定。\n";
+  if (result.state === "FAILED")
+    return "当前受阻：执行未完成，需要先处理已有问题。\n";
+  return result.warnings !== undefined && result.warnings.length > 0
+    ? "已理解并推进：当前步骤已完成，但仍有需要留意的风险。\n"
+    : "已理解并推进：当前步骤已完成，正在继续后续工作。\n";
+}
+
+function clarificationQuestions(data: unknown): string[] {
+  if (!isRecord(data) || !isRecord(data.clarification)) return [];
+  const questions = data.clarification.questions;
+  if (!Array.isArray(questions)) return [];
+  return questions.flatMap((item) =>
+    isRecord(item) && typeof item.question === "string" ? [item.question] : [],
+  );
+}
+
+function userFacingError(result: CommandResult): string {
+  switch (result.error?.code) {
+    case "E_UNRESOLVED_BLOCKER":
+      return "需求还有需要确认的业务信息。";
+    case "E_CONCURRENT_RUN":
+    case "E_LOCK_TIMEOUT":
+      return "已有操作正在进行，请稍后再试。";
+    case "E_VERIFY_FAILED":
+    case "E_TDD_EVIDENCE_REQUIRED":
+    case "E_AGENT_TASK_FAILED":
+      return "验证未通过，需要先修复实现或测试问题。";
+    case "E_SECURITY_BLOCKED":
+    case "E_PATH_OUTSIDE_REPO":
+    case "E_SYMLINK_BLOCKED":
+      return "该操作触及受保护范围，需要调整方案或明确授权。";
+    default:
+      return "工作流暂时无法继续；如需排查详情，请切换到诊断模式。";
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function auditTextView(result: CommandResult): string {
   const lines = [`SDD Status: ${result.state}`];
   if (result.changeId !== undefined) {
     lines.push("", "Change:", result.changeId);

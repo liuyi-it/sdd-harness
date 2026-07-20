@@ -2,11 +2,15 @@
 
 ## 步骤
 
-1. 运行以下命令读取内部流程结果；`--json` 仅用于解析，不能原样展示给用户：
+1. 先判断 `$ARGUMENTS` 是首次需求，还是已有 loop 的控制参数：
+   - 首次需求不能为空。使用以下命令读取内部流程结果；`--json` 仅用于解析，不能原样展示给用户：
 
 ```bash
 sdd auto "$ARGUMENTS" --json
 ```
+
+- `--resume`、`--restart`、`--stop`、`--events`、`--loop-status` 是控制参数。构造相应的精确 CLI 命令，例如 `sdd auto --resume --json`，不要把它们包进 `"$ARGUMENTS"` 作为需求传入。
+- 未提供需求或控制参数时，不调用 CLI，直接向用户询问要完成的需求。
 
 2. 如果结果包含 `actionRequired.type` = `AGENT_TASK_EXECUTION`：
 
@@ -31,6 +35,7 @@ sdd auto "$ARGUMENTS" --json
 - 不得直接展示 CLI JSON、Core CommandResult、`.sdd/state.json`、`policyBundle`、`actionRequired`、Context Pack、任务/运行标识、内部路径、错误码或调试字段，除非用户明确要求原始输出或排障细节。
 - 使用简洁中文，先说明结论；随后仅说明用户相关的变更、验证结果、阻塞原因和下一步。
 - 进入 `CLARIFYING` 时，解释需求中缺少的业务信息，并只列出需要用户回答的问题；必要时给出一条可直接回复的示例，不解释内部阶段或门禁实现。
+- 收到澄清回答后，使用 `sdd new --answers '<JSON answers>' --json` 提交答案；不要重试空的 `sdd new`，也不要默认加 `--non-interactive`。该参数仅适合允许需求不完整时直接失败的无人值守流程。
 
 ## 安全规则
 

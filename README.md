@@ -61,6 +61,8 @@ sdd archive
 
 `sdd auto` 在需要 Agent 编码或用户澄清时暂停，不会绕过交互边界自动修改代码。
 
+首次调用 `sdd new` 或 `sdd auto` 必须携带非空需求；没有需求时，Agent 应先询问用户。不要默认添加 `--non-interactive`，它仅适用于允许需求不完整时直接失败的无人值守流程。若命令进入澄清状态，收集用户回答后使用 `sdd new --answers '<JSON answers>' --json` 继续。
+
 ## Agent 构建协议
 
 ```bash

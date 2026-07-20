@@ -34,6 +34,8 @@ describe("sdd CLI", () => {
     expect(out).toContain("init");
     expect(out).toContain("status");
     expect(out).toContain("build");
+    expect(out).toContain("首次执行 new 或 auto 必须传入非空 <需求>");
+    expect(out).toContain("sdd new --answers");
   });
 
   it("无参数时也输出帮助", () => {
