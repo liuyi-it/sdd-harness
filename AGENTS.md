@@ -2,7 +2,7 @@
 
 ## 项目结构与模块划分
 
-本仓库是一个基于 Node.js workspaces 的多包项目。核心流程在 `packages/core/src`，包括状态机、命令实现、安全校验和安装器；对应测试在 `packages/core/test`。CLI 入口在 `packages/cli`，提供 `sdd` / `sdd-harness` 命令。Agent Adapter 层分为 `packages/claude-code-adapter`、`packages/codex-adapter`、`packages/opencode-adapter`，分别提供命令/技能清单与规则文件。`packages/codebase-memory` 负责内置托管 codebase-memory-mcp 及降级处理。`packages/agent-protocol` 定义 Agent Task Protocol 类型与校验。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目。
+本仓库是一个 Rust Cargo workspace 项目。核心领域逻辑在 `crates/sdd-core/src`，包括状态机、命令实现、安全校验、知识图谱适配与引擎；对应测试在 `crates/sdd-core/tests`。CLI 入口在 `crates/sdd-cli`，提供 `sdd` / `sdd-harness` 命令。`assets/adapters/` 存放 Agent Adapter 模板（claude/codex/opencode/generic-agent 的命令、技能与规则文件），编译期嵌入二进制，`sdd init` 时按 Agent 写出。`crates/sdd-core/src/knowledge/` 负责 GitNexus / CodeGraph 双引擎探测、索引、按 intent 路由与降级文件扫描。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目，`vendor/` 存放上游快照（openspec/superpowers）。
 
 ## Karpathy 风格执行规则
 
@@ -13,34 +13,32 @@
 
 ## 构建、测试与开发命令
 
-- `npm install`：安装根项目与 workspaces 依赖。
-- `npm run build`：执行 TypeScript 构建，产出各包编译结果。
-- `npm run typecheck`：仅做类型检查，不生成额外产物。
-- `npm run lint`：运行 ESLint，检查代码风格与常见错误。
-- `npm run format:check`：检查 Prettier 格式是否一致。
-- `npm run format`：自动格式化仓库文件。
-- `npm test`：运行全部 Vitest 测试。
+- `cargo build --workspace`：构建全部 crate。
+- `cargo test --workspace`：运行全部测试。
+- `cargo clippy --workspace --all-targets -- -D warnings`：静态检查（必须零告警）。
+- `cargo fmt --check`：检查格式。
+- `cargo fmt`：自动格式化。
 
-提交前至少运行 `npm run format:check && npm run lint && npm run typecheck && npm test`。
+提交前至少运行 `cargo fmt --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`。
 
 ## 编码风格与命名约定
 
-默认使用 TypeScript ESM、2 空格缩进，遵循现有文件风格。优先做小而集中的改动，不重写无关代码。文件名保持小写短横线或现有命名方式，如 `project-installer.ts`、`sdd.build.md`。新增注释以中文为主，重点解释约束、边界和原因，不写空洞注释。
+默认使用 Rust edition 2021、4 空格缩进（cargo fmt 默认），遵循现有文件风格。优先做小而集中的改动，不重写无关代码。文件名保持小写短横线，如 `state-store.rs`、`task-executor.rs`。新增注释以中文为主，重点解释约束、边界和原因，不写空洞注释。错误码（`E_*`）、命令字面量（`sdd xxx`）、schema 键保持英文。
 
 ## 测试要求
 
-测试框架为 Vitest。单元测试使用 `*.test.ts` 命名，放在对应包的 `test` 目录。行为变更或缺陷修复必须补测试，优先覆盖 Core 命令契约、CLI 输出格式和 Adapter 契约一致性。
+测试框架为内置 `#[cfg(test)]` 单元测试与 `crates/sdd-core/tests` 集成测试。行为变更或缺陷修复必须补测试，优先覆盖命令契约、CLI 输出格式（退出码/错误码）和知识图谱路由一致性。
 
 ## 提交与 PR 规范
 
-现有提交风格以简短前缀为主，例如 `docs: ...`、`i18n: ...`，也接受直接描述功能的提交标题。建议格式：`type: 简要说明`。PR 应说明变更目的、影响范围、验证命令与结果；若改动命令文案、README 或插件导入流程，附关键示例即可。
+现有提交风格以简短前缀为主，例如 `docs: ...`、`feat: ...`、`fix: ...`。PR 应说明变更目的、影响范围、验证命令与结果；若改动命令文案、README 或 Adapter 模板，附关键示例即可。
 
 ## 额外约束
 
-不要提交密钥、凭据、生成产物或无关依赖变更。涉及 Adapter 行为时，同时检查 CLI 入口和 `packages/*-adapter` 自带命令/技能模板。
+不要提交密钥、凭据、生成产物（target/）或无关依赖变更。涉及 Adapter 行为时，同时检查 `assets/adapters/` 模板与 `crates/sdd-core/src/assets.rs` 的写入映射。
 
 ## 其他规则
 
-1. 原始需求文档在 docs/需求文档.md;
+1. 原始需求文档在 docs/三期需求文档.md（总体规划与设计见 docs/superpowers/specs/）；
 2. git commit 中的内容，请使用中文说明；
 3. 当前项目是**中文项目**，除给 AI 的 Prompt（skill、commands/\_.md 提示词）和代码中必要的英文（错误码 `E\__`、命令字面量 `sdd xxx`、schema 键、标识符）外，全项目中文化；

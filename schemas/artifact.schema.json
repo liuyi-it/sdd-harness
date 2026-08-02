@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/artifact.schema.json",
+  "title": "SDD 制品清单项",
+  "type": "object",
+  "required": ["type", "hash"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["spec", "design", "plan", "report", "context-pack", "summary", "input"]
+    },
+    "hash": { "type": "string" },
+    "contentPath": { "type": ["string", "null"] },
+    "status": {
+      "type": "string",
+      "enum": ["MISSING", "READY", "CANDIDATE", "STALE"]
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

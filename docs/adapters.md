@@ -33,7 +33,7 @@ Adapter 继续只消费当前命令或 handoff 的 Policy Bundle。Ponytail-deri
 
 不要默认添加 `--non-interactive`：它会在有未回答需求阻塞问题时直接失败。收到 `CLARIFYING` 后，Agent 应用自然语言向用户提问，并使用 `sdd new --answers '<JSON answers>' --json` 继续。`build` 使用 `next` 或 `complete --task <id> --result <path>`，`codebase` 必须带有效子命令。
 
-通用协议定义和示例位于 `packages/generic-agent-adapter/`。
+通用协议定义和示例位于 `assets/adapters/generic-agent/`。
 
 ## 宿主输出模式
 

@@ -1,62 +1,50 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdd-harness.dev/schemas/state.schema.json",
-  "title": "sdd-harness workflow state",
+  "title": "SDD 状态事实源",
   "type": "object",
-  "required": [
-    "schemaVersion",
-    "version",
-    "updatedAt",
-    "initialized",
-    "currentPhase",
-    "indexStatus",
-    "tasks",
-    "artifacts"
-  ],
+  "required": ["currentPhase", "indexStatus"],
   "properties": {
-    "schemaVersion": { "const": "1.4.0" },
-    "version": { "type": "integer", "minimum": 1 },
-    "updatedAt": { "type": "string", "format": "date-time" },
+    "schemaVersion": { "type": "integer" },
+    "version": { "type": "integer" },
+    "updatedAt": { "type": "string" },
     "initialized": { "type": "boolean" },
-    "activeLoop": {},
+    "currentChangeId": { "type": ["string", "null"] },
+    "currentRunId": { "type": ["string", "null"] },
     "currentPhase": {
-      "enum": [
-        "NOT_INITIALIZED",
-        "INITIALIZING",
-        "INDEXING",
-        "INDEX_READY",
-        "NEW_STARTED",
-        "CLARIFYING",
-        "SPEC_READY",
-        "DESIGNING",
-        "DESIGN_READY",
-        "PLANNING",
-        "PLAN_READY",
-        "BUILDING",
-        "BUILD_WAITING_AGENT",
-        "BUILD_READY",
-        "VERIFYING",
-        "VERIFY_READY",
-        "REVIEWING",
-        "REVIEW_READY",
-        "ARCHIVING",
-        "ARCHIVED",
-        "FAILED",
-        "PAUSED"
-      ]
+      "type": "string",
+      "enum": ["NOT_INITIALIZED", "INITIALIZING", "INDEXING", "INDEX_READY", "NEW_STARTED", "CLARIFYING", "SPEC_READY", "DESIGNING", "DESIGN_READY", "PLANNING", "PLAN_READY", "BUILDING", "BUILD_WAITING_AGENT", "BUILD_READY", "VERIFYING", "VERIFY_READY", "REVIEWING", "REVIEW_READY", "ARCHIVING", "ARCHIVED", "FAILED", "PAUSED"]
     },
     "indexStatus": {
+      "type": "string",
       "enum": ["MISSING", "INDEXING", "INDEX_READY", "STALE", "UNAVAILABLE"]
     },
+    "codebaseProvider": {
+      "type": "string",
+      "enum": ["gitnexus", "codegraph", "fallback-file-scan"]
+    },
+    "degraded": { "type": "boolean" },
+    "degradedReason": { "type": ["string", "null"] },
+    "lastCommand": { "type": ["string", "null"] },
+    "lastError": { "type": ["string", "null"] },
+    "previousPhase": { "type": ["string", "null"] },
+    "inProgressPhase": { "type": ["string", "null"] },
+    "failedCommand": { "type": ["string", "null"] },
+    "failedReason": { "type": ["string", "null"] },
+    "interruptedCommand": { "type": ["string", "null"] },
+    "recoverable": { "type": "boolean" },
+    "suggestedCommand": { "type": ["string", "null"] },
     "tasks": {
       "type": "object",
       "additionalProperties": {
+        "type": "string",
         "enum": ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"]
       }
     },
     "artifacts": {
       "type": "object",
       "additionalProperties": {
+        "type": "string",
         "enum": ["MISSING", "READY", "CANDIDATE", "STALE"]
       }
     }

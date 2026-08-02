@@ -1,0 +1,18 @@
+[package]
+name = "sdd-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "sdd 命令入口（CLI-first 的规格驱动开发支架）"
+
+[[bin]]
+name = "sdd"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+serde_json = { workspace = true }
+sdd-core = { path = "../sdd-core" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

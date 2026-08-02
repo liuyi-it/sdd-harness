@@ -7,15 +7,16 @@
 - CLI-first：`sdd` 是唯一确定性入口，Core 是唯一状态与门禁执行层。
 - Agent-agnostic：内置 Claude Code、Codex、OpenCode Adapter，并提供通用 Agent 协议。
 - 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
-- 代码库理解：自动托管 `codebase-memory-mcp`，不可用时显式降级到文件扫描。
+- 代码库理解：自动探测并索引 GitNexus / CodeGraph 知识图谱，按 intent 路由查询；不可用时显式降级到受限文件扫描。
 - 安全可追溯：校验路径、命令、文件范围、Git delta、TDD 证据和敏感信息。
 - 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
 - 精简制品：目录按需创建，Context Pack 按任务生成，归档最终收敛为三个文件。
 
 ## 环境要求
 
-- Node.js 22 或更高版本
+- Rust 工具链（cargo，edition 2021）
 - Git
+- GitNexus / CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
 - macOS 或 Windows（Git Bash）
 
 ## 安装
@@ -26,9 +27,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会先移除当前 npm 前缀及 `PATH` 中属于本项目的旧版 CLI、依赖和构建产物，再通过 lockfile 全新安装、构建并注册全局命令 `sdd` 和 `sdd-harness`。安装完成时会显示实际命令位置并验证它们指向当前仓库；若同名命令被其他目录遮蔽，安装会明确失败，不再出现“安装成功但运行旧版”的情况。安装失败时会自动回滚未完成的安装产物。项目不发布到 npm。
-
-Windows 下启动 codebase-memory-mcp 时，会依次检查项目本地 npm 包、npm 全局包中的真实 `.exe`、`CODEBASE_MEMORY_MCP_PATH`、`%LOCALAPPDATA%\Programs\codebase-memory-mcp\codebase-memory-mcp.exe` 和 `PATH`，最后才使用 `npx`。npm wrapper 的真实二进制缺失时不会再误判为可用安装。
+安装脚本会先清理旧版全局命令，再通过 `cargo build --release` 构建并注册全局命令 `sdd` 与 `sdd-harness`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时自动回滚未完成的安装产物。项目不发布到 crates.io。
 
 卸载：
 
@@ -36,7 +35,7 @@ Windows 下启动 codebase-memory-mcp 时，会依次检查项目本地 npm 包�
 bash scripts/uninstall.sh
 ```
 
-卸载脚本会移除全局 CLI、本仓库的 `node_modules`、各 workspace 的 `node_modules` / `dist` 以及 TypeScript 构建缓存。业务项目中的 `.sdd/` 保存用户规格、任务和归档，不属于安装残留，不会自动删除。
+卸载脚本会移除全局 CLI 与构建产物。业务项目中的 `.sdd/` 保存用户规格、任务和归档，不属于安装残留，不会自动删除。
 
 ## 快速开始
 
@@ -105,6 +104,17 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 完整参数见 [CLI 命令参考](docs/CLI.md)。
 
+## 代码库理解与降级
+
+`sdd init` 时自动探测 PATH 中的 `gitnexus` 与 `codegraph` 命令，对可用引擎各自索引（`.gitnexus/`、`.codegraph/` 落在业务项目根）。查询按 intent 路由：
+
+| intent | 主路由 | 兜底 |
+| ------ | ------ | ---- |
+| impact / context / related-files / tests / routes / architecture | GitNexus | CodeGraph → 文件扫描 |
+| explore / callers / callees | CodeGraph | GitNexus → 文件扫描 |
+
+两引擎均不可用时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
+
 ## 制品结构
 
 `.sdd/` 子目录按实际命令惰性创建。一个变更的主要制品为：
@@ -113,34 +123,38 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 .sdd/
 ├── state.json
 ├── artifacts.json
+├── config.json
 ├── changes/<change-id>/
 │   ├── spec.md
 │   ├── spec.json
 │   ├── design.md
-│   └── plan.json
-├── context-packs/<change-id>/<task-id>.md
-└── runs/<run-id>/tasks/<task-id>.result.json
+│   ├── plan.json
+│   ├── verify-report.json
+│   └── review-report.json
+├── context-packs/<task-id>/context.md
+├── runs/<run-id>/tasks/<task-id>.result.json
+└── index/knowledge.json
 ```
 
 执行 `sdd archive` 后，变更目录只保留：
 
 ```text
 .sdd/changes/<change-id>/
-├── archive.json   # 规格、计划、质量、简洁性指标、债务与 Git 快照
-├── archive.md     # 人工可读归档报告、简洁性摘要与追踪矩阵
+├── archive.json   # 规格、计划、质量与归档摘要
+├── archive.md     # 人工可读归档报告
 └── .archived      # 完整性标记
 ```
 
 ## 项目结构
 
-| 包                             | 职责                              |
-| ------------------------------ | --------------------------------- |
-| `@sdd-harness/cli`             | 参数解析和命令路由                |
-| `@sdd-harness/core`            | 状态机、制品、Git、安全与质量门禁 |
-| `@sdd-harness/agent-protocol`  | Agent Action/Result 类型与校验    |
-| `@sdd-harness/agent-policies`  | 分阶段工程策略及摘要              |
-| `@sdd-harness/codebase-memory` | MCP 托管、诊断与降级              |
-| `packages/*-adapter`           | 各 Agent 的命令、Skill 或规则模板 |
+| 路径                          | 职责                              |
+| ----------------------------- | --------------------------------- |
+| `crates/sdd-cli`              | 参数解析和命令路由（bin: sdd）    |
+| `crates/sdd-core`             | 状态机、制品、Git、安全与质量门禁 |
+| `crates/sdd-core/src/knowledge` | GitNexus/CodeGraph 探测、路由与降级 |
+| `assets/adapters`             | 各 Agent 的命令、Skill 或规则模板（编译期嵌入） |
+| `vendor`                      | 上游快照（openspec/superpowers）  |
+| `fixtures`                    | 测试样例项目                       |
 
 ## 文档
 
@@ -151,18 +165,15 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 - [安全策略](docs/security.md)
 - [Schema](docs/schemas.md)
 - [Agent 接入](docs/adapters.md)
+- [Rust 转换总体设计](docs/superpowers/specs/2026-08-02-rust-migration-design.md)
 
 ## 开发与验证
 
 ```bash
-npm install
-npm run format:check
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm run validate:schemas
-npm run validate:release
+cargo build --workspace
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
 ## License

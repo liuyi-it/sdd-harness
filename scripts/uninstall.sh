@@ -4,19 +4,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-# shellcheck source=scripts/lib/installation.sh
-source "$SCRIPT_DIR/lib/installation.sh"
 
 echo "=== sdd-harness 卸载 ==="
-echo "移除全局 CLI..."
-sdd_remove_global_cli "$PROJECT_ROOT" || true
 
-echo "清理依赖与构建产物..."
-sdd_remove_local_artifacts "$PROJECT_ROOT" || true
+# 移除所有可能位置注册的全局命令
+for prefix in "$HOME/.local/bin" /usr/local/bin "$HOME/bin"; do
+  rm -f "$prefix/sdd" "$prefix/sdd-harness" 2>/dev/null || true
+done
 
-echo "校验清理结果..."
-sdd_assert_no_global_cli "$PROJECT_ROOT"
-sdd_assert_no_local_artifacts "$PROJECT_ROOT"
+echo "清理构建产物..."
+rm -rf "$PROJECT_ROOT/target"
 
 echo "sdd-harness 已完整卸载"
 echo "说明: 业务项目中的 .sdd/ 是用户数据，未自动删除。"

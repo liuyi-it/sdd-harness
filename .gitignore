@@ -6,5 +6,8 @@ coverage/
 .worktrees/
 /.sdd/
 
+# Rust 构建产物
+target/
+
 # 测试样本项目的构建产物
 fixtures/**/target/

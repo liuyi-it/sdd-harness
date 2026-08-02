@@ -39,9 +39,9 @@ TaskExecutionResult 必须带有任务状态、文件变化、命令证据和 TD
 
 ## 验证、审查与修复
 
-`verify` 读取 `spec.json` 和 `plan.json`，检查场景级任务与证据覆盖。`review` 在 verify 快照基础上执行确定性审查、敏感信息扫描和 Minimality Review：比较 `package.json` 的四类依赖段落，统计文件与行数，并扫描本次 delta 中结构化的 `sdd-debt` 标记。
+`verify` 读取 `spec.json` 和 `plan.json`，检查场景级任务与证据覆盖。`review` 在 verify 快照基础上执行确定性审查、敏感信息扫描和 Minimality Review：比较依赖清单（Rust 项目为 `Cargo.toml` 的 `[dependencies]`），统计文件与行数，并扫描本次 delta 中结构化的 `sdd-debt` 标记。
 
-新增依赖必须在 `plan.json.dependencies` 中以 `ADD` 声明，否则返回 `E_UNPLANNED_DEPENDENCY` 并创建 REPAIR 任务。依赖升级、复杂度和债务 finding 默认不阻断；安全、Spec、文件范围和 TDD 门禁优先级不变。
+新增依赖必须在 `plan.json.dependencies` 中以 `ADD` 声明，否则返回 `E_UNPLANNED_DEPENDENCY` 并创建 REPAIR 任务（Rust 版依赖事实源为 `Cargo.toml`）。依赖升级、复杂度和债务 finding 默认不阻断；安全、Spec、文件范围和 TDD 门禁优先级不变。
 
 可恢复的 verify/review 失败会在 `plan.json` 中追加 REPAIR 任务，并回到构建协议；重复失败达到预算或需要扩大范围时进入 `PAUSED`。
 

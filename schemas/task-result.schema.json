@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/task-result.schema.json",
+  "title": "SDD 任务执行结果",
+  "type": "object",
+  "required": ["taskId", "status"],
+  "properties": {
+    "taskId": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed"]
+    },
+    "message": { "type": "string" },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type", "command", "output"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["command-run", "test", "file-change", "note"]
+          },
+          "command": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "output": { "type": "string" },
+          "file": { "type": "string" }
+        }
+      }
+    },
+    "verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["command"],
+        "properties": {
+          "command": { "type": "string" },
+          "args": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "passed": { "type": "boolean" },
+          "output": { "type": "string" }
+        }
+      }
+    },
+    "filesChanged": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": true
+}
