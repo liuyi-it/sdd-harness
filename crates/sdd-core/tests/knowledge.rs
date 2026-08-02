@@ -12,6 +12,7 @@ fn find_on_path_locates_git() {
 }
 
 #[test]
+#[ignore = "可选真实 CLI 探测；确定性行为由 fake provider 测试覆盖"]
 fn gitnexus_probe_reports_shape_without_panic() {
     let provider = GitNexusProvider::default();
     let result = provider.probe();
@@ -19,6 +20,7 @@ fn gitnexus_probe_reports_shape_without_panic() {
 }
 
 #[test]
+#[ignore = "可选真实 CLI 探测；确定性行为由 fake provider 测试覆盖"]
 fn codegraph_probe_same_shape() {
     let provider = CodeGraphProvider::default();
     let result = provider.probe();
@@ -60,10 +62,11 @@ fn initialize_writes_diagnostics_without_failing() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
     let router = KnowledgeRouter::new();
-    let diags = router.initialize(&cwd);
+    let diags = router.initialize(&cwd, 600_000).unwrap();
     assert_eq!(diags.len(), 2); // gitnexus + codegraph 各一条
                                 // 诊断文件已写入
     assert!(dir.path().join(".sdd/index/knowledge.json").exists());
+    assert!(dir.path().join(".sdd/index/codebase-summary.md").exists());
 }
 
 #[test]
@@ -108,4 +111,40 @@ fn fallback_scan_skips_secret_files() {
     assert!(summary.contains("normal.txt"));
     assert!(!summary.contains("id_rsa"));
     assert!(!summary.contains("secret.pem"));
+}
+
+#[cfg(unix)]
+fn fake_cli() -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("fake-cli");
+    std::fs::write(&path, "#!/bin/sh\nprintf '%s' \"$*\"\n").unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(path, permissions).unwrap();
+    dir
+}
+
+#[cfg(unix)]
+#[test]
+fn fake_providers_use_documented_query_commands() {
+    let fake = fake_cli();
+    let bin = fake.path().join("fake-cli");
+    let codegraph = CodeGraphProvider {
+        bin: Some(bin.clone()),
+    };
+    let gitnexus = GitNexusProvider { bin: Some(bin) };
+    let root = fake.path().to_string_lossy();
+
+    let codegraph_result = codegraph.query(&root, KnowledgeIntent::Context, "OrderService");
+    assert_eq!(
+        codegraph_result.payload["output"],
+        format!("explore OrderService --path {root}")
+    );
+    let gitnexus_result = gitnexus.query(&root, KnowledgeIntent::Impact, "cancel_order");
+    assert_eq!(
+        gitnexus_result.payload["output"],
+        "impact --summary-only cancel_order"
+    );
 }

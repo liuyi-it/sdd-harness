@@ -99,9 +99,16 @@ pub fn create_atomic_tasks(
                     .cloned()
                     .collect(),
             );
-            let expected_new_files: Vec<String> = allowed_files
+            let phase_files: &[String] = if *phase == "RED" {
+                &requirement.test_files
+            } else if *phase == "GREEN" {
+                &requirement.source_files
+            } else {
+                &[]
+            };
+            let expected_new_files: Vec<String> = phase_files
                 .iter()
-                .filter(|f| new_files.contains(*f))
+                .filter(|file| new_files.contains(*file))
                 .cloned()
                 .collect();
             tasks.push(TaskDefinition {
@@ -254,10 +261,6 @@ pub fn build_plan_artifacts(input: &PlanningInput) -> Result<PlanArtifacts, SddE
         input.design.clone(),
     ]
     .join("\n");
-    let context_packs: std::collections::HashMap<String, String> = tasks
-        .iter()
-        .map(|task| (task.id.clone(), render_context_pack(task)))
-        .collect();
     let tasks_markdown = render_tasks(&tasks);
     let test_plan = render_test_plan(&requirements);
     Ok(PlanArtifacts {
@@ -265,7 +268,6 @@ pub fn build_plan_artifacts(input: &PlanningInput) -> Result<PlanArtifacts, SddE
         tasks_markdown,
         test_plan,
         context,
-        context_packs,
     })
 }
 

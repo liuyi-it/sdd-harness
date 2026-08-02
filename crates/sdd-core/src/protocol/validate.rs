@@ -10,6 +10,8 @@ pub struct TaskResultEvidence {
     pub evidence_type: String,
     pub command: String,
     pub output: String,
+    pub passed: Option<bool>,
+    pub expected_failure: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -33,40 +35,35 @@ pub fn validate_task_result(raw: &serde_json::Value) -> Result<TaskExecutionResu
         .filter(|s| *s == "completed" || *s == "failed")
         .ok_or_else(|| invalid("status 必须是 completed 或 failed"))?;
 
+    let evidence_arr = raw
+        .get("evidence")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| invalid("evidence 必须是数组"))?;
     let mut evidence = Vec::new();
-    if let Some(evidence_arr) = raw.get("evidence").and_then(|v| v.as_array()) {
-        for item in evidence_arr {
-            let evidence_type = item
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("note")
-                .to_string();
-            let command = item
-                .get("command")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let output = item
-                .get("output")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            evidence.push(TaskResultEvidence {
-                evidence_type,
-                command,
-                output,
-            });
-        }
+    for item in evidence_arr {
+        let evidence_type = required_string(item, "type")?;
+        let command = required_string(item, "command")?;
+        let output = required_string(item, "output")?;
+        evidence.push(TaskResultEvidence {
+            evidence_type,
+            command,
+            output,
+            passed: optional_bool(item, "passed")?,
+            expected_failure: optional_bool(item, "expectedFailure")?,
+        });
     }
-    let files_changed: Vec<String> = raw
+    let files_changed = raw
         .get("filesChanged")
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
+        .ok_or_else(|| invalid("filesChanged 必须是字符串数组"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| invalid("filesChanged 必须是字符串数组"))
         })
-        .unwrap_or_default();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(TaskExecutionResult {
         task_id: task_id.to_string(),
@@ -78,6 +75,23 @@ pub fn validate_task_result(raw: &serde_json::Value) -> Result<TaskExecutionResu
         evidence,
         files_changed,
     })
+}
+
+fn required_string(raw: &serde_json::Value, field: &str) -> Result<String, SddError> {
+    raw.get(field)
+        .and_then(|value| value.as_str())
+        .map(String::from)
+        .ok_or_else(|| invalid(&format!("evidence.{field} 必须是字符串")))
+}
+
+fn optional_bool(raw: &serde_json::Value, field: &str) -> Result<Option<bool>, SddError> {
+    match raw.get(field) {
+        None => Ok(None),
+        Some(value) => value
+            .as_bool()
+            .map(Some)
+            .ok_or_else(|| invalid(&format!("evidence.{field} 必须是布尔值"))),
+    }
 }
 
 fn invalid(reason: &str) -> SddError {

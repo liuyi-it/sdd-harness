@@ -39,18 +39,18 @@ TaskExecutionResult 必须带有任务状态、文件变化、命令证据和 TD
 
 ## 验证、审查与修复
 
-`verify` 读取 `spec.json` 和 `plan.json`，检查场景级任务与证据覆盖。`review` 在 verify 快照基础上执行确定性审查、敏感信息扫描和 Minimality Review：比较依赖清单（Rust 项目为 `Cargo.toml` 的 `[dependencies]`），统计文件与行数，并扫描本次 delta 中结构化的 `sdd-debt` 标记。
+`verify` 读取 `spec.json` 和 `plan.json`，检查场景级任务与证据覆盖。`review` 在 verify 快照基础上执行确定性审查、敏感信息扫描和 Minimality Review：比较 Cargo 依赖名、统计变更文件，并扫描本次 delta 中显式的 `sdd-debt` / `ponytail:` 标记。
 
-新增依赖必须在 `plan.json.dependencies` 中以 `ADD` 声明，否则返回 `E_UNPLANNED_DEPENDENCY` 并创建 REPAIR 任务（Rust 版依赖事实源为 `Cargo.toml`）。依赖升级、复杂度和债务 finding 默认不阻断；安全、Spec、文件范围和 TDD 门禁优先级不变。
+新增依赖必须在 `plan.json.dependencies` 中以 `ADD` 声明，否则返回 `E_UNPLANNED_DEPENDENCY`（Rust 版依赖事实源为 `Cargo.toml`）。改动规模和债务 finding 默认不阻断；安全、Spec、文件范围和 TDD 门禁优先级不变。
 
-可恢复的 verify/review 失败会在 `plan.json` 中追加 REPAIR 任务，并回到构建协议；重复失败达到预算或需要扩大范围时进入 `PAUSED`。
+verify/review 失败会保留失败报告：证据或验证快照失效时回到 `BUILD_READY`，可直接重试的审查问题保留在 `VERIFY_READY`。
 
 ## 归档
 
 `archive` 重新验证 PASS 报告、任务结果、Git 快照、漂移和追踪链，然后生成：
 
-- `archive.json`：完整机器归档，含简洁性指标、依赖 delta、债务和 Ponytail 来源。
-- `archive.md`：归档报告、简洁性摘要与追踪矩阵。
-- `.archived`：归档时间、状态摘要和组合内容哈希。
+- `archive.json`：完整机器归档，含规格、设计、计划、任务结果、质量报告和 Git 摘要。
+- `archive.md`：归档报告与质量摘要。
+- `.archived`：`archive.md` 与 `archive.json` 的组合内容哈希。
 
 Marker 最后发布。有效 marker 存在但状态尚未更新时，再次执行命令会收敛状态；无效或被篡改的 marker 会被拒绝。

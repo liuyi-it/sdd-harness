@@ -36,8 +36,8 @@ struct GlobalArgs {
     #[arg(long, global = true)]
     change: Option<String>,
     /// 超时秒数
-    #[arg(long, global = true)]
-    timeout: Option<String>,
+    #[arg(long, global = true, value_parser = parse_timeout)]
+    timeout: Option<f64>,
     /// 无人值守模式；遇到未回答的需求阻塞问题直接失败
     #[arg(long, global = true, default_value_t = false)]
     non_interactive: bool,
@@ -57,13 +57,13 @@ enum Command {
         #[arg(long)]
         agent: Option<String>,
         /// 空项目目录结构策略
-        #[arg(long)]
+        #[arg(long = "structurePolicy", alias = "structure-policy", value_parser = ["free-design", "user-defined"])]
         structure_policy: Option<String>,
     },
     /// 显示当前 SDD 状态
     Status {
         /// 显示 loop 状态摘要
-        #[arg(long)]
+        #[arg(long = "loop", alias = "loop-status")]
         loop_status: bool,
     },
     /// 创建新变更（需求）
@@ -72,12 +72,17 @@ enum Command {
         requirement: Vec<String>,
         /// 澄清答案 JSON，如 {"Q-001":"答案"}
         #[arg(long)]
-        answers: Option<String>,
+        #[arg(value_parser = parse_answers)]
+        answers: Option<serde_json::Value>,
     },
     /// 生成设计制品
     Design,
     /// 生成实施计划
-    Plan,
+    Plan {
+        /// 计划内依赖决策 JSON 数组
+        #[arg(long, value_parser = parse_dependencies)]
+        dependencies: Option<serde_json::Value>,
+    },
     /// 构建（build next / build complete）
     Build {
         /// 子命令：next 或 complete
@@ -113,7 +118,7 @@ enum Command {
         events: bool,
         /// 事件条数（与 --events 配合）
         #[arg(long)]
-        tail: Option<String>,
+        tail: Option<u64>,
         /// 查看 auto loop 状态
         #[arg(long, default_value_t = false)]
         loop_status: bool,
@@ -154,12 +159,17 @@ fn main() -> ExitCode {
         }
     };
     let (command, args) = build_request(&cli);
-    let cwd = cli.global.cwd.clone().unwrap_or_else(|| {
-        std::env::current_dir()
-            .unwrap()
-            .to_string_lossy()
-            .to_string()
-    });
+    let cwd = match &cli.global.cwd {
+        Some(cwd) => cwd.clone(),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.to_string_lossy().to_string(),
+            Err(error) => {
+                let error =
+                    SddError::new("E_PATH_OUTSIDE_REPO", &format!("无法读取当前目录：{error}"));
+                return render_error_and_exit(&error, cli.global.json, "FAILED");
+            }
+        },
+    };
     let args = if args.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         None
     } else {
@@ -171,20 +181,94 @@ fn main() -> ExitCode {
         args,
     };
     match sdd_core::run(&request) {
-        Ok(result) => render_and_exit(result),
+        Ok(result) => render_and_exit(&result, cli.global.json),
         Err(error) => {
-            // Core 错误统一转为 CommandResult 再渲染（与 Node 版 CLI 一致：
-            // process.exit(result.exitCode)，错误信息进 stderr）
-            eprintln!("{}", render_text_error(&error));
-            ExitCode::from(clamp_exit(error.exit_code))
+            let state = sdd_core::commands::status::read_phase(&request.cwd)
+                .unwrap_or_else(|_| "FAILED".to_string());
+            render_error_and_exit(&error, cli.global.json, &state)
         }
     }
 }
 
-fn render_and_exit(result: CommandResult) -> ExitCode {
+fn render_error_and_exit(error: &SddError, json: bool, state: &str) -> ExitCode {
+    let result = CommandResult::from_error(state, error);
+    if json {
+        render_and_exit(&result, true)
+    } else {
+        eprintln!("{}", render_text_error(error));
+        ExitCode::from(clamp_exit(error.exit_code))
+    }
+}
+
+/// 渲染 CommandResult 并退出：--json 输出稳定 JSON，否则输出可读文本
+fn render_and_exit(result: &CommandResult, json: bool) -> ExitCode {
     let exit = clamp_exit(result.exit_code);
-    let _ = result;
+    if json {
+        match serde_json::to_string_pretty(result) {
+            Ok(text) => println!("{text}"),
+            Err(e) => eprintln!("序列化结果失败：{e}"),
+        }
+    } else {
+        println!("{}", render_text(result));
+    }
     ExitCode::from(exit)
+}
+
+/// 文本渲染：状态、下一步与错误信息（对齐 Node 版 outputText 语义）
+fn render_text(result: &CommandResult) -> String {
+    let mut lines = Vec::new();
+    if let Some(action) = &result.action_required {
+        lines.push(format!("任务：{}", action.task_id));
+        lines.push(format!("Context Pack：{}", action.context_pack));
+        lines.push(format!("结果文件：{}", action.result_file));
+        lines.push(format!("允许文件：{}", action.allowed_files.join("、")));
+        if !action.verification.is_empty() {
+            let commands: Vec<String> = action
+                .verification
+                .iter()
+                .map(|v| {
+                    if v.args.is_empty() {
+                        v.command.clone()
+                    } else {
+                        format!("{} {}", v.command, v.args.join(" "))
+                    }
+                })
+                .collect();
+            lines.push(format!("验证命令：{}", commands.join("；")));
+        }
+        return lines.join("\n");
+    }
+    if let Some(error) = &result.error {
+        lines.push(format!("错误（{}）：{}", error.code, error.message));
+        if let Some(next) = &error.next {
+            lines.push(format!("建议：{next}"));
+        }
+    } else if result.ok {
+        lines.push(format!("状态：{}", result.state));
+    } else {
+        lines.push(format!("状态：{}（未完成）", result.state));
+    }
+    if let Some(change_id) = &result.change_id {
+        lines.push(format!("变更：{change_id}"));
+    }
+    if let Some(next) = &result.next {
+        lines.push(format!("下一步：{next}"));
+    }
+    if let Some(warnings) = &result.warnings {
+        for warning in warnings {
+            if let Some(message) = warning.get("message").and_then(|m| m.as_str()) {
+                lines.push(format!("警告：{message}"));
+            }
+        }
+    }
+    if let Some(data) = &result.data {
+        if let Ok(text) = serde_json::to_string(data) {
+            if !text.is_empty() && text != "null" {
+                lines.push(format!("数据：{text}"));
+            }
+        }
+    }
+    lines.join("\n")
 }
 
 /// 退出码截断到 0..=255（与 Node process.exitCode 行为一致）
@@ -212,10 +296,8 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
     if let Some(change) = &g.change {
         args.insert("changeId".into(), serde_json::json!(change));
     }
-    if let Some(timeout) = &g.timeout {
-        if let Ok(n) = timeout.parse::<f64>() {
-            args.insert("timeout".into(), serde_json::json!(n));
-        }
+    if let Some(timeout) = g.timeout {
+        args.insert("timeout".into(), serde_json::json!(timeout));
     }
     if g.non_interactive {
         args.insert("nonInteractive".into(), serde_json::json!(true));
@@ -240,7 +322,12 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
             }
             "init"
         }
-        Command::Status { .. } => "status",
+        Command::Status { loop_status } => {
+            if *loop_status {
+                args.insert("loopStatus".into(), serde_json::json!(true));
+            }
+            "status"
+        }
         Command::New {
             requirement,
             answers,
@@ -252,14 +339,17 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
                 );
             }
             if let Some(answers) = answers {
-                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(answers) {
-                    args.insert("answers".into(), parsed);
-                }
+                args.insert("answers".into(), answers.clone());
             }
             "new"
         }
         Command::Design => "design",
-        Command::Plan => "plan",
+        Command::Plan { dependencies } => {
+            if let Some(dependencies) = dependencies {
+                args.insert("dependencies".into(), dependencies.clone());
+            }
+            "plan"
+        }
         Command::Build { sub, task, result } => {
             if let Some(sub) = sub {
                 args.insert("sub".into(), serde_json::json!(sub));
@@ -307,9 +397,7 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
                 args.insert("events".into(), serde_json::json!(true));
             }
             if let Some(tail) = tail {
-                if let Ok(n) = tail.parse::<f64>() {
-                    args.insert("tail".into(), serde_json::json!(n));
-                }
+                args.insert("tail".into(), serde_json::json!(tail));
             }
             if *loop_status {
                 args.insert("loopStatus".into(), serde_json::json!(true));
@@ -334,4 +422,32 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
         }
     };
     (command, serde_json::Value::Object(args))
+}
+
+fn parse_answers(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| format!("answers 不是合法 JSON：{error}"))?;
+    if !value.is_object() {
+        return Err("answers 必须是 JSON 对象".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_timeout(raw: &str) -> Result<f64, String> {
+    let seconds = raw
+        .parse::<f64>()
+        .map_err(|_| "timeout 必须是非负数字".to_string())?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err("timeout 必须是非负有限数字".to_string());
+    }
+    Ok(seconds)
+}
+
+fn parse_dependencies(raw: &str) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| format!("dependencies 不是合法 JSON：{error}"))?;
+    if !value.is_array() {
+        return Err("dependencies 必须是 JSON 数组".to_string());
+    }
+    Ok(value)
 }

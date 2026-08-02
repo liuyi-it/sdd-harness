@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const PHASES: [&str; 4] = ["RED", "GREEN", "REFACTOR", "VERIFY"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskDefinition {
     pub id: String,
     pub title: String,
@@ -31,6 +32,7 @@ pub struct TaskDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct RequirementPlan {
     pub id: String,
     pub title: String,
@@ -40,6 +42,7 @@ pub struct RequirementPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ScenarioRef {
     pub id: String,
     pub title: String,
@@ -51,7 +54,6 @@ pub struct PlanArtifacts {
     pub tasks_markdown: String,
     pub test_plan: String,
     pub context: String,
-    pub context_packs: std::collections::HashMap<String, String>,
 }
 
 #[derive(Debug, Clone)]

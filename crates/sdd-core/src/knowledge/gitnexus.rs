@@ -12,7 +12,6 @@ use super::provider::{
     ProbeResult, QueryResult,
 };
 
-const INDEX_TIMEOUT_MS: u64 = 600_000;
 const QUERY_TIMEOUT_MS: u64 = 60_000;
 
 pub struct GitNexusProvider {
@@ -54,7 +53,19 @@ impl KnowledgeProvider for GitNexusProvider {
         }
     }
 
-    fn index(&self, root: &str) -> IndexResult {
+    fn indexed(&self, root: &str) -> bool {
+        let Some(bin) = &self.bin else {
+            return false;
+        };
+        match run_command(bin, &["status"], root, 15_000) {
+            Ok(output) if output.status.success() => {
+                !String::from_utf8_lossy(&output.stdout).contains("not indexed")
+            }
+            _ => false,
+        }
+    }
+
+    fn index(&self, root: &str, timeout_ms: u64) -> IndexResult {
         let Some(bin) = &self.bin else {
             return IndexResult {
                 ok: false,
@@ -62,7 +73,7 @@ impl KnowledgeProvider for GitNexusProvider {
                 reason: Some("gitnexus 不可用".to_string()),
             };
         };
-        match run_command(bin, &["analyze"], root, INDEX_TIMEOUT_MS) {
+        match run_command(bin, &["analyze", "--index-only"], root, timeout_ms) {
             Ok(out) if out.status.success() => IndexResult {
                 ok: true,
                 degraded: false,
@@ -111,6 +122,38 @@ impl KnowledgeProvider for GitNexusProvider {
                 intent,
             ),
             Err(e) => degraded_result("gitnexus", &e.to_string(), intent),
+        }
+    }
+
+    fn rebuild(&self, root: &str, timeout_ms: u64) -> IndexResult {
+        let Some(bin) = &self.bin else {
+            return IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some("gitnexus 不可用".to_string()),
+            };
+        };
+        match run_command(
+            bin,
+            &["analyze", "--index-only", "--force"],
+            root,
+            timeout_ms,
+        ) {
+            Ok(output) if output.status.success() => IndexResult {
+                ok: true,
+                degraded: false,
+                reason: None,
+            },
+            Ok(output) => IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some(String::from_utf8_lossy(&output.stderr).trim().to_string()),
+            },
+            Err(error) => IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some(error.to_string()),
+            },
         }
     }
 }

@@ -22,6 +22,8 @@
             "enum": ["command-run", "test", "file-change", "note"]
           },
           "command": { "type": "string" },
+          "passed": { "type": "boolean" },
+          "expectedFailure": { "type": "boolean" },
           "args": {
             "type": "array",
             "items": { "type": "string" }

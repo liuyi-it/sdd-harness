@@ -2,5 +2,6 @@
 
 pub mod secrets_scanner;
 pub mod task_scope;
+pub mod verification_command;
 
 pub use task_scope::validate_file_change;

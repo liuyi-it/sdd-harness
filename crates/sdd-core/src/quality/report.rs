@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Issue {
     pub code: String,
     pub severity: String,
@@ -12,6 +13,7 @@ pub struct Issue {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct Report {
     pub kind: String, // verify | review
     pub summary: String,
@@ -20,6 +22,8 @@ pub struct Report {
     pub change_id: Option<String>,
     #[serde(default)]
     pub issues: Vec<Issue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimality: Option<serde_json::Value>,
 }
 
 impl Report {
@@ -30,6 +34,7 @@ impl Report {
             passed: false,
             change_id,
             issues: Vec::new(),
+            minimality: None,
         }
     }
 }

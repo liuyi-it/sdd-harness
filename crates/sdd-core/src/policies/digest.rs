@@ -1,14 +1,14 @@
-//! 策略摘要：FNV-1a 64 位稳定指纹（无外部依赖）。
+//! 策略摘要：SHA-256 稳定指纹。
 //!
 //! 语义对齐 `packages/agent-policies/src/digest.ts` 的 digest 功能：
 //! 同一输入产生同一摘要；内容变化摘要必变。
 
-/// 计算内容稳定摘要（FNV-1a 64）
+/// 计算内容稳定摘要（SHA-256）
 pub fn digest(content: &str) -> String {
-    let mut hash: u64 = 0xcbf29ce484222325;
-    for byte in content.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    digest_bytes(content.as_bytes())
+}
+
+pub fn digest_bytes(content: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(content))
 }

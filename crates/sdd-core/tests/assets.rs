@@ -69,3 +69,20 @@ fn init_command_integrates_adapter_write() {
     assert!(result.ok);
     assert!(dir.path().join(".codex/rules/sdd-harness.md").exists());
 }
+
+#[test]
+fn refresh_keeps_user_agents_content() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("AGENTS.md"), "# 用户规则\n\n保留我\n").unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    write_adapter_files(&cwd, "claude", false).unwrap();
+    write_adapter_files(&cwd, "claude", false).unwrap();
+    let content = std::fs::read_to_string(dir.path().join("AGENTS.md")).unwrap();
+    assert!(content.contains("# 用户规则"));
+    assert!(content.contains("保留我"));
+    assert_eq!(content.matches("<!-- sdd-harness:managed -->").count(), 1);
+    assert_eq!(
+        content.matches("<!-- sdd-harness:managed:end -->").count(),
+        1
+    );
+}

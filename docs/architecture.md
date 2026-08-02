@@ -24,7 +24,7 @@ Core 是唯一推进状态机的入口，外部 Agent 或工具不能绕过 Core
 init → new → design → plan → build → verify → review → archive
 ```
 
-每个写命令先获取 `.sdd/lock`，再验证当前阶段和活动变更。失败时持久化 `failedCommand`、`previousPhase`、`inProgressPhase` 与建议命令，用于恢复或人工处理。
+每个会修改 `.sdd/` 的公开命令先获取 `.sdd/lock`；`auto` 另持有 `.sdd/auto.lock` 串行化整条 loop，内部步骤仍使用普通写锁。命令在对应失败或中断信息存在时持久化 `failedCommand`、`previousPhase`、`inProgressPhase` 与建议命令，用于恢复或人工处理。
 
 `auto` 读取同一状态机并循环调用公开命令。它只自动执行确定性步骤；遇到需求澄清、Agent 编码、失败预算耗尽或人工决策时暂停。
 
@@ -92,7 +92,7 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务�
 
 ## Git 隔离
 
-`workflow.gitIsolation`（config.json）启用后，变更在独立分支与 worktree 中执行。Rust 版一期未实现 worktree 隔离（默认关闭），后续版本接入。系统不会自动 merge、push、reset、clean 或删除 worktree。
+`workflow.gitIsolation`（config.json）启用后，`new` 为变更创建或验证 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`。`build`、`review` 和归档 Git 快照使用该业务工作区，状态与制品仍保留在控制根目录。系统不会自动 merge、push、reset、clean 或删除 worktree。
 
 ## 上游快照
 

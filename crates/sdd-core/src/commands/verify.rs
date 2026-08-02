@@ -14,8 +14,10 @@ use crate::commands::new::current_change_id;
 use crate::commands::plan::read_plan_tasks;
 use crate::contracts::CommandResult;
 use crate::error::SddError;
+use crate::git::GitInspector;
 use crate::quality::report::{Issue, Report};
 use crate::quality::traceability::{coverage_gaps, extract_spec_ids};
+use crate::schema::validate_json;
 use crate::state::file_lock::lock_sdd;
 use crate::state::state_store::TASK_STATUS_DONE;
 use crate::state::StateStore;
@@ -29,8 +31,21 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
 
     let store = StateStore::new(cwd.to_string());
     let state = store.read()?;
+    let business_cwd = state
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.worktree_path.clone())
+        .unwrap_or_else(|| cwd.to_string());
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
+    for key in [
+        format!("{change_id}:spec"),
+        format!("{change_id}:spec-md"),
+        format!("{change_id}:design"),
+        format!("{change_id}:plan"),
+    ] {
+        crate::state::artifact_store::verify_artifact(cwd, &key)?;
+    }
 
     let spec_json_raw = fs::read_to_string(change_dir.join("spec.json"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.json 失败：{e}")))?;
@@ -71,6 +86,51 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
             file: None,
         });
     }
+    if let Some(run_id) = &state.current_run_id {
+        let result_dir = PathBuf::from(cwd)
+            .join(".sdd/runs")
+            .join(run_id)
+            .join("tasks");
+        for task in &tasks {
+            let path = result_dir.join(format!("{}.result.json", task.id));
+            match fs::read_to_string(&path)
+                .ok()
+                .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            {
+                Some(result) => {
+                    let valid = crate::protocol::validate_task_result(&result)
+                        .and_then(|parsed| {
+                            crate::commands::build::validate_task_evidence(task, &parsed, &result)
+                        })
+                        .is_ok()
+                        && result.get("status").and_then(|value| value.as_str())
+                            == Some("completed");
+                    if valid {
+                        continue;
+                    }
+                    issues.push(Issue {
+                        code: "E_TDD_EVIDENCE_REQUIRED".to_string(),
+                        severity: "high".to_string(),
+                        message: format!("任务 {} 缺少有效的完成证据", task.id),
+                        file: Some(path.to_string_lossy().to_string()),
+                    });
+                }
+                _ => issues.push(Issue {
+                    code: "E_TDD_EVIDENCE_REQUIRED".to_string(),
+                    severity: "high".to_string(),
+                    message: format!("任务 {} 缺少有效的完成结果", task.id),
+                    file: Some(path.to_string_lossy().to_string()),
+                }),
+            }
+        }
+    } else {
+        issues.push(Issue {
+            code: "E_TDD_EVIDENCE_REQUIRED".to_string(),
+            severity: "high".to_string(),
+            message: "状态缺少 currentRunId，无法验证任务结果".to_string(),
+            file: None,
+        });
+    }
     let passed = issues.is_empty();
     let mut report = Report::new("verify", Some(change_id.clone()));
     report.passed = passed;
@@ -84,24 +144,38 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
         format!("发现 {} 个覆盖缺口", issues.len())
     };
     report.issues = issues;
+    if GitInspector::is_git_repo(&business_cwd) {
+        report.minimality = Some(json!({
+            "gitFingerprint": GitInspector::workspace_fingerprint(&business_cwd)?,
+        }));
+    }
+    let report_value = serde_json::to_value(&report)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化报告失败：{e}")))?;
+    validate_json("report", &report_value)?;
 
     // 写报告
-    fs::write(
-        change_dir.join("verify-report.json"),
-        serde_json::to_string_pretty(&report)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化报告失败：{e}")))?,
-    )
-    .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入报告失败：{e}")))?;
+    let report_text = serde_json::to_string_pretty(&report)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化报告失败：{e}")))?;
+    fs::write(change_dir.join("verify-report.json"), &report_text)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入报告失败：{e}")))?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:verify-report"),
+        "report",
+        &format!(".sdd/changes/{change_id}/verify-report.json"),
+        &report_text,
+        json!({ "taskCount": tasks.len() }),
+    )?;
 
     if !passed {
         store.update(|s| {
-            s.current_phase = "VERIFY_READY".to_string();
+            s.current_phase = "BUILD_READY".to_string();
             s.failed_command = Some("sdd verify".to_string());
             s.failed_reason = Some(report.summary.clone());
-            s.suggested_command = Some("sdd build next".to_string());
+            s.suggested_command = Some("sdd verify".to_string());
             s.last_command = Some("sdd verify".to_string());
         })?;
-        return Err(SddError::new("E_VERIFY_REQUIRED", &report.summary).with_next("sdd build next"));
+        return Err(SddError::new("E_VERIFY_REQUIRED", &report.summary).with_next("sdd verify"));
     }
 
     store.update(|s| {

@@ -106,13 +106,10 @@ fn check_against(schema: &serde_json::Value, doc: &serde_json::Value, path: &str
                 }
             }
         }
-        // array items（一层）
-        if let Some(items) = schema.get("items") {
-            if let Some(arr) = doc.as_array() {
-                for (i, item) in arr.iter().enumerate() {
-                    problems.extend(check_against(items, item, &format!("{path}[{i}].")));
-                }
-            }
+    }
+    if let (Some(items), Some(arr)) = (schema.get("items"), doc.as_array()) {
+        for (i, item) in arr.iter().enumerate() {
+            problems.extend(check_against(items, item, &format!("{path}[{i}].")));
         }
     }
     // additionalProperties: 字符串枚举映射（tasks/artifacts 的 value 枚举）

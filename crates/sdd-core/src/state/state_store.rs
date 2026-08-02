@@ -14,6 +14,7 @@ use crate::error::SddError;
 
 pub const SDD_DIR: &str = ".sdd";
 pub const STATE_FILE: &str = "state.json";
+const STATE_BACKUP_FILE: &str = "state.json.bak";
 
 /// 当前状态文件 schema 版本（Rust 版新格式）
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
@@ -34,16 +35,24 @@ pub const INDEX_STATUS_UNAVAILABLE: &str = "UNAVAILABLE";
 
 /// worktree 隔离信息
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkspaceInfo {
     #[serde(default)]
     pub branch_name: Option<String>,
     #[serde(default)]
     pub worktree_path: Option<String>,
     pub baseline_commit: String,
+    #[serde(default)]
+    pub baseline_changed_files: Vec<String>,
+    #[serde(default)]
+    pub baseline_file_hashes: std::collections::BTreeMap<String, Option<String>>,
+    #[serde(default)]
+    pub baseline_cargo_manifest: Option<String>,
 }
 
 /// 工作流状态（对应 Node 版 WorkflowState 的核心字段）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct WorkflowState {
     pub schema_version: u32,
     pub version: u32,
@@ -160,36 +169,82 @@ impl StateStore {
         self.sdd_dir().join(STATE_FILE)
     }
 
+    fn backup_path(&self) -> PathBuf {
+        self.sdd_dir().join(STATE_BACKUP_FILE)
+    }
+
     /// 读取状态；文件不存在时返回初始状态（未初始化）
     pub fn read(&self) -> Result<WorkflowState, SddError> {
         let path = self.state_path();
-        if !path.exists() {
+        if !path.exists() && !self.backup_path().exists() {
             return Ok(WorkflowState::not_initialized());
         }
-        let raw = fs::read_to_string(&path)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("读取状态文件失败：{}", e)))?;
-        serde_json::from_str::<WorkflowState>(&raw).map_err(|e| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("状态文件 JSON 解析失败：{}", e),
-            )
+        read_state_file(&path).or_else(|primary_error| {
+            read_state_file(&self.backup_path()).map_err(|_| primary_error)
         })
     }
 
     /// 原子写入：临时文件 + rename，避免半写入状态
     pub fn write(&self, state: &WorkflowState) -> Result<(), SddError> {
+        if let Some(change_id) = state.current_change_id.as_deref() {
+            crate::git::isolation::validate_change_id(change_id)?;
+        }
+        if let Some(run_id) = state.current_run_id.as_deref() {
+            validate_run_id(run_id)?;
+        }
         let dir = self.sdd_dir();
         fs::create_dir_all(&dir).map_err(|e| {
             SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{}", e))
         })?;
         let path = self.state_path();
         let tmp = dir.join("state.json.tmp");
+        let backup = self.backup_path();
+        let value = serde_json::to_value(state)
+            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化状态失败：{}", e)))?;
+        crate::schema::validate_json("state", &value)?;
         let content = serde_json::to_string_pretty(state)
             .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化状态失败：{}", e)))?;
-        fs::write(&tmp, content)
+        let mut file = fs::File::create(&tmp)
+            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建临时状态失败：{}", e)))?;
+        use std::io::Write;
+        file.write_all(content.as_bytes())
             .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入临时状态失败：{}", e)))?;
-        fs::rename(&tmp, &path)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("提交状态文件失败：{}", e)))
+        file.sync_all()
+            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("同步临时状态失败：{}", e)))?;
+
+        if path.exists() && read_state_file(&path).is_ok() {
+            if backup.exists() {
+                fs::remove_file(&backup).map_err(|e| {
+                    SddError::new("E_STATE_CORRUPTED", &format!("清理旧状态备份失败：{}", e))
+                })?;
+            }
+            fs::rename(&path, &backup).map_err(|e| {
+                SddError::new("E_STATE_CORRUPTED", &format!("备份状态文件失败：{}", e))
+            })?;
+        } else if path.exists() {
+            fs::remove_file(&path).map_err(|e| {
+                SddError::new("E_STATE_CORRUPTED", &format!("清理损坏状态文件失败：{}", e))
+            })?;
+        }
+
+        if let Err(error) = fs::rename(&tmp, &path) {
+            if backup.exists() && !path.exists() {
+                fs::copy(&backup, &path).map_err(|restore_error| {
+                    SddError::new(
+                        "E_STATE_CORRUPTED",
+                        &format!("提交状态文件失败：{error}；恢复备份也失败：{restore_error}"),
+                    )
+                })?;
+            }
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("提交状态文件失败：{}", error),
+            ));
+        }
+        if let Ok(dir_file) = fs::File::open(&dir) {
+            let _ = dir_file.sync_all();
+        }
+        Ok(())
     }
 
     /// 读-改-写原子更新
@@ -204,6 +259,54 @@ impl StateStore {
         self.write(&state)?;
         Ok(state)
     }
+}
+
+fn read_state_file(path: &Path) -> Result<WorkflowState, SddError> {
+    let raw = fs::read_to_string(path).map_err(|e| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!("读取状态文件 {} 失败：{}", path.display(), e),
+        )
+    })?;
+    let value: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!("状态文件 JSON 解析失败：{}", e),
+        )
+    })?;
+    crate::schema::validate_json("state", &value)?;
+    let state: WorkflowState = serde_json::from_value(value)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("状态文件结构解析失败：{}", e)))?;
+    if state.schema_version != CURRENT_SCHEMA_VERSION {
+        return Err(SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!(
+                "状态 schemaVersion {} 与当前版本 {} 不兼容",
+                state.schema_version, CURRENT_SCHEMA_VERSION
+            ),
+        ));
+    }
+    if let Some(change_id) = state.current_change_id.as_deref() {
+        crate::git::isolation::validate_change_id(change_id)?;
+    }
+    if let Some(run_id) = state.current_run_id.as_deref() {
+        validate_run_id(run_id)?;
+    }
+    Ok(state)
+}
+
+pub fn validate_run_id(run_id: &str) -> Result<(), SddError> {
+    if run_id.is_empty()
+        || !run_id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '_'
+        })
+    {
+        return Err(SddError::new(
+            "E_SECURITY_BLOCKED",
+            &format!("runId 包含非法字符：{run_id}"),
+        ));
+    }
+    Ok(())
 }
 
 /// 当前 ISO 时间字符串

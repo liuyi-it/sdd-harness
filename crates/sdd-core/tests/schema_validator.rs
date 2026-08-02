@@ -34,7 +34,7 @@ fn invalid_codebase_provider_rejected() {
     let doc = json!({
         "currentPhase": "INDEX_READY",
         "indexStatus": "INDEX_READY",
-        "codebaseProvider": "codebase-memory-mcp"
+        "codebaseProvider": "legacy-provider"
     });
     assert!(validate_json("state", &doc).is_err());
 }
@@ -43,6 +43,16 @@ fn invalid_codebase_provider_rejected() {
 fn all_five_schemas_registered() {
     assert_eq!(SCHEMAS.len(), 5);
     assert_eq!(sdd_core::schema::schema_names().len(), 5);
+}
+
+#[test]
+fn array_items_are_validated() {
+    let doc = json!({
+        "taskId": "TASK-001-RED",
+        "status": "completed",
+        "evidence": [{ "type": "invalid", "command": "cargo test", "output": "failed" }]
+    });
+    assert!(validate_json("task-result", &doc).is_err());
 }
 
 #[test]

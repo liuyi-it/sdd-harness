@@ -112,48 +112,170 @@ impl GitInspector {
                 "当前目录不是 git 仓库",
             ));
         }
-        let out = git(cwd, &["status", "--porcelain"])?;
+        let out = git(
+            cwd,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )?;
         if !out.status.success() {
             return Ok(Vec::new());
         }
+        let records: Vec<&[u8]> = out.stdout.split(|byte| *byte == 0).collect();
         let mut files = Vec::new();
-        for line in String::from_utf8_lossy(&out.stdout).lines() {
-            // 格式：XY path 或 XY -> path
-            let line = line.trim_start_matches([' ', '?', '!']);
-            let line = line.trim_start();
-            let Some((_, path)) = line.split_once(' ') else {
-                if !line.is_empty() {
-                    files.push(line.to_string());
-                }
+        let mut index = 0;
+        while index < records.len() {
+            let record = records[index];
+            if record.len() < 4 {
+                index += 1;
                 continue;
-            };
-            let path = path.trim();
-            if !path.is_empty() {
-                files.push(path.to_string());
             }
+            let status = &record[..2];
+            let path = String::from_utf8_lossy(&record[3..]).to_string();
+            if status.contains(&b'R') || status.contains(&b'C') {
+                index += 1;
+                if let Some(source) = records.get(index) {
+                    let source = String::from_utf8_lossy(source).to_string();
+                    if !source.is_empty() {
+                        files.push(source);
+                    }
+                }
+            }
+            if !path.is_empty() {
+                files.push(path);
+            }
+            index += 1;
         }
         Ok(files)
     }
 
-    /// 文件是否在仓库内（路径安全校验前置；归一化 .. 组件）
-    pub fn path_within_repo(cwd: &str, relative: &str) -> bool {
-        use std::path::Component;
-        let root = PathBuf::from(cwd)
-            .canonicalize()
-            .unwrap_or_else(|_| PathBuf::from(cwd));
-        let joined = root.join(relative);
-        // 归一化 `.`/`..` 组件后再比较，防止 `../outside` 前缀绕过
-        let mut normalized = PathBuf::new();
-        for component in joined.components() {
-            match component {
-                Component::ParentDir => {
-                    normalized.pop();
+    pub fn business_changes(cwd: &str) -> Result<Vec<String>, SddError> {
+        Ok(Self::changed_files(cwd)?
+            .into_iter()
+            .filter(|path| path != ".sdd" && !path.starts_with(".sdd/"))
+            .collect())
+    }
+
+    pub fn file_hashes(
+        cwd: &str,
+        files: &[String],
+    ) -> Result<std::collections::BTreeMap<String, Option<String>>, SddError> {
+        let mut hashes = std::collections::BTreeMap::new();
+        for path in files {
+            let resolved = Self::resolve_repo_path(cwd, path)?;
+            let value = match std::fs::read(&resolved) {
+                Ok(content) => Some(crate::policies::digest::digest_bytes(&content)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(SddError::new(
+                        "E_STATE_CORRUPTED",
+                        &format!("读取 Git 变更文件 {path} 失败：{error}"),
+                    ));
                 }
-                Component::CurDir => {}
-                other => normalized.push(other.as_os_str()),
+            };
+            hashes.insert(path.clone(), value);
+        }
+        Ok(hashes)
+    }
+
+    pub fn changes_since(
+        cwd: &str,
+        baseline_files: &[String],
+        baseline_hashes: &std::collections::BTreeMap<String, Option<String>>,
+    ) -> Result<Vec<String>, SddError> {
+        let baseline: std::collections::BTreeSet<String> = baseline_files.iter().cloned().collect();
+        let current: std::collections::BTreeSet<String> =
+            Self::business_changes(cwd)?.into_iter().collect();
+        let all: Vec<String> = baseline.union(&current).cloned().collect();
+        let current_hashes = Self::file_hashes(cwd, &all)?;
+        Ok(all
+            .into_iter()
+            .filter(|path| {
+                !baseline.contains(path) || baseline_hashes.get(path) != current_hashes.get(path)
+            })
+            .collect())
+    }
+
+    /// 当前 HEAD 与业务工作区内容的稳定指纹；忽略 SDD 自身运行产物。
+    pub fn workspace_fingerprint(cwd: &str) -> Result<String, SddError> {
+        let snapshot = Self::snapshot(cwd)?;
+        let mut files = Self::business_changes(cwd)?;
+        files.sort();
+        files.dedup();
+
+        let mut input = snapshot.head.into_bytes();
+        for file in files {
+            input.push(0);
+            input.extend_from_slice(file.as_bytes());
+            input.push(0);
+            let path = Self::resolve_repo_path(cwd, &file)?;
+            match std::fs::read(path) {
+                Ok(content) => input
+                    .extend_from_slice(crate::policies::digest::digest_bytes(&content).as_bytes()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    input.extend_from_slice(b"<deleted>")
+                }
+                Err(error) => {
+                    return Err(SddError::new(
+                        "E_PATH_OUTSIDE_REPO",
+                        &format!("读取变更文件 {file} 失败：{error}"),
+                    ));
+                }
             }
         }
-        normalized.starts_with(&root)
+        Ok(crate::policies::digest::digest_bytes(&input))
+    }
+
+    /// 读取 HEAD 中的文件；未跟踪或基线中不存在时返回 None。
+    pub fn file_at_head(cwd: &str, relative: &str) -> Result<Option<String>, SddError> {
+        Self::resolve_repo_path(cwd, relative)?;
+        let spec = format!("HEAD:{}", relative.replace('\\', "/"));
+        let output = git(cwd, &["show", &spec])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(String::from_utf8_lossy(&output.stdout).to_string()))
+    }
+
+    /// 将不可信的仓库相对路径解析为安全路径，并拒绝绝对路径、跨目录与 symlink 逃逸。
+    pub fn resolve_repo_path(cwd: &str, relative: &str) -> Result<PathBuf, SddError> {
+        let normalized = relative.replace('\\', "/");
+        let first = normalized.split('/').next().unwrap_or("");
+        if normalized.is_empty()
+            || normalized.starts_with('/')
+            || first.ends_with(':')
+            || normalized
+                .split('/')
+                .any(|part| part == ".." || part.is_empty())
+        {
+            return Err(SddError::new(
+                "E_PATH_OUTSIDE_REPO",
+                &format!("路径不在仓库内：{relative}"),
+            ));
+        }
+
+        let root = PathBuf::from(cwd)
+            .canonicalize()
+            .map_err(|e| SddError::new("E_PATH_OUTSIDE_REPO", &format!("无法解析仓库路径：{e}")))?;
+        let mut candidate = root.clone();
+        for part in normalized.split('/').filter(|part| *part != ".") {
+            candidate.push(part);
+            if candidate.exists() {
+                let resolved = candidate.canonicalize().map_err(|e| {
+                    SddError::new("E_PATH_OUTSIDE_REPO", &format!("无法解析路径：{e}"))
+                })?;
+                if !resolved.starts_with(&root) {
+                    return Err(SddError::new(
+                        "E_SYMLINK_BLOCKED",
+                        &format!("路径通过符号链接逃逸仓库：{relative}"),
+                    ));
+                }
+                candidate = resolved;
+            }
+        }
+        Ok(candidate)
+    }
+
+    pub fn path_within_repo(cwd: &str, relative: &str) -> bool {
+        Self::resolve_repo_path(cwd, relative).is_ok()
     }
 }
 

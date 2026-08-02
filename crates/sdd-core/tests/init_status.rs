@@ -93,6 +93,19 @@ fn codebase_invalid_subcommand_rejected() {
 }
 
 #[test]
+fn codebase_invalid_intent_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = sdd_core::commands::codebase::run_codebase(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&serde_json::json!({
+            "sub": "query", "query": "hello", "intent": "not-an-intent"
+        })),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
+}
+
+#[test]
 fn codebase_query_returns_payload() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
@@ -121,4 +134,35 @@ fn run_init_directly_uses_lock() {
     let cwd = dir.path().to_string_lossy().to_string();
     let result = run_init(&cwd, None).unwrap();
     assert!(result.ok);
+}
+
+#[test]
+fn empty_project_structure_policy_is_persisted_without_warning() {
+    let dir = tempfile::tempdir().unwrap();
+    let result = run(&CommandRequest {
+        command: "init".into(),
+        cwd: dir.path().to_string_lossy().to_string(),
+        args: Some(serde_json::json!({ "structurePolicy": "free-design" })),
+    })
+    .unwrap();
+    assert!(!result
+        .warnings
+        .unwrap_or_default()
+        .iter()
+        .any(|warning| warning["code"] == "W_EMPTY_PROJECT"));
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/config.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(config["workflow"]["structurePolicy"], "free-design");
+}
+
+#[test]
+fn init_rejects_structurally_invalid_existing_config() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    run(&req(dir.path(), "init")).unwrap();
+    std::fs::write(dir.path().join(".sdd/config.json"), "{}").unwrap();
+    let error = run(&req(dir.path(), "init")).unwrap_err();
+    assert_eq!(error.code, "E_STATE_CORRUPTED");
 }

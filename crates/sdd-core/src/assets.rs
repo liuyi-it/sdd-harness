@@ -9,6 +9,9 @@ use std::path::PathBuf;
 
 use crate::error::SddError;
 
+const MANAGED_START: &str = "<!-- sdd-harness:managed -->";
+const MANAGED_END: &str = "<!-- sdd-harness:managed:end -->";
+
 /// 资产文件描述：源路径（assets/adapters 下）→ 项目内目标相对路径
 pub struct AssetFile {
     /// 资产唯一键（如 "claude-code/commands/sdd.auto.md"）
@@ -102,11 +105,25 @@ pub fn write_adapter_files(
     };
     for asset in ADAPTER_ASSETS.iter().filter(|a| a.key.starts_with(prefix)) {
         let target = PathBuf::from(project_root).join(asset.target);
-        let existing = fs::read_to_string(&target).ok();
-        if existing.as_deref() == Some(asset.content) {
+        let existing = match fs::read_to_string(&target) {
+            Ok(content) => Some(content),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    &format!("读取已有 Adapter 文件 {} 失败：{error}", target.display()),
+                ));
+            }
+        };
+        let content = if asset.target == "AGENTS.md" {
+            refresh_managed(existing.as_deref().unwrap_or(""), asset.content)
+        } else {
+            asset.content.to_string()
+        };
+        if existing.as_deref() == Some(content.as_str()) {
             continue;
         }
-        if existing.is_some() && !force {
+        if existing.is_some() && !force && asset.target != "AGENTS.md" {
             // 用户已有同名文件且内容不同：不覆盖，记录跳过
             written.push(format!("跳过（已存在且内容不同）：{}", asset.target));
             continue;
@@ -115,7 +132,7 @@ pub fn write_adapter_files(
             fs::create_dir_all(parent)
                 .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建目录失败：{e}")))?;
         }
-        fs::write(&target, asset.content).map_err(|e| {
+        fs::write(&target, content).map_err(|e| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("写入 {} 失败：{e}", asset.target),
@@ -124,6 +141,24 @@ pub fn write_adapter_files(
         written.push(format!("写入：{}", asset.target));
     }
     Ok(written)
+}
+
+fn refresh_managed(existing: &str, managed: &str) -> String {
+    let block = format!("{MANAGED_START}\n{}\n{MANAGED_END}", managed.trim());
+    let Some(start) = existing.find(MANAGED_START) else {
+        return if existing.trim().is_empty() {
+            format!("{block}\n")
+        } else {
+            format!("{}\n\n{block}\n", existing.trim_end())
+        };
+    };
+    let suffix_start = existing[start..]
+        .find(MANAGED_END)
+        .map(|offset| start + offset + MANAGED_END.len());
+    match suffix_start {
+        Some(end) => format!("{}{}{}", &existing[..start], block, &existing[end..]),
+        None => format!("{}{block}\n", &existing[..start]),
+    }
 }
 
 /// 已注册的 agent 列表

@@ -60,6 +60,90 @@ fn auto_runs_to_agent_boundary() {
     })
     .unwrap();
     assert_eq!(status.state, "BUILD_WAITING_AGENT");
+    let loop_status = run(&CommandRequest {
+        command: "auto".into(),
+        cwd: cwd.clone(),
+        args: Some(json!({ "loopStatus": true })),
+    })
+    .unwrap();
+    assert_eq!(
+        loop_status.data.unwrap()["activeLoop"]["status"],
+        "WAITING_AGENT"
+    );
+
+    let events = run(&CommandRequest {
+        command: "auto".into(),
+        cwd,
+        args: Some(json!({ "events": true, "tail": 2 })),
+    })
+    .unwrap();
+    assert_eq!(events.data.unwrap()["events"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn auto_stop_keeps_workflow_phase_and_resume_restores_loop() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = setup(dir.path());
+    run(&CommandRequest {
+        command: "auto".into(),
+        cwd: cwd.clone(),
+        args: Some(json!({ "requirement": FULL_REQUIREMENT })),
+    })
+    .unwrap();
+    let stopped = run(&CommandRequest {
+        command: "auto".into(),
+        cwd: cwd.clone(),
+        args: Some(json!({ "stop": true })),
+    })
+    .unwrap();
+    assert_eq!(stopped.state, "BUILD_WAITING_AGENT");
+
+    let resumed = run(&CommandRequest {
+        command: "auto".into(),
+        cwd,
+        args: Some(json!({ "resume": true })),
+    })
+    .unwrap();
+    assert_eq!(resumed.state, "BUILD_WAITING_AGENT");
+    assert!(resumed.action_required.is_some());
+}
+
+#[test]
+fn auto_events_reject_corrupted_jsonl() {
+    use std::io::Write;
+
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = setup(dir.path());
+    run(&CommandRequest {
+        command: "auto".into(),
+        cwd: cwd.clone(),
+        args: Some(json!({ "requirement": FULL_REQUIREMENT })),
+    })
+    .unwrap();
+    let state = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap();
+    let run_id = state.active_loop.unwrap()["runId"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let path = dir
+        .path()
+        .join(".sdd/loop/events")
+        .join(format!("{run_id}.jsonl"));
+    writeln!(
+        std::fs::OpenOptions::new().append(true).open(path).unwrap(),
+        "{{broken"
+    )
+    .unwrap();
+
+    let error = run(&CommandRequest {
+        command: "auto".into(),
+        cwd,
+        args: Some(json!({ "events": true })),
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_STATE_CORRUPTED");
 }
 
 #[test]
@@ -113,7 +197,8 @@ mod crate_helpers {
                 json!([])
             } else {
                 json!([{ "type": "command-run", "command": "cargo test",
-                    "output": if is_red { "FAILED: expected" } else { "ok" } }])
+                    "output": if is_red { "FAILED: expected" } else { "ok" },
+                    "passed": !is_red, "expectedFailure": is_red }])
             };
             std::fs::write(
                 &result_path,

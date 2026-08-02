@@ -22,7 +22,8 @@ fn valid_task_result_accepted() {
         "taskId": "TASK-001-RED",
         "status": "completed",
         "evidence": [
-            { "type": "command-run", "command": "cargo test", "output": "FAIL" }
+            { "type": "command-run", "command": "cargo test", "output": "FAIL",
+              "passed": false, "expectedFailure": true }
         ],
         "filesChanged": ["src/lib.rs"]
     });
@@ -47,8 +48,7 @@ fn policy_digest_is_stable() {
     let c = digest("different");
     assert_eq!(a, b);
     assert_ne!(a, c);
-    // 16 位 hex
-    assert_eq!(a.len(), 16);
+    assert_eq!(a.len(), 64);
 }
 
 #[test]

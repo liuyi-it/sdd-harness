@@ -15,11 +15,13 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 - 质量与归档：`VERIFYING`、`REVIEWING`、`ARCHIVING`。
 - 异常控制：`FAILED`、`PAUSED`。
 
+这些值属于稳定枚举；当前实现会持久化 `INITIALIZING`、`NEW_STARTED`、`CLARIFYING`、`BUILDING`、`BUILD_WAITING_AGENT`、`FAILED` 和 `PAUSED`。其余过程值为兼容保留值，调用方不能假设每个命令都会短暂写入对应过程值。
+
 信息不足时 `new` 进入 `CLARIFYING`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；用户中断或需要扩大修复范围时进入 `PAUSED`。
 
 ## 恢复信息
 
-`.sdd/state.json` 同时记录：
+`.sdd/state.json` 提供以下恢复字段；命令只在对应失败或中断信息存在时写入：
 
 - `previousPhase`：最近一次稳定阶段。
 - `inProgressPhase`：被中断或失败的执行阶段。
@@ -46,6 +48,6 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 ## 注意事项
 
-- 空项目初始化可能进入 `CLARIFYING`，等待确认目录结构规范。
+- 空项目初始化仍进入 `INDEX_READY`，未指定 `--structurePolicy` 时返回 `W_EMPTY_PROJECT`；显式选择 `free-design` 或 `user-defined` 后写入配置并消除该警告。
 - 归档 marker 已成功写入但状态更新中断时，再次执行 `archive` 会验证哈希并收敛到 `ARCHIVED`。
 - 状态损坏或版本不受支持时返回 `E_STATE_CORRUPTED`，不会自动猜测恢复。

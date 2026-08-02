@@ -17,6 +17,8 @@
 - Rust 工具链（cargo，edition 2021）
 - Git
 - GitNexus / CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
+  - CodeGraph 可使用独立安装包，无需 Node.js。
+  - GitNexus 作为外部 npm CLI 使用时，当前要求 Node.js 22 或更高版本；sdd-harness 自身运行时不依赖 Node.js。
 - macOS 或 Windows（Git Bash）
 
 ## 安装
@@ -27,7 +29,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会先清理旧版全局命令，再通过 `cargo build --release` 构建并注册全局命令 `sdd` 与 `sdd-harness`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时自动回滚未完成的安装产物。项目不发布到 crates.io。
+安装脚本会先备份并清理旧版全局命令，再通过 `cargo build --release` 构建并注册全局命令 `sdd` 与 `sdd-harness`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时恢复原版本。项目不发布到 crates.io。
 
 卸载：
 
@@ -114,6 +116,8 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 | explore / callers / callees | CodeGraph | GitNexus → 文件扫描 |
 
 两引擎均不可用时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
+
+CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm Noncommercial 许可证。商业场景启用 GitNexus 前需单独完成许可证评估，也可以只安装 CodeGraph，未覆盖的 intent 会按既定降级链处理。
 
 ## 制品结构
 

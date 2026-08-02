@@ -6,7 +6,7 @@
 
 ## 配置 OpenCode 规则
 
-将 `packages/opencode-adapter/rules/sdd-harness.md` 复制到 OpenCode 规则目录。
+在业务项目根执行 `sdd init --agent opencode`，规则会写入 `.opencode/rules/sdd-harness.md`。
 
 ## 使用
 

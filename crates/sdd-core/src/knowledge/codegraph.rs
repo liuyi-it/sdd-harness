@@ -12,7 +12,6 @@ use super::provider::{
     ProbeResult, QueryResult,
 };
 
-const INDEX_TIMEOUT_MS: u64 = 600_000;
 const QUERY_TIMEOUT_MS: u64 = 60_000;
 
 pub struct CodeGraphProvider {
@@ -54,7 +53,11 @@ impl KnowledgeProvider for CodeGraphProvider {
         }
     }
 
-    fn index(&self, root: &str) -> IndexResult {
+    fn indexed(&self, root: &str) -> bool {
+        std::path::Path::new(root).join(".codegraph").exists()
+    }
+
+    fn index(&self, root: &str, timeout_ms: u64) -> IndexResult {
         let Some(bin) = &self.bin else {
             return IndexResult {
                 ok: false,
@@ -62,7 +65,12 @@ impl KnowledgeProvider for CodeGraphProvider {
                 reason: Some("codegraph 不可用".to_string()),
             };
         };
-        match run_command(bin, &["init"], root, INDEX_TIMEOUT_MS) {
+        let command = if std::path::Path::new(root).join(".codegraph").exists() {
+            "sync"
+        } else {
+            "init"
+        };
+        match run_command(bin, &[command], root, timeout_ms) {
             Ok(out) if out.status.success() => IndexResult {
                 ok: true,
                 degraded: false,
@@ -87,7 +95,9 @@ impl KnowledgeProvider for CodeGraphProvider {
         };
         let path_arg = "--path";
         let args: Vec<&str> = match intent {
-            KnowledgeIntent::Explore => vec!["explore", query, path_arg, root],
+            KnowledgeIntent::Explore | KnowledgeIntent::Context => {
+                vec!["explore", query, path_arg, root]
+            }
             KnowledgeIntent::Callers => vec!["callers", query, path_arg, root],
             KnowledgeIntent::Callees => vec!["callees", query, path_arg, root],
             KnowledgeIntent::Impact => vec!["impact", query, path_arg, root],
@@ -115,5 +125,36 @@ impl KnowledgeProvider for CodeGraphProvider {
             ),
             Err(e) => degraded_result("codegraph", &e.to_string(), intent),
         }
+    }
+
+    fn rebuild(&self, root: &str, timeout_ms: u64) -> IndexResult {
+        let Some(bin) = &self.bin else {
+            return IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some("codegraph 不可用".to_string()),
+            };
+        };
+        command_result(run_command(bin, &["index", "--force"], root, timeout_ms))
+    }
+}
+
+fn command_result(result: Result<std::process::Output, std::io::Error>) -> IndexResult {
+    match result {
+        Ok(out) if out.status.success() => IndexResult {
+            ok: true,
+            degraded: false,
+            reason: None,
+        },
+        Ok(out) => IndexResult {
+            ok: false,
+            degraded: true,
+            reason: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+        },
+        Err(error) => IndexResult {
+            ok: false,
+            degraded: true,
+            reason: Some(error.to_string()),
+        },
     }
 }

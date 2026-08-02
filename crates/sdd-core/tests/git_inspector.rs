@@ -61,10 +61,57 @@ fn changed_files_reports_uncommitted() {
 }
 
 #[test]
+fn workspace_fingerprint_changes_with_business_content() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "1").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    let cwd = dir.path().to_string_lossy();
+    let before = GitInspector::workspace_fingerprint(&cwd).unwrap();
+    std::fs::write(dir.path().join("a.txt"), "2").unwrap();
+    let after = GitInspector::workspace_fingerprint(&cwd).unwrap();
+    assert_ne!(before, after);
+}
+
+#[test]
+fn file_at_head_distinguishes_tracked_and_untracked_files() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("a.txt"), "base").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    std::fs::write(dir.path().join("a.txt"), "current").unwrap();
+    std::fs::write(dir.path().join("b.txt"), "new").unwrap();
+    let cwd = dir.path().to_string_lossy();
+    assert_eq!(
+        GitInspector::file_at_head(&cwd, "a.txt")
+            .unwrap()
+            .as_deref(),
+        Some("base")
+    );
+    assert_eq!(GitInspector::file_at_head(&cwd, "b.txt").unwrap(), None);
+}
+
+#[test]
 fn path_within_repo_checks_scope() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());
     let cwd = dir.path().to_string_lossy().to_string();
     assert!(GitInspector::path_within_repo(&cwd, "src/lib.rs"));
     assert!(!GitInspector::path_within_repo(&cwd, "../outside.txt"));
+    assert!(!GitInspector::path_within_repo(&cwd, "..\\outside.txt"));
+    assert!(!GitInspector::path_within_repo(&cwd, "/tmp/outside.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn path_within_repo_rejects_symlink_escape() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let err = GitInspector::resolve_repo_path(&cwd, "link/result.json").unwrap_err();
+    assert_eq!(err.code, "E_SYMLINK_BLOCKED");
 }

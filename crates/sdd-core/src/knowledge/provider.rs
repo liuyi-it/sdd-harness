@@ -1,7 +1,7 @@
 //! 知识图谱 Provider 抽象：GitNexus / CodeGraph / 受限文件扫描。
 //!
-//! 替代 Node 版的 codebase-memory-mcp 托管：Rust 版不托管 MCP server，
-//! 而是通过 `std::process::Command` 子进程调用 gitnexus/codegraph CLI。
+//! Rust 版不托管外部服务进程，而是通过 `std::process::Command`
+//! 子进程调用 gitnexus/codegraph CLI。
 //! 语义对齐 Node 版 `packages/core/src/codebase/mcp-query.ts` 的
 //! intent 枚举与结果结构（provider/degraded/confidence/reason/payload）。
 
@@ -86,7 +86,14 @@ pub struct QueryResult {
 pub trait KnowledgeProvider {
     fn name(&self) -> &'static str;
     fn probe(&self) -> ProbeResult;
-    fn index(&self, root: &str) -> IndexResult;
+    fn indexed(&self, _root: &str) -> bool {
+        false
+    }
+    /// 索引仓库；`timeout_ms` 控制单次索引超时（init 用短超时避免阻塞）
+    fn index(&self, root: &str, timeout_ms: u64) -> IndexResult;
+    fn rebuild(&self, root: &str, timeout_ms: u64) -> IndexResult {
+        self.index(root, timeout_ms)
+    }
     fn query(&self, root: &str, intent: KnowledgeIntent, query: &str) -> QueryResult;
 }
 
@@ -124,18 +131,16 @@ pub fn run_command(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()?;
+    let stdout = child.stdout.take().expect("stdout 已配置为 piped");
+    let stderr = child.stderr.take().expect("stderr 已配置为 piped");
+    let stdout_reader = std::thread::spawn(move || read_pipe(stdout));
+    let stderr_reader = std::thread::spawn(move || read_pipe(stderr));
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stdout = Vec::new();
-                let mut stderr = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_end(&mut stderr);
-                }
+                let stdout = join_reader(stdout_reader)?;
+                let stderr = join_reader(stderr_reader)?;
                 return Ok(Output {
                     status,
                     stdout,
@@ -146,6 +151,8 @@ pub fn run_command(
                 if std::time::Instant::now() > deadline {
                     let _ = child.kill();
                     let _ = child.wait();
+                    let _ = stdout_reader.join();
+                    let _ = stderr_reader.join();
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         format!("命令 {} 执行超时（{}ms）", bin.display(), timeout_ms),
@@ -155,9 +162,26 @@ pub fn run_command(
             }
             Err(e) => {
                 let _ = child.kill();
+                let _ = child.wait();
+                let _ = stdout_reader.join();
+                let _ = stderr_reader.join();
                 return Err(e);
             }
         }
+    }
+
+    fn read_pipe(mut pipe: impl Read) -> Result<Vec<u8>, std::io::Error> {
+        let mut output = Vec::new();
+        pipe.read_to_end(&mut output)?;
+        Ok(output)
+    }
+
+    fn join_reader(
+        reader: std::thread::JoinHandle<Result<Vec<u8>, std::io::Error>>,
+    ) -> Result<Vec<u8>, std::io::Error> {
+        reader
+            .join()
+            .map_err(|_| std::io::Error::other("读取子进程输出的线程异常"))?
     }
 }
 

@@ -64,7 +64,7 @@ pub fn run_status(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
     // --loop 时返回 activeLoop 摘要
     let mut data = serde_json::to_value(&state).unwrap_or(json!({}));
     if args
-        .and_then(|a| a.get("loop"))
+        .and_then(|a| a.get("loopStatus").or_else(|| a.get("loop")))
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
         && state.active_loop.is_some()

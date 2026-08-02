@@ -46,7 +46,7 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
             )
         }
         "design" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::design::run_design(
                 cwd,
                 request.args.as_ref(),
@@ -54,27 +54,27 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
             )
         }
         "plan" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::plan::run_plan(cwd, request.args.as_ref(), &engines::tdd::TddEngine::new())
         }
         "build" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::build::run_build(cwd, request.args.as_ref())
         }
         "verify" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::verify::run_verify(cwd, request.args.as_ref())
         }
         "review" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::review::run_review(cwd, request.args.as_ref())
         }
         "archive" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::archive::run_archive(cwd, request.args.as_ref())
         }
         "auto" => {
-            ensure_phase(cwd, request.command.as_str())?;
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::auto::run_auto(cwd, request.args.as_ref())
         }
         _ => Err(SddError::new(
@@ -85,19 +85,39 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
 }
 
 /// 写命令前置检查：未初始化 / 已归档只读 / 阶段门禁（对齐 Node 版 core.ts 的分发前检查）
-fn ensure_phase(cwd: &str, command: &str) -> Result<(), SddError> {
-    let phase = read_phase(cwd)?;
+fn ensure_phase(
+    cwd: &str,
+    command: &str,
+    args: Option<&serde_json::Value>,
+) -> Result<(), SddError> {
+    let state = state::StateStore::new(cwd.to_string()).read()?;
+    let phase = state.current_phase.clone();
     if phase == "NOT_INITIALIZED" {
         return Err(
             SddError::new("E_NOT_INITIALIZED", "请先运行 sdd init 再执行其他命令")
                 .with_next("sdd init"),
         );
     }
-    if phase == "ARCHIVED" && command != "archive" && command != "new" {
+    if phase == "ARCHIVED" && command != "archive" && command != "new" && command != "auto" {
         return Err(SddError::new(
             "E_ARCHIVED_READONLY",
             "已归档的变更为只读状态",
         ));
+    }
+    if let Some(requested) = args
+        .and_then(|value| value.get("changeId"))
+        .and_then(|value| value.as_str())
+    {
+        git::isolation::validate_change_id(requested)?;
+        let active = state.current_change_id.as_deref().ok_or_else(|| {
+            SddError::new("E_MISSING_CHANGE", "当前没有活动变更").with_next("sdd new")
+        })?;
+        if requested != active {
+            return Err(SddError::new(
+                "E_MISSING_CHANGE",
+                &format!("指定变更 {requested} 不是当前活动变更 {active}"),
+            ));
+        }
     }
     // 阶段门禁：命令在特定阶段才可用（与 Node 版状态机语义一致）
     let allowed = match command {

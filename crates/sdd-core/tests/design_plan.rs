@@ -96,7 +96,7 @@ fn design_then_plan_updates_phases() {
     assert_eq!(plan.state, "PLAN_READY");
     let change_dir = find_change_dir(dir.path());
     assert!(change_dir.join("plan.json").exists());
-    assert!(change_dir.join("plan.md").exists());
+    assert!(!change_dir.join("plan.md").exists());
     let plan_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(change_dir.join("plan.json")).unwrap())
             .unwrap();
@@ -133,4 +133,45 @@ fn plan_requires_source_and_test_files() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(err.code == "E_UNRESOLVED_BLOCKER");
+}
+
+#[test]
+fn plan_persists_valid_dependency_decisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    run(&CommandRequest {
+        command: "design".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    run(&CommandRequest {
+        command: "plan".into(),
+        cwd,
+        args: Some(json!({
+            "dependencies": [{
+                "name": "serde", "manifest": "Cargo.toml", "action": "ADD",
+                "reason": "序列化协议", "requirements": ["REQ-001"]
+            }]
+        })),
+    })
+    .unwrap();
+    let plan: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(find_change_dir(dir.path()).join("plan.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(plan["dependencies"][0]["name"], "serde");
+}
+
+#[test]
+fn workflow_command_rejects_non_active_change() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    let error = run(&CommandRequest {
+        command: "design".into(),
+        cwd,
+        args: Some(json!({ "changeId": "another-change" })),
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_MISSING_CHANGE");
 }

@@ -22,7 +22,7 @@ fn run_command(
 }
 
 fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
-    for _ in 0..20 {
+    for _ in 0..100 {
         let next = run(&CommandRequest {
             command: "build".into(),
             cwd: cwd.to_string(),
@@ -42,7 +42,8 @@ fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
             json!([])
         } else {
             json!([{ "type": "command-run", "command": "cargo test",
-                "output": if is_red { "FAILED: expected" } else { "ok" } }])
+                "output": if is_red { "FAILED: expected" } else { "ok" },
+                "passed": !is_red, "expectedFailure": is_red }])
         };
         std::fs::write(
             &result_path,
@@ -67,16 +68,44 @@ fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
                 "result": action.result_file,
             })),
         });
-        if result.is_err() {
-            break;
-        }
+        result.unwrap_or_else(|error| panic!("完成任务失败：{} {}", error.code, error.message));
     }
+    assert_eq!(
+        sdd_core::state::StateStore::new(cwd.to_string())
+            .read()
+            .unwrap()
+            .current_phase,
+        "BUILD_READY"
+    );
 }
 
 #[test]
 fn full_workflow_init_to_archive() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    assert_full_workflow(&dir);
+}
+
+#[test]
+fn node_fixture_completes_full_workflow() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/node-basic-service");
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::copy(
+        fixture.join("package.json"),
+        dir.path().join("package.json"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixture.join("src/index.ts"),
+        dir.path().join("src/index.ts"),
+    )
+    .unwrap();
+    assert_full_workflow(&dir);
+}
+
+fn assert_full_workflow(dir: &tempfile::TempDir) {
     let cwd = dir.path().to_string_lossy().to_string();
 
     // init
@@ -124,6 +153,11 @@ fn full_workflow_init_to_archive() {
     // status 报告已归档
     let status = run_command(&cwd, "status", None);
     assert_eq!(status.state, "ARCHIVED");
+    let artifacts: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/artifacts.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(artifacts["artifacts"].as_object().unwrap().len() >= 8);
 }
 
 #[test]

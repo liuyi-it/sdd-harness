@@ -6,6 +6,8 @@
 use std::fs;
 use std::path::PathBuf;
 
+use serde_json::json;
+
 use crate::commands::new::current_change_id;
 use crate::contracts::CommandResult;
 use crate::engines::tdd::tdd_engine::{DesignInput, TddEngine};
@@ -28,6 +30,9 @@ pub fn run_design(
     let state = store.read()?;
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
+    for key in [format!("{change_id}:spec"), format!("{change_id}:spec-md")] {
+        crate::state::artifact_store::verify_artifact(cwd, &key)?;
+    }
 
     let spec = fs::read_to_string(change_dir.join("spec.md"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
@@ -43,14 +48,28 @@ pub fn run_design(
 
     // 从知识图谱获取代码库摘要（降级时使用文件扫描结果）
     let index_dir = PathBuf::from(cwd).join(".sdd/index");
-    let read_index = |name: &str, fallback: &str| -> String {
-        fs::read_to_string(index_dir.join(name)).unwrap_or_else(|_| fallback.to_string())
+    let read_index = |name: &str| -> Result<String, SddError> {
+        fs::read_to_string(index_dir.join(name)).map_err(|e| {
+            SddError::new(
+                "E_MISSING_ARTIFACT",
+                &format!("读取索引摘要 {name} 失败：{e}"),
+            )
+        })
     };
-    let codebase_summary = read_index("codebase-summary.md", "（代码库摘要不可用）");
-    let package_structure = read_index("package-structure.md", "（包结构不可用）");
-    let architecture = read_index("architecture.md", "（架构摘要不可用）");
+    let codebase_summary = read_index("codebase-summary.md")?;
+    let package_structure = read_index("package-structure.md")?;
+    let architecture = read_index("architecture.md")?;
 
-    let existing_design = fs::read_to_string(change_dir.join("design.md")).ok();
+    let existing_design = match fs::read_to_string(change_dir.join("design.md")) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("读取已有 design.md 失败：{error}"),
+            ));
+        }
+    };
     let design = engine.generate_design(&DesignInput {
         spec,
         impact,
@@ -61,6 +80,14 @@ pub fn run_design(
     });
     fs::write(change_dir.join("design.md"), &design)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 design.md 失败：{e}")))?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:design"),
+        "design",
+        &format!(".sdd/changes/{change_id}/design.md"),
+        &design,
+        json!({ "spec": crate::policies::digest::digest(&spec_json_raw) }),
+    )?;
 
     store.update(|s| {
         s.current_phase = "DESIGN_READY".to_string();

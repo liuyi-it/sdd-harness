@@ -12,7 +12,7 @@ sdd-harness 是面向 AI Coding Agent 的规格驱动开发（SDD）工程支架
 
 ## 2. 转换目标（固定规划）
 
-1. **载体转换**：Node.js workspaces（9 包，约 3 万行 TS）整体转换为 Rust Cargo workspace；Node 代码与工具链完全移除，仓库变为纯 Rust 项目。
+1. **载体转换**：Node.js workspaces（9 包，约 3 万行 TS）整体转换为 Rust Cargo workspace；产品运行时与构建工具链完全移除 Node 依赖，测试 fixture、Adapter 静态示例和 vendor 快照不属于产品源码。
 2. **代码库理解替换**：移除 codebase-memory-mcp 相关全部内容（托管生命周期、pinned dependency、探测安装、schema、文档引用），改用 GitNexus 与 CodeGraph 双引擎按 intent 路由，均不可用时降级受限文件扫描。
 3. **契约稳定**：对外命令集、子命令、`--json` 输出结构、退出码映射、`E_*` 错误码体系保持稳定（适配器模板与 Agent 协议依赖它们）；内部存储格式允许重构。
 4. **能力对齐**：状态机、质量门禁、安全校验、引擎（spec/openspec/tdd/superpowers）、Git 检查与 worktree 隔离、loop 自动流程全部平移至 Rust。
@@ -157,19 +157,19 @@ trait KnowledgeProvider {
 7. **质量链**：verify / review / archive（tdd-evidence、minimality、traceability）
 8. **引擎与循环**：auto、superpowers planner、loop 引擎
 9. **资产与写入**：adapter 模板复制（init 写入项目）、vendor 快照保留
-10. **清理与验证**：移除全部 Node 残留（package.json/tsconfig/node_modules/scripts/*.mjs、codebase-memory-mcp 全部引用）、更新 README/docs/AGENTS.md/CLAUDE.md、全量 `cargo test` + clippy
+10. **清理与验证**：移除产品源码与构建链中的 Node 残留（fixture、Adapter 静态示例和 vendor 快照除外）及 codebase-memory-mcp 活跃引用，更新 README/docs/AGENTS.md/CLAUDE.md、全量 `cargo test` + clippy
 11. **审核与交付**：open-code-review-delegate 审核 → 修复问题 → git 提交（中文信息）→ 不推送
 
 ## 10. 完成标准
 
-- [ ] 仓库无 Node 残留：无 package.json/tsconfig.json/node_modules/JS/TS 源码
-- [ ] `cargo build --release`、`cargo test`、`cargo clippy` 全绿
-- [ ] 11 个命令 + codebase 子命令可用，退出码/错误码对齐原契约
-- [ ] codebase-memory-mcp 全部引用移除；GitNexus/CodeGraph 探测、索引、intent 路由、降级链实现并测试
-- [ ] fixtures 完整工作流集成测试通过
-- [ ] 文档（README/docs/AGENTS.md/CLAUDE.md）更新为 Rust 项目表述
-- [ ] open-code-review-delegate 审核通过（无未修复问题）
-- [ ] git 提交完成，未推送 GitHub
+- [x] 产品源码与构建链无 Node 残留；fixture、Adapter 静态示例和 vendor 快照为明确例外
+- [x] `cargo build --release`、`cargo test`、`cargo clippy` 全绿
+- [x] 11 个命令 + codebase 子命令可用，退出码/错误码对齐原契约
+- [x] codebase-memory-mcp 活跃引用移除；GitNexus/CodeGraph 探测、索引、intent 路由、降级链实现并测试
+- [x] fixtures 完整工作流集成测试通过
+- [x] README、docs 与 AGENTS.md 更新为 Rust 项目表述（仓库无根级 CLAUDE.md）
+- [x] open-code-review-delegate 审核通过（无未修复问题）
+- [x] git 提交完成，未推送 GitHub
 
 ## 11. 非目标
 

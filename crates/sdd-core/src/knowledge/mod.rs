@@ -1,4 +1,4 @@
-//! 知识图谱适配层：GitNexus + CodeGraph 双引擎（替代 codebase-memory-mcp）。
+//! 知识图谱适配层：GitNexus + CodeGraph 双引擎。
 
 pub mod codegraph;
 pub mod fallback_scan;

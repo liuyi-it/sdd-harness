@@ -38,7 +38,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
     let mut requirements: Vec<SpecRequirement> = Vec::new();
     let mut operation: Option<String> = None;
     let mut requirement: Option<SpecRequirement> = None;
-    let mut scenario: Option<SpecScenario> = None;
+    let mut in_scenario = false;
     let mut statement_lines: Vec<String> = Vec::new();
 
     for (offset, raw_line) in lines.iter().enumerate().skip(first_content + 1) {
@@ -52,7 +52,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             if let Some(req) = requirement.take() {
                 requirements.push(finish_requirement(req, &mut statement_lines));
             }
-            scenario = None;
+            in_scenario = false;
             operation = Some(caps.get(1).unwrap().as_str().to_string());
             continue;
         }
@@ -68,7 +68,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             if let Some(req) = requirement.take() {
                 requirements.push(finish_requirement(req, &mut statement_lines));
             }
-            scenario = None;
+            in_scenario = false;
             let requirement_index = requirements.len() + 1;
             requirement = Some(SpecRequirement {
                 id: format!("REQ-{}", pad(requirement_index)),
@@ -88,27 +88,31 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             if scenario_title.is_empty() {
                 return Err(format!("第 {line_no} 行的 Scenario 标题不能为空"));
             }
-            scenario = Some(SpecScenario {
+            req.scenarios.push(SpecScenario {
                 id: format!("{}-SC-{}", req.id, pad(req.scenarios.len() + 1)),
                 title: scenario_title,
                 given: Vec::new(),
                 when: Vec::new(),
                 then: Vec::new(),
             });
-            req.scenarios.push(scenario.clone().unwrap());
+            in_scenario = true;
             continue;
         }
 
         if let Some(caps) = step_re.captures(line) {
-            let scenario = scenario
+            if !in_scenario {
+                return Err(format!("第 {line_no} 行存在孤立场景步骤"));
+            }
+            let stored_scenario = requirement
                 .as_mut()
+                .and_then(|requirement| requirement.scenarios.last_mut())
                 .ok_or_else(|| format!("第 {line_no} 行存在孤立场景步骤"))?;
             let keyword = caps.get(1).unwrap().as_str().to_lowercase();
             let step_text = caps.get(2).unwrap().as_str().trim().to_string();
             match keyword.as_str() {
-                "given" => scenario.given.push(step_text),
-                "when" => scenario.when.push(step_text),
-                "then" => scenario.then.push(step_text),
+                "given" => stored_scenario.given.push(step_text),
+                "when" => stored_scenario.when.push(step_text),
+                "then" => stored_scenario.then.push(step_text),
                 _ => unreachable!("STEP 正则只匹配 GIVEN/WHEN/THEN"),
             }
             continue;
@@ -123,7 +127,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
         if requirement.is_none() {
             return Err(format!("第 {line_no} 行的内容不属于任何 Requirement"));
         }
-        if scenario.is_some() {
+        if in_scenario {
             return Err(format!("第 {line_no} 行的 Scenario 只允许包含场景步骤"));
         }
         statement_lines.push(line.to_string());

@@ -7,6 +7,8 @@
 
 use serde_json::json;
 
+use crate::error::SddError;
+
 use super::codegraph::CodeGraphProvider;
 use super::fallback_scan::fallback_scan;
 use super::gitnexus::GitNexusProvider;
@@ -33,24 +35,41 @@ impl KnowledgeRouter {
 
     /// 初始化：对 PATH 中可用的引擎执行索引，写入 .sdd/index/knowledge.json 诊断。
     /// 引擎不可用时只记录诊断，不阻断初始化。
-    pub fn initialize(&self, root: &str) -> Vec<serde_json::Value> {
-        let diags = self.index_diagnostics(root);
-        let _ = std::fs::create_dir_all(format!("{root}/.sdd/index"));
-        if let Ok(content) = serde_json::to_string_pretty(&diags) {
-            let _ = std::fs::write(format!("{root}/.sdd/index/knowledge.json"), content);
-        }
-        diags
+    /// `timeout_ms` 控制单次索引超时（init 用短超时避免阻塞初始化）。
+    pub fn initialize(
+        &self,
+        root: &str,
+        timeout_ms: u64,
+    ) -> Result<Vec<serde_json::Value>, SddError> {
+        let diags = self.index_diagnostics(root, timeout_ms, false);
+        self.write_index_artifacts(root, &diags)?;
+        Ok(diags)
+    }
+
+    pub fn rebuild(&self, root: &str, timeout_ms: u64) -> Result<Vec<serde_json::Value>, SddError> {
+        let diags = self.index_diagnostics(root, timeout_ms, true);
+        self.write_index_artifacts(root, &diags)?;
+        Ok(diags)
     }
 
     /// 引擎索引诊断（不写盘，供 codebase status/doctor 使用）
-    pub fn index_diagnostics(&self, root: &str) -> Vec<serde_json::Value> {
+    pub fn index_diagnostics(
+        &self,
+        root: &str,
+        timeout_ms: u64,
+        rebuild: bool,
+    ) -> Vec<serde_json::Value> {
         let providers: [&dyn KnowledgeProvider; 2] = [&self.gitnexus, &self.codegraph];
         providers
             .iter()
             .map(|p| {
                 let probe = p.probe();
                 let index = if probe.available {
-                    p.index(root)
+                    if rebuild {
+                        p.rebuild(root, timeout_ms)
+                    } else {
+                        p.index(root, timeout_ms)
+                    }
                 } else {
                     super::provider::IndexResult {
                         ok: false,
@@ -63,7 +82,7 @@ impl KnowledgeRouter {
                     "installed": probe.available,
                     "version": probe.version,
                     "indexed": index.ok,
-                    "degraded": probe.available && index.degraded,
+                    "degraded": index.degraded,
                     "reason": index.reason,
                 })
             })
@@ -71,7 +90,7 @@ impl KnowledgeRouter {
     }
 
     /// 状态诊断（只探测，不索引）
-    pub fn status(&self) -> Vec<serde_json::Value> {
+    pub fn status(&self, root: &str) -> Vec<serde_json::Value> {
         let providers: [&dyn KnowledgeProvider; 2] = [&self.gitnexus, &self.codegraph];
         providers
             .iter()
@@ -80,11 +99,44 @@ impl KnowledgeRouter {
                 json!({
                     "provider": p.name(),
                     "installed": probe.available,
+                    "indexed": probe.available && p.indexed(root),
                     "version": probe.version,
                     "message": probe.message,
                 })
             })
             .collect()
+    }
+
+    fn write_index_artifacts(
+        &self,
+        root: &str,
+        diags: &[serde_json::Value],
+    ) -> Result<(), SddError> {
+        let dir = std::path::Path::new(root).join(".sdd/index");
+        std::fs::create_dir_all(&dir).map_err(|e| {
+            SddError::new("E_STATE_CORRUPTED", &format!("创建索引诊断目录失败：{e}"))
+        })?;
+        let content = serde_json::to_string_pretty(diags)
+            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化索引诊断失败：{e}")))?;
+        std::fs::write(dir.join("knowledge.json"), content)
+            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入索引诊断失败：{e}")))?;
+
+        let fallback = fallback_scan(root, KnowledgeIntent::Architecture, "");
+        for (key, name) in [
+            ("codebaseSummary", "codebase-summary.md"),
+            ("packageStructure", "package-structure.md"),
+            ("architecture", "architecture.md"),
+        ] {
+            let value = fallback
+                .payload
+                .get(key)
+                .and_then(|value| value.as_str())
+                .unwrap_or("");
+            std::fs::write(dir.join(name), value).map_err(|e| {
+                SddError::new("E_STATE_CORRUPTED", &format!("写入 {name} 失败：{e}"))
+            })?;
+        }
+        Ok(())
     }
 
     /// 按 intent 路由查询；两级引擎都不可用或失败时降级受限文件扫描

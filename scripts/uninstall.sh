@@ -7,9 +7,14 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "=== sdd-harness 卸载 ==="
 
-# 移除所有可能位置注册的全局命令
-for prefix in "$HOME/.local/bin" /usr/local/bin "$HOME/bin"; do
-  rm -f "$prefix/sdd" "$prefix/sdd-harness" 2>/dev/null || true
+# PREFIX 指定时仅卸载该位置；否则清理默认安装位置。
+if [ -n "${PREFIX:-}" ]; then
+  prefixes=("$PREFIX")
+else
+  prefixes=("$HOME/.local/bin" /usr/local/bin "$HOME/bin")
+fi
+for prefix in "${prefixes[@]}"; do
+  rm -f "$prefix/sdd" "$prefix/sdd-harness" "$prefix/sdd.exe" "$prefix/sdd-harness.exe" 2>/dev/null || true
 done
 
 echo "清理构建产物..."

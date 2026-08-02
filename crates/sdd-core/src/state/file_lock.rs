@@ -18,9 +18,11 @@ const LOCK_TTL_SECS: u64 = 10 * 60;
 /// 重试间隔
 const RETRY_DELAY_MS: u64 = 50;
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 struct LockData {
     pid: u32,
+    #[serde(default)]
+    token: String,
     command: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     change_id: Option<String>,
@@ -31,11 +33,14 @@ struct LockData {
 #[derive(Debug)]
 pub struct SddLockGuard {
     path: PathBuf,
+    owner: LockData,
 }
 
 impl Drop for SddLockGuard {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        if read_lock_data(&self.path).as_ref() == Ok(&self.owner) {
+            let _ = fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -47,10 +52,30 @@ pub fn lock_sdd(
     change_id: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<SddLockGuard, SddError> {
+    lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms)
+}
+
+/// auto 使用独立协调锁串行化整条 loop，同时允许内部命令继续获取 `.sdd/lock`。
+pub fn lock_auto(
+    cwd: &str,
+    command: &str,
+    change_id: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<SddLockGuard, SddError> {
+    lock_named(cwd, "auto.lock", command, change_id, timeout_ms)
+}
+
+fn lock_named(
+    cwd: &str,
+    file_name: &str,
+    command: &str,
+    change_id: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<SddLockGuard, SddError> {
     let dir = PathBuf::from(cwd).join(SDD_DIR);
     fs::create_dir_all(&dir)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{e}")))?;
-    let path = dir.join(LOCK_FILE);
+    let path = dir.join(file_name);
     let deadline =
         timeout_ms.map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
 
@@ -83,9 +108,19 @@ pub fn lock_sdd(
             }
             Err(Conflict::Stale) => {
                 // 锁已过期：删除后重试
-                let _ = fs::remove_file(&path);
+                if let Err(error) = fs::remove_file(&path) {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        return Err(SddError::new(
+                            "E_STATE_CORRUPTED",
+                            &format!("清理过期锁失败：{error}"),
+                        ));
+                    }
+                }
                 std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                 continue;
+            }
+            Err(Conflict::Io(message)) => {
+                return Err(SddError::new("E_STATE_CORRUPTED", &message));
             }
         }
     }
@@ -96,6 +131,7 @@ enum Conflict {
     Timeout,
     /// 锁已过期，可抢占
     Stale,
+    Io(String),
 }
 
 fn try_acquire(
@@ -105,6 +141,14 @@ fn try_acquire(
 ) -> Result<SddLockGuard, Conflict> {
     let data = LockData {
         pid: std::process::id(),
+        token: format!(
+            "{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|duration| duration.as_nanos())
+                .unwrap_or(0)
+        ),
         command: command.to_string(),
         change_id: change_id.map(|s| s.to_string()),
         created_at: now_iso(),
@@ -112,13 +156,22 @@ fn try_acquire(
     };
     let content = match serde_json::to_string(&data) {
         Ok(c) => c,
-        Err(_) => return Err(Conflict::Stale),
+        Err(error) => return Err(Conflict::Io(format!("序列化锁信息失败：{error}"))),
     };
     match OpenOptions::new().write(true).create_new(true).open(path) {
         Ok(mut file) => {
             use std::io::Write;
-            let _ = file.write_all(format!("{content}\n").as_bytes());
-            Ok(SddLockGuard { path: path.clone() })
+            if let Err(error) = file
+                .write_all(format!("{content}\n").as_bytes())
+                .and_then(|_| file.sync_all())
+            {
+                let _ = fs::remove_file(path);
+                return Err(Conflict::Io(format!("写入锁文件失败：{error}")));
+            }
+            Ok(SddLockGuard {
+                path: path.clone(),
+                owner: data,
+            })
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             // 读取现有锁数据判断是否过期
@@ -136,7 +189,7 @@ fn try_acquire(
                 Err(_) => Err(Conflict::Stale),
             }
         }
-        Err(_) => Err(Conflict::Stale),
+        Err(error) => Err(Conflict::Io(format!("创建锁文件失败：{error}"))),
     }
 }
 
@@ -193,7 +246,7 @@ fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
     era * 146_097 + doe - 719_468
 }
 
-/// 探测进程是否存活：Unix 用 kill -0，Windows 简化为按过期时间判断
+/// 探测进程是否存活。
 fn process_alive(pid: u32) -> bool {
     #[cfg(unix)]
     {
@@ -204,9 +257,15 @@ fn process_alive(pid: u32) -> bool {
             Err(_) => false,
         }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
     {
-        let _ = pid;
-        false
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
+            .output()
+            .map(|output| {
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
+            })
+            .unwrap_or(false)
     }
 }

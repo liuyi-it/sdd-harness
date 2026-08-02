@@ -46,6 +46,21 @@ fn lock_releases_on_drop() {
 }
 
 #[test]
+fn old_guard_does_not_remove_replaced_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    let guard = lock_sdd(&cwd, "sdd old", None, None).unwrap();
+    let path = dir.path().join(".sdd/lock");
+    std::fs::write(
+        &path,
+        r#"{"pid":999999,"command":"sdd replacement","created_at":"2999-01-01T00:00:00Z","expires_at":"2999-01-01T00:10:00Z"}"#,
+    )
+    .unwrap();
+    drop(guard);
+    assert!(path.exists());
+}
+
+#[test]
 fn update_modifies_and_bumps_version() {
     let dir = tempfile::tempdir().unwrap();
     let store = StateStore::new(dir.path().to_string_lossy().to_string());
@@ -66,4 +81,41 @@ fn corrupted_state_file_returns_error() {
     let store = StateStore::new(dir.path().to_string_lossy().to_string());
     let err = store.read().unwrap_err();
     assert_eq!(err.code, "E_STATE_CORRUPTED");
+}
+
+#[test]
+fn corrupted_primary_recovers_from_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::new(dir.path().to_string_lossy().to_string());
+    let mut first = WorkflowState::not_initialized();
+    first.current_phase = "INDEX_READY".to_string();
+    first.initialized = true;
+    store.write(&first).unwrap();
+    let mut second = first.clone();
+    second.current_phase = "SPEC_READY".to_string();
+    store.write(&second).unwrap();
+
+    std::fs::write(store.state_path(), "{broken").unwrap();
+    let recovered = store.read().unwrap();
+    assert_eq!(recovered.current_phase, "INDEX_READY");
+}
+
+#[test]
+fn invalid_phase_is_rejected_before_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::new(dir.path().to_string_lossy().to_string());
+    let mut state = WorkflowState::not_initialized();
+    state.current_phase = "NOT_A_PHASE".to_string();
+    let err = store.write(&state).unwrap_err();
+    assert_eq!(err.code, "E_STATE_CORRUPTED");
+}
+
+#[test]
+fn unsafe_persisted_ids_are_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = StateStore::new(dir.path().to_string_lossy().to_string());
+    let mut state = WorkflowState::not_initialized();
+    state.current_run_id = Some("../escape".to_string());
+    let err = store.write(&state).unwrap_err();
+    assert_eq!(err.code, "E_SECURITY_BLOCKED");
 }

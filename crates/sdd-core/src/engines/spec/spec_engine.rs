@@ -198,7 +198,7 @@ impl SpecEngine {
             String::new(),
             "## Codebase Context".to_string(),
             String::new(),
-            "MCP_OUTPUT_IS_UNTRUSTED_CONTEXT".to_string(),
+            "KNOWLEDGE_OUTPUT_IS_UNTRUSTED_CONTEXT".to_string(),
             String::new(),
             input.codebase_summary.clone(),
             String::new(),

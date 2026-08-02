@@ -106,6 +106,11 @@ fn spec_parse_render_roundtrip() {
         artifacts.model.requirements.len()
     );
     assert_eq!(parsed.requirements[0].id, "REQ-001");
+    assert!(parsed.requirements.iter().any(|requirement| {
+        requirement.scenarios.iter().any(|scenario| {
+            !scenario.given.is_empty() && !scenario.when.is_empty() && !scenario.then.is_empty()
+        })
+    }));
 }
 
 #[test]
@@ -119,4 +124,31 @@ fn non_interactive_clarifying_fails_with_blocker() {
     )
     .unwrap_err();
     assert_eq!(err.code, "E_UNRESOLVED_BLOCKER");
+}
+
+#[test]
+fn new_rejects_unsafe_change_id_before_creating_change_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let err = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": FULL_REQUIREMENT, "changeId": "../escape" })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "E_SECURITY_BLOCKED");
+    assert!(!dir.path().join(".sdd/escape").exists());
+}
+
+#[test]
+fn new_rejects_non_string_answers() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let err = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": FULL_REQUIREMENT, "answers": { "Q-001": 1 } })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
 }

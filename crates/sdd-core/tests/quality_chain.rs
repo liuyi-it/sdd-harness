@@ -5,8 +5,18 @@ use sdd_core::contracts::CommandRequest;
 use sdd_core::engines::spec::spec_engine::SpecEngine;
 use sdd_core::run;
 use serde_json::json;
+use std::process::Command;
 
 const FULL_REQUIREMENT: &str = "授权用户通过 API 请求取消待处理订单，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?} 执行失败");
+}
 
 fn prepare(dir: &std::path::Path) -> String {
     std::fs::write(dir.join("README.md"), "# demo").unwrap();
@@ -46,7 +56,7 @@ fn prepare(dir: &std::path::Path) -> String {
 
 fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
     // 依次完成所有任务
-    for _ in 0..12 {
+    for _ in 0..100 {
         let next = run(&CommandRequest {
             command: "build".into(),
             cwd: cwd.to_string(),
@@ -66,7 +76,8 @@ fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
             json!([])
         } else {
             json!([{ "type": "command-run", "command": "cargo test",
-                "output": if is_red { "FAILED: expected" } else { "ok" } }])
+                "output": if is_red { "FAILED: expected" } else { "ok" },
+                "passed": !is_red, "expectedFailure": is_red }])
         };
         std::fs::write(
             &result_path,
@@ -91,10 +102,12 @@ fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
                 "result": action.result_file,
             })),
         });
-        if result.is_err() {
-            break;
-        }
+        result.unwrap_or_else(|error| panic!("完成任务失败：{} {}", error.code, error.message));
     }
+    let state = sdd_core::state::StateStore::new(cwd.to_string())
+        .read()
+        .unwrap();
+    assert_eq!(state.current_phase, "BUILD_READY", "应完成全部计划任务");
 }
 
 #[test]
@@ -120,9 +133,8 @@ fn full_chain_verify_review_archive() {
         command: "verify".into(),
         cwd: cwd.clone(),
         args: None,
-    });
-    // verify 可能因任务未全部完成而失败；只有全部完成时才继续断言
-    let Ok(verify) = verify else { return };
+    })
+    .unwrap();
     assert_eq!(verify.state, "VERIFY_READY");
     let review = run(&CommandRequest {
         command: "review".into(),
@@ -154,6 +166,121 @@ fn full_chain_verify_review_archive() {
     assert!(names.contains(&"archive.json".to_string()));
     assert!(names.contains(&"archive.md".to_string()));
     assert!(names.contains(&".archived".to_string()));
+}
+
+#[test]
+fn review_rejects_changes_made_after_verify() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.email", "test@test.test"]);
+    git(dir.path(), &["config", "user.name", "test"]);
+    git(dir.path(), &["add", "README.md"]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    let state = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap();
+    let tasks = sdd_core::commands::plan::read_plan_tasks(
+        &cwd,
+        state.current_change_id.as_deref().unwrap(),
+    )
+    .unwrap();
+    let changed = tasks
+        .iter()
+        .flat_map(|task| task.allowed_files.iter())
+        .find(|path| !path.contains('*'))
+        .unwrap();
+    let changed_path = dir.path().join(changed);
+    std::fs::create_dir_all(changed_path.parent().unwrap()).unwrap();
+    std::fs::write(changed_path, "// changed").unwrap();
+    let error = run(&CommandRequest {
+        command: "review".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_VERIFY_REQUIRED");
+    assert_eq!(
+        sdd_core::state::StateStore::new(cwd)
+            .read()
+            .unwrap()
+            .current_phase,
+        "BUILD_READY"
+    );
+}
+
+#[test]
+fn archive_rejects_failed_review_report() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    run(&CommandRequest {
+        command: "review".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let report_path = change_dir.join("review-report.json");
+    let mut report: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&report_path).unwrap()).unwrap();
+    report["passed"] = json!(false);
+    std::fs::write(report_path, serde_json::to_string_pretty(&report).unwrap()).unwrap();
+    let err = run(&CommandRequest {
+        command: "archive".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, "E_REVIEW_REQUIRED");
+}
+
+#[test]
+fn archive_rejects_tampered_marker_on_retry() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    for command in ["verify", "review", "archive"] {
+        run(&CommandRequest {
+            command: command.into(),
+            cwd: cwd.clone(),
+            args: None,
+        })
+        .unwrap();
+    }
+    let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(change_dir.join(".archived"), "forged").unwrap();
+    let err = run(&CommandRequest {
+        command: "archive".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, "E_COMPONENT_INTEGRITY_FAILED");
 }
 
 #[test]

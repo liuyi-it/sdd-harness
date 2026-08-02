@@ -1,8 +1,7 @@
 //! 对外稳定契约：命令集合、阶段枚举、错误码到退出码映射、请求/响应结构。
 //!
 //! 翻译自 Node 版 `packages/core/src/contracts.ts`，字段名与枚举值保持一致。
-//! 唯一契约变更：`codebase.provider` 枚举值由 `codebase-memory-mcp` 改为
-//! `gitnexus | codegraph | fallback-file-scan`（知识图谱替代）。
+//! `codebase.provider` 使用 `gitnexus | codegraph | fallback-file-scan`。
 
 use serde::{Deserialize, Serialize};
 
@@ -73,18 +72,9 @@ pub fn error_exit_codes(code: &str) -> i32 {
     }
 }
 
-/// CLI 进程退出码（三期统一，与 Node 版 ExitCode 一致）
-pub const EXIT_CODE_SUCCESS: i32 = 0;
-pub const EXIT_CODE_GENERAL_ERROR: i32 = 1;
-pub const EXIT_CODE_INVALID_ARGS: i32 = 2;
-pub const EXIT_CODE_STATE_CONFLICT: i32 = 3;
-pub const EXIT_CODE_SCHEMA_VALIDATION_FAILED: i32 = 4;
-pub const EXIT_CODE_SECURITY_BLOCKED: i32 = 5;
-pub const EXIT_CODE_COMPONENT_UNAVAILABLE: i32 = 6;
-pub const EXIT_CODE_TIMEOUT: i32 = 124;
-
 /// 结构化警告（对应 Node 版 CliWarning）
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CliWarning {
     /// 警告码，如 "W_KNOWLEDGE_UNAVAILABLE"
     pub code: String,
@@ -100,6 +90,7 @@ pub struct CliWarning {
 
 /// 验证命令（build next 的 verification 项）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct VerificationCommand {
     pub command: String,
     pub args: Vec<String>,
@@ -107,6 +98,7 @@ pub struct VerificationCommand {
 
 /// 知识图谱提供方信息（契约变更：provider 为 gitnexus/codegraph/fallback-file-scan）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CodebaseProviderInfo {
     pub provider: String,
     pub degraded: bool,
@@ -114,6 +106,7 @@ pub struct CodebaseProviderInfo {
 
 /// Agent 行动要求（build next 返回此结构，指导 Agent 执行任务）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentActionRequired {
     #[serde(rename = "type")]
     pub action_type: String,
@@ -133,6 +126,7 @@ pub struct AgentActionRequired {
 
 /// Core 请求结构
 #[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandRequest {
     pub command: String,
     pub cwd: String,
@@ -142,6 +136,7 @@ pub struct CommandRequest {
 
 /// 错误结构
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandError {
     pub code: String,
     pub message: String,
@@ -151,6 +146,7 @@ pub struct CommandError {
 
 /// Core 响应结构（JSON 输出契约，camelCase 键名与 Node 版一致）
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct CommandResult {
     pub ok: bool,
     pub state: String,
@@ -173,6 +169,7 @@ pub struct CommandResult {
 
 /// 渲染输出
 #[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct RenderedOutput {
     pub format: String,
     pub content: String,

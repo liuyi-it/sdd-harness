@@ -9,6 +9,7 @@ description = "SDD 状态机与质量门禁执行层"
 regex = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

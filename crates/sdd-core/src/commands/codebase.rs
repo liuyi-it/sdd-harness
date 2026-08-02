@@ -1,7 +1,7 @@
 //! codebase 命令：代码库上下文管理（status/doctor/index/query/rebuild）。
 //!
 //! 翻译自 Node 版 `packages/cli/src/commands/codebase.ts` 的分发与校验语义；
-//! 底层由 knowledge 模块（GitNexus/CodeGraph）提供能力，替代 codebase-memory-mcp。
+//! 底层由 knowledge 模块（GitNexus/CodeGraph）提供能力。
 
 use crate::contracts::CommandResult;
 use crate::error::SddError;
@@ -27,21 +27,55 @@ pub fn run_codebase(
         })?;
 
     let router = KnowledgeRouter::new();
+    let timeout_ms = args
+        .get("timeout")
+        .and_then(|value| value.as_f64())
+        .map(|seconds| (seconds * 1000.0) as u64)
+        .unwrap_or(600_000);
+    let _guard = if sub == "index" || sub == "rebuild" {
+        Some(crate::state::file_lock::lock_sdd(
+            cwd,
+            &format!("sdd codebase {sub}"),
+            None,
+            Some(timeout_ms),
+        )?)
+    } else {
+        None
+    };
     let result: serde_json::Value = match sub {
-        "status" => serde_json::json!({ "providers": router.status() }),
+        "status" => serde_json::json!({ "providers": router.status(cwd) }),
         "doctor" => serde_json::json!({
-            "providers": router.status(),
+            "providers": router.status(cwd),
             "note": "探测 PATH 中的 gitnexus 与 codegraph 命令；均不可用时降级受限文件扫描",
         }),
-        "index" => serde_json::json!({ "providers": router.initialize(cwd) }),
-        "rebuild" => serde_json::json!({ "providers": router.initialize(cwd) }),
+        "index" => {
+            let providers = router.initialize(cwd, timeout_ms)?;
+            record_index_artifacts(cwd)?;
+            serde_json::json!({ "providers": providers })
+        }
+        "rebuild" => {
+            let providers = router.rebuild(cwd, timeout_ms)?;
+            record_index_artifacts(cwd)?;
+            serde_json::json!({ "providers": providers })
+        }
         "query" => {
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            let intent = args
+            let query = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .filter(|query| !query.trim().is_empty())
+                .ok_or_else(|| {
+                    SddError::new("E_INVALID_PHASE_COMMAND", "codebase query 需要非空查询词")
+                })?;
+            let intent_name = args
                 .get("intent")
                 .and_then(|v| v.as_str())
-                .and_then(KnowledgeIntent::parse)
-                .unwrap_or(KnowledgeIntent::Impact);
+                .unwrap_or("impact");
+            let intent = KnowledgeIntent::parse(intent_name).ok_or_else(|| {
+                SddError::new(
+                    "E_INVALID_PHASE_COMMAND",
+                    &format!("未知 codebase intent：{intent_name}"),
+                )
+            })?;
             let query_result = router.query(cwd, intent, query);
             serde_json::json!({
                 "provider": query_result.provider,
@@ -54,17 +88,68 @@ pub fn run_codebase(
         }
         _ => unreachable!("sub 已在入口过滤"),
     };
+    let degraded = result
+        .get("degraded")
+        .and_then(|value| value.as_bool())
+        .unwrap_or_else(|| {
+            result
+                .get("providers")
+                .and_then(|value| value.as_array())
+                .map(|providers| {
+                    !providers.iter().any(|provider| {
+                        provider
+                            .get("indexed")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false)
+                    })
+                })
+                .unwrap_or(false)
+        });
+    let state = crate::commands::status::read_phase(cwd)?;
 
     Ok(CommandResult {
         ok: true,
-        state: "INDEX_READY".to_string(),
+        state,
         exit_code: 0,
         change_id: None,
         next: None,
         data: Some(result),
         rendered: None,
-        warnings: None,
+        warnings: degraded.then(|| {
+            vec![serde_json::json!({
+                "code": "W_KNOWLEDGE_UNAVAILABLE",
+                "message": "GitNexus 与 CodeGraph 均未提供可用索引，已降级为受限文件扫描",
+                "next": "sdd codebase doctor",
+            })]
+        }),
         action_required: None,
         error: None,
     })
+}
+
+pub(crate) fn record_index_artifacts(cwd: &str) -> Result<(), SddError> {
+    for name in [
+        "knowledge.json",
+        "codebase-summary.md",
+        "package-structure.md",
+        "architecture.md",
+    ] {
+        let content =
+            std::fs::read_to_string(std::path::Path::new(cwd).join(".sdd/index").join(name))
+                .map_err(|e| {
+                    SddError::new(
+                        "E_MISSING_ARTIFACT",
+                        &format!("读取索引制品 {name} 失败：{e}"),
+                    )
+                })?;
+        crate::state::artifact_store::record_artifact(
+            cwd,
+            &format!("index:{name}"),
+            "summary",
+            &format!(".sdd/index/{name}"),
+            &content,
+            serde_json::json!({ "providers": ["gitnexus", "codegraph"] }),
+        )?;
+    }
+    Ok(())
 }

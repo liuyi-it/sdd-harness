@@ -9,7 +9,7 @@ use crate::error::SddError;
 pub fn validate_file_change(
     delta_paths: &[String],
     allowed_files: &[String],
-    _expected_new_files: &[String],
+    expected_new_files: &[String],
     forbidden_files: &[String],
 ) -> Result<(), SddError> {
     for path in delta_paths {
@@ -41,7 +41,17 @@ pub fn validate_file_change(
             ));
         }
     }
-    // 期望新增文件核对：期望新增但未出现的文件提示（不阻断）
+    for expected in expected_new_files {
+        if !delta_paths
+            .iter()
+            .any(|path| pattern_matches(expected, path))
+        {
+            return Err(SddError::new(
+                "E_UNDECLARED_FILE_CHANGE",
+                &format!("任务声明的预期新增文件未出现：{expected}"),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -63,10 +73,23 @@ fn pattern_matches(pattern: &str, path: &str) -> bool {
 
 fn glob_to_regex(glob: &str) -> regex::Regex {
     let mut pattern = String::from("^");
-    for ch in glob.chars() {
+    let mut chars = glob.chars().peekable();
+    while let Some(ch) = chars.next() {
         match ch {
+            '*' if chars.peek() == Some(&'*') => {
+                chars.next();
+                if chars.peek() == Some(&'/') {
+                    chars.next();
+                    pattern.push_str("(?:.*/)?");
+                } else {
+                    pattern.push_str(".*");
+                }
+            }
             '*' => pattern.push_str("[^/]*"),
-            '.' => pattern.push_str("\\."),
+            '.' | '+' | '(' | ')' | '^' | '$' | '|' | '[' | ']' | '{' | '}' | '?' | '\\' => {
+                pattern.push('\\');
+                pattern.push(ch);
+            }
             '/' => pattern.push('/'),
             other => pattern.push(other),
         }
@@ -90,5 +113,18 @@ mod tests {
     fn exact_path_matches() {
         assert!(pattern_matches("src/lib.rs", "src/lib.rs"));
         assert!(!pattern_matches("src/lib.rs", "src/other.rs"));
+    }
+
+    #[test]
+    fn double_star_matches_nested_paths() {
+        assert!(pattern_matches("**/credentials*", "credentials.json"));
+        assert!(pattern_matches(
+            "**/credentials*",
+            "config/prod/credentials.yml"
+        ));
+        assert!(!pattern_matches(
+            "**/credentials*",
+            "config/prod/settings.yml"
+        ));
     }
 }

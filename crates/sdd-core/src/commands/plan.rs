@@ -1,4 +1,4 @@
-//! plan 命令：生成任务计划（plan.json + plan.md）。
+//! plan 命令：生成单一事实源 plan.json。
 //!
 //! 翻译自 Node 版 `packages/core/src/commands/plan.ts`：
 //! 读取 spec/design，经 TddEngine 生成原子任务链，状态推进 PLAN_READY。
@@ -24,12 +24,24 @@ pub fn run_plan(
         .and_then(|a| a.get("timeout"))
         .and_then(|v| v.as_f64())
         .map(|s| (s * 1000.0) as u64);
+    let dependencies = args
+        .and_then(|value| value.get("dependencies"))
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    validate_dependencies(&dependencies)?;
     let _guard = lock_sdd(cwd, "sdd plan", None, timeout_ms)?;
 
     let store = StateStore::new(cwd.to_string());
     let state = store.read()?;
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
+    for key in [
+        format!("{change_id}:spec"),
+        format!("{change_id}:spec-md"),
+        format!("{change_id}:design"),
+    ] {
+        crate::state::artifact_store::verify_artifact(cwd, &key)?;
+    }
 
     let spec = fs::read_to_string(change_dir.join("spec.md"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
@@ -46,7 +58,9 @@ pub fn run_plan(
         .to_string();
     let index_dir = PathBuf::from(cwd).join(".sdd/index");
     let codebase_summary = fs::read_to_string(index_dir.join("codebase-summary.md"))
-        .unwrap_or_else(|_| "（代码库摘要不可用）".to_string());
+        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?;
+    let spec_digest = crate::policies::digest::digest(&spec_json_raw);
+    let design_digest = crate::policies::digest::digest(&design);
 
     let artifacts = engine.generate_plan(&PlanningInputRust {
         spec,
@@ -63,18 +77,23 @@ pub fn run_plan(
         "tasksMarkdown": artifacts.tasks_markdown,
         "testPlan": artifacts.test_plan,
         "context": artifacts.context,
-        "contextPacks": artifacts.context_packs,
+        "dependencies": dependencies,
     });
-    fs::write(
-        change_dir.join("plan.json"),
-        serde_json::to_string_pretty(&plan_json).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("序列化 plan.json 失败：{e}"))
-        })?,
-    )
-    .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.json 失败：{e}")))?;
-    fs::write(change_dir.join("plan.md"), &artifacts.tasks_markdown)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.md 失败：{e}")))?;
-
+    let plan_text = serde_json::to_string_pretty(&plan_json)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 plan.json 失败：{e}")))?;
+    fs::write(change_dir.join("plan.json"), &plan_text)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.json 失败：{e}")))?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:plan"),
+        "plan",
+        &format!(".sdd/changes/{change_id}/plan.json"),
+        &plan_text,
+        json!({
+            "spec": spec_digest,
+            "design": design_digest,
+        }),
+    )?;
     store.update(|s| {
         s.current_phase = "PLAN_READY".to_string();
         s.in_progress_phase = None;
@@ -95,6 +114,48 @@ pub fn run_plan(
         action_required: None,
         error: None,
     })
+}
+
+fn validate_dependencies(dependencies: &serde_json::Value) -> Result<(), SddError> {
+    let entries = dependencies
+        .as_array()
+        .ok_or_else(|| SddError::new("E_INVALID_PHASE_COMMAND", "dependencies 必须是 JSON 数组"))?;
+    for (index, entry) in entries.iter().enumerate() {
+        let object = entry.as_object().ok_or_else(|| {
+            SddError::new(
+                "E_INVALID_PHASE_COMMAND",
+                &format!("dependencies[{index}] 必须是对象"),
+            )
+        })?;
+        for field in ["name", "manifest", "action", "reason"] {
+            if object.get(field).and_then(|value| value.as_str()).is_none() {
+                return Err(SddError::new(
+                    "E_INVALID_PHASE_COMMAND",
+                    &format!("dependencies[{index}].{field} 必须是字符串"),
+                ));
+            }
+        }
+        if !matches!(
+            object.get("action").and_then(|value| value.as_str()),
+            Some("ADD" | "UPDATE" | "REMOVE")
+        ) {
+            return Err(SddError::new(
+                "E_INVALID_PHASE_COMMAND",
+                &format!("dependencies[{index}].action 非法"),
+            ));
+        }
+        if !object
+            .get("requirements")
+            .and_then(|value| value.as_array())
+            .is_some_and(|values| values.iter().all(|value| value.is_string()))
+        {
+            return Err(SddError::new(
+                "E_INVALID_PHASE_COMMAND",
+                &format!("dependencies[{index}].requirements 必须是字符串数组"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// 读取 plan.json 的任务列表（供 build 命令复用）
