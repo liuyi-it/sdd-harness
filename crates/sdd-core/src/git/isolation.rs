@@ -57,7 +57,7 @@ impl GitIsolationManager {
         let path = root.join(".sdd/worktrees").join(change_id);
         let registered = worktrees(&root)?
             .into_iter()
-            .find(|entry| entry.path == path);
+            .find(|entry| same_worktree(&entry.path, &path));
 
         match (path.exists(), registered) {
             (false, None) => {
@@ -67,7 +67,7 @@ impl GitIsolationManager {
                         &format!("创建 worktree 父目录失败：{e}"),
                     )
                 })?;
-                let path_text = path.to_string_lossy().to_string();
+                let path_text = display_path(&path);
                 let output = git_output(
                     &root,
                     &[
@@ -118,7 +118,7 @@ impl GitIsolationManager {
         }
 
         Ok(WorktreeHandle {
-            worktree_path: path.to_string_lossy().to_string(),
+            worktree_path: display_path(&path),
             branch,
             baseline_commit,
         })
@@ -126,6 +126,30 @@ impl GitIsolationManager {
 
     pub fn release(_handle: WorktreeHandle) -> Result<(), SddError> {
         Ok(())
+    }
+}
+
+/// Windows 下 `canonicalize()` 会返回 `\\?\` 前缀路径，git 不认且与
+/// `git worktree list` 输出的普通路径不相等；统一去掉该前缀再比较/使用。
+fn display_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    if cfg!(windows) {
+        text.strip_prefix(r"\\?\UNC\")
+            .map(|rest| format!(r"\\{rest}"))
+            .unwrap_or_else(|| {
+                text.strip_prefix(r"\\?\")
+                    .map(str::to_string)
+                    .unwrap_or_else(|| text.to_string())
+            })
+    } else {
+        text.to_string()
+    }
+}
+
+fn same_worktree(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => Path::new(&display_path(a)) == Path::new(&display_path(b)),
     }
 }
 
