@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build:
@@ -42,21 +43,31 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - run: cargo build --release --package sdd-cli --target ${{ matrix.target }}
+      - name: Rename binary for release
+        shell: bash
+        run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.artifact }}"
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: target/${{ matrix.target }}/release/${{ matrix.bin }}
+          path: ${{ matrix.artifact }}
           if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: dist
-          merge-multiple: true
       - name: Publish Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes
+        run: |
+          find dist -type f -print
+          gh release delete "$GITHUB_REF_NAME" --yes >/dev/null 2>&1 || true
+          if ! gh release create "$GITHUB_REF_NAME" dist/*/* --generate-notes > /tmp/release.err 2>&1; then
+            echo "::error::gh release create 失败"
+            tail -30 /tmp/release.err | sed 's/^/::error::/'
+            exit 1
+          fi
