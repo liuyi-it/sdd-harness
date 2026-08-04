@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use sdd_core::contracts::{CommandRequest, CommandResult};
 use sdd_core::error::SddError;
 
-const PKG_VERSION: &str = "0.2.0";
+const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[command(name = "sdd", version = PKG_VERSION, about = "面向 AI Coding Agent 的规格驱动开发（SDD）工程支架", disable_help_subcommand = true)]

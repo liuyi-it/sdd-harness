@@ -1,8 +1,12 @@
 # CLI 命令参考
 
-`sdd` 是 sdd-harness 的命令行入口，`sdd-harness` 是等价别名。支持 macOS 和 Windows（Git Bash），运行时要求 Rust 工具链。可选的 CodeGraph 独立 CLI 不要求 Node.js；通过 npm 使用 GitNexus 时还需 Node.js 22 或更高版本。
+`sdd` 是 sdd-harness 的命令行入口，`sdd-harness` 是等价别名。支持 macOS、Windows（Git Bash）和 Linux。预编译二进制从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载，运行时不需要 Rust；从源码构建才需要 Rust 工具链。可选的 CodeGraph 独立 CLI 不要求 Node.js；通过 npm 使用 GitNexus 时还需 Node.js 22 或更高版本。
 
 ## 安装
+
+预编译二进制从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载对应平台文件（Linux x64：`sdd-linux-x64`；macOS Intel：`sdd-macos-x64`；macOS Apple Silicon：`sdd-macos-arm64`；Windows x64：`sdd-windows-x64.exe`），放入 PATH 即可运行。
+
+从源码安装：
 
 ```bash
 git clone https://github.com/liuyi-it/sdd-harness.git

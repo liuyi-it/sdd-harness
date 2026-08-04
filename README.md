@@ -14,14 +14,34 @@
 
 ## 环境要求
 
-- Rust 工具链（cargo，edition 2021）
+- 预编译二进制运行不需要 Rust；从源码构建才需要 Rust 工具链（cargo，edition 2021）
 - Git
 - GitNexus / CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
   - CodeGraph 可使用独立安装包，无需 Node.js。
   - GitNexus 作为外部 npm CLI 使用时，当前要求 Node.js 22 或更高版本；sdd-harness 自身运行时不依赖 Node.js。
-- macOS 或 Windows（Git Bash）
+- macOS、Windows（Git Bash）或 Linux
 
 ## 安装
+
+### 预编译二进制（推荐）
+
+从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载对应平台的 `sdd` 二进制并放入 PATH：
+
+| 平台 | 文件 |
+| --- | --- |
+| Linux x64 | `sdd-linux-x64` |
+| macOS Intel | `sdd-macos-x64` |
+| macOS Apple Silicon | `sdd-macos-arm64` |
+| Windows x64 | `sdd-windows-x64.exe` |
+
+macOS 示例：
+
+```bash
+curl -L -o /usr/local/bin/sdd https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-macos-arm64
+chmod +x /usr/local/bin/sdd
+```
+
+### 从源码安装
 
 ```bash
 git clone https://github.com/liuyi-it/sdd-harness.git
@@ -29,7 +49,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会先备份并清理旧版全局命令，再通过 `cargo build --release` 构建并注册全局命令 `sdd` 与 `sdd-harness`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时恢复原版本。项目不发布到 crates.io。
+安装脚本会先备份并清理旧版全局命令，再通过 `cargo build --release` 构建并注册全局命令 `sdd` 与 `sdd-harness`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时恢复原版本。项目通过 GitHub Releases 分发预编译二进制，不发布到 crates.io。
 
 卸载：
 
@@ -169,7 +189,6 @@ CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm
 - [安全策略](docs/security.md)
 - [Schema](docs/schemas.md)
 - [Agent 接入](docs/adapters.md)
-- [Rust 转换总体设计](docs/superpowers/specs/2026-08-02-rust-migration-design.md)
 
 ## 开发与验证
 

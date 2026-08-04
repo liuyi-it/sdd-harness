@@ -39,6 +39,6 @@
 
 ## 其他规则
 
-1. 原始需求文档在 docs/三期需求文档.md（总体规划与设计见 docs/superpowers/specs/）；
+1. 项目文档入口见 README「文档」章节（docs/ 下的 CLI、架构、命令契约、状态机、安全与 Schema 说明）；
 2. git commit 中的内容，请使用中文说明；
 3. 当前项目是**中文项目**，除给 AI 的 Prompt（skill、commands/\_.md 提示词）和代码中必要的英文（错误码 `E\__`、命令字面量 `sdd xxx`、schema 键、标识符）外，全项目中文化；
