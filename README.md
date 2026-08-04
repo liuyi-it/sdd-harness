@@ -189,6 +189,7 @@ CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm
 - [安全策略](docs/security.md)
 - [Schema](docs/schemas.md)
 - [Agent 接入](docs/adapters.md)
+- [AI Agent 自举安装](docs/agent-install.md)
 
 ## 开发与验证
 
