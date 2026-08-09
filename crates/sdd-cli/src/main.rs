@@ -1,7 +1,7 @@
 //! sdd / sdd-harness CLI 入口 — 参数解析、命令路由、输出格式化。
 //!
 //! 参数与输出契约对齐 早期 Node 实现：
-//! - 全局参数：--json/--cwd/--change/--timeout/--non-interactive/--force/--verbose
+//! - 全局参数：--json/--cwd/--change/--timeout/--non-interactive/--verbose
 //! - 命令：init/status/new/design/plan/build/verify/review/archive/auto/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
 
@@ -41,9 +41,6 @@ struct GlobalArgs {
     /// 无人值守模式；遇到未回答的需求阻塞问题直接失败
     #[arg(long, global = true, default_value_t = false)]
     non_interactive: bool,
-    /// 强制
-    #[arg(long, global = true, default_value_t = false)]
-    force: bool,
     /// 详细输出
     #[arg(long, global = true, default_value_t = false)]
     verbose: bool,
@@ -298,9 +295,6 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
     }
     if g.non_interactive {
         args.insert("nonInteractive".into(), serde_json::json!(true));
-    }
-    if g.force {
-        args.insert("force".into(), serde_json::json!(true));
     }
     if g.verbose {
         args.insert("verbose".into(), serde_json::json!(true));

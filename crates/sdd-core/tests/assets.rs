@@ -31,7 +31,7 @@ fn all_public_sdd_commands_are_embedded() {
 fn init_writes_omp_native_resources() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
-    let written = write_adapter_files(&cwd, false).unwrap();
+    let written = write_adapter_files(&cwd).unwrap();
     assert_eq!(written.len(), ADAPTER_ASSETS.len());
     for asset in ADAPTER_ASSETS {
         assert!(dir.path().join(asset.target).exists(), "{}", asset.target);
@@ -42,9 +42,32 @@ fn init_writes_omp_native_resources() {
 fn write_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
-    write_adapter_files(&cwd, false).unwrap();
-    let second = write_adapter_files(&cwd, false).unwrap();
+    write_adapter_files(&cwd).unwrap();
+    let second = write_adapter_files(&cwd).unwrap();
     assert!(second.is_empty());
+}
+
+#[test]
+fn stale_omp_resources_are_overwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    write_adapter_files(&cwd).unwrap();
+    let skill = dir.path().join(".omp/skills/sdd-harness/SKILL.md");
+    std::fs::write(&skill, "旧模板").unwrap();
+
+    let written = write_adapter_files(&cwd).unwrap();
+
+    assert!(written
+        .iter()
+        .any(|item| item.contains("写入：.omp/skills")));
+    assert_eq!(
+        std::fs::read_to_string(skill).unwrap(),
+        ADAPTER_ASSETS
+            .iter()
+            .find(|asset| asset.target == ".omp/skills/sdd-harness/SKILL.md")
+            .unwrap()
+            .content
+    );
 }
 
 #[test]

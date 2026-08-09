@@ -65,11 +65,7 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     write_default_config(cwd, &sdd_root, structure_policy)?;
 
     // 项目只支持 OMP 原生接入。
-    let force = args
-        .and_then(|a| a.get("force"))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    let adapter_files = crate::assets::write_adapter_files(cwd, force)?;
+    let adapter_files = crate::assets::write_adapter_files(cwd)?;
 
     // 空项目检测：无源文件时附加 warning（一期不做 CLARIFYING 暂停）
     let empty_project = is_empty_project(cwd);

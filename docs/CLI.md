@@ -29,7 +29,6 @@ bash scripts/install.sh
 | `--change <id>`     | 新建时指定变更 ID；后续命令必须与当前活动变更一致                               |
 | `--timeout <s>`     | 设置命令超时秒数                                                                |
 | `--non-interactive` | 仅用于允许需求不完整时直接失败的无人值守流程；遇到未回答的 BLOCKER 返回退出码 6 |
-| `--force`           | 覆盖允许强制重建的制品                                                          |
 | `--verbose`         | 输出详细信息                                                                    |
 | `--help`            | 显示帮助                                                                        |
 | `--version`         | 显示版本                                                                        |

@@ -63,8 +63,8 @@ pub const ADAPTER_ASSETS: [AssetFile; 9] = [
     },
 ];
 
-/// 写入 OMP 模板（幂等：目标已存在且内容相同则跳过）。
-pub fn write_adapter_files(project_root: &str, force: bool) -> Result<Vec<String>, SddError> {
+/// 写入 OMP 模板（幂等：目标已存在且内容相同则跳过，过期模板直接更新）。
+pub fn write_adapter_files(project_root: &str) -> Result<Vec<String>, SddError> {
     let mut written = Vec::new();
     for asset in ADAPTER_ASSETS {
         let target = PathBuf::from(project_root).join(asset.target);
@@ -79,10 +79,6 @@ pub fn write_adapter_files(project_root: &str, force: bool) -> Result<Vec<String
             }
         };
         if existing.as_deref() == Some(asset.content) {
-            continue;
-        }
-        if existing.is_some() && !force {
-            written.push(format!("跳过（已存在且内容不同）：{}", asset.target));
             continue;
         }
         if let Some(parent) = target.parent() {
