@@ -1,4 +1,4 @@
-//! OpenSpec 规格模型（翻译自 `packages/core/src/engines/openspec/model.ts`）。
+//! OpenSpec 规格模型（翻译自 早期 Node 实现）。
 
 use serde::{Deserialize, Serialize};
 

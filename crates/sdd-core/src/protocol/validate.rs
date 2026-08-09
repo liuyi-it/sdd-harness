@@ -1,4 +1,4 @@
-//! Agent Task Protocol 校验（翻译自 `packages/agent-protocol/src/validate.ts`）。
+//! Agent Task Protocol 校验（翻译自 早期 Node 实现）。
 //!
 //! TaskExecutionResult 是 Agent 提交任务结果的稳定结构：
 //! taskId / status(completed|failed) / evidence / verification / filesChanged。

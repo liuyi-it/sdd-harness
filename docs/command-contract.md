@@ -16,12 +16,10 @@ CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
 ## 规格与计划
 
-- `new` 写入人工可读的 `spec.md` 和机器事实源 `spec.json`。
-- `design` 写入 `design.md`。
-- `plan` 只写入 `plan.json`，不批量创建 Context Pack；可选 `dependencies` 决策以 `name`、`manifest`、`action`、原因和 Requirement ID 记录必要的依赖变化。
+- `new` 写入人工审核规格 `spec.md` 和机器事实源 `spec.json`。
+- `design` 更新 `spec.json.design`，不生成 `design.md`；技术方案会在 `plan` 阶段进入 `plan.md`。
+- `plan` 写入机器计划 `plan.json`、人工审核计划 `plan.md` 和可勾选任务 `tasks.md`，不批量创建 Context Pack；可选 `dependencies` 决策以 `name`、`manifest`、`action`、原因和 Requirement ID 记录必要的依赖变化。
 - `build next` 为选中的任务按需生成 Context Pack，并返回 `AGENT_TASK_EXECUTION`。
-
-新结构不读取旧的多文件规格/计划布局。
 
 ## AgentTaskExecution
 
@@ -50,7 +48,7 @@ verify/review 失败会保留失败报告：证据或验证快照失效时回到
 `archive` 重新验证 PASS 报告、任务结果、Git 快照、漂移和追踪链，然后生成：
 
 - `archive.json`：完整机器归档，含规格、设计、计划、任务结果、质量报告和 Git 摘要。
-- `archive.md`：归档报告与质量摘要。
+- `archive.md`：合并后的人工归档文档，包含规格、计划、任务、验证和审查结果。
 - `.archived`：`archive.md` 与 `archive.json` 的组合内容哈希。
 
 Marker 最后发布。有效 marker 存在但状态尚未更新时，再次执行命令会收敛状态；无效或被篡改的 marker 会被拒绝。

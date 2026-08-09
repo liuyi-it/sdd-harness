@@ -1,6 +1,6 @@
 //! review 命令：确定性审查、范围检查与敏感信息扫描。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/review.ts` + quality/deterministic-review.ts：
+//! 翻译自 早期 Node 实现 + quality/deterministic-review.ts：
 //! - 敏感信息扫描（E_SECURITY_BLOCKED）
 //! - 变更文件范围/数量指标（记录，不阻断）
 //! - 写 report(kind=review)，状态推进 REVIEW_READY
@@ -45,6 +45,8 @@ pub fn run_review(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
 
     for key in [
         format!("{change_id}:plan"),
+        format!("{change_id}:plan-md"),
+        format!("{change_id}:tasks-md"),
         format!("{change_id}:verify-report"),
     ] {
         crate::state::artifact_store::verify_artifact(cwd, &key)?;

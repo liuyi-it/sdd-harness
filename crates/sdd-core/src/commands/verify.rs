@@ -1,6 +1,6 @@
 //! verify 命令：验证规格、任务与证据覆盖。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/verify.ts`：
+//! 翻译自 早期 Node 实现：
 //! 检查 Requirement/Scenario 覆盖、任务完成状态与 TDD 证据，
 //! 写 report(kind=verify)，状态推进 VERIFY_READY 或报 E_VERIFY_REQUIRED。
 
@@ -40,9 +40,11 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
     for key in [
         format!("{change_id}:spec"),
-        format!("{change_id}:spec-md"),
+        format!("{change_id}:spec-json"),
         format!("{change_id}:design"),
         format!("{change_id}:plan"),
+        format!("{change_id}:plan-md"),
+        format!("{change_id}:tasks-md"),
     ] {
         crate::state::artifact_store::verify_artifact(cwd, &key)?;
     }

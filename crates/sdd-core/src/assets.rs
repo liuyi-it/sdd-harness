@@ -1,109 +1,72 @@
-//! 资产层：Adapter 模板嵌入与 init 写入。
+//! OMP 资产层：把项目级 Skill、命令和 subagent 模板写入业务项目。
 //!
-//! 模板文件通过 include_str! 嵌入二进制，`sdd init` 时按 Agent 写出到项目
-//! 对应目录（.claude/commands、.codex/rules 等），单二进制分发。
-//! 翻译自 Node 版 `packages/core/src/install/project-installer.ts` 的写入语义。
+//! 模板通过 include_str! 嵌入二进制，`sdd init` 默认写入 `.omp/`。
 
 use std::fs;
 use std::path::PathBuf;
 
 use crate::error::SddError;
 
-const MANAGED_START: &str = "<!-- sdd-harness:managed -->";
-const MANAGED_END: &str = "<!-- sdd-harness:managed:end -->";
-
-/// 资产文件描述：源路径（assets/adapters 下）→ 项目内目标相对路径
+/// 资产文件描述：源路径（assets/adapters/omp 下）→ 项目内目标相对路径。
 pub struct AssetFile {
-    /// 资产唯一键（如 "claude-code/commands/sdd.auto.md"）
     pub key: &'static str,
-    /// 项目内目标路径（相对项目根）
     pub target: &'static str,
     pub content: &'static str,
 }
 
-/// 全部 adapter 资产（include_str! 编译期嵌入）
+/// OMP 原生资产（include_str! 编译期嵌入）。
 pub const ADAPTER_ASSETS: [AssetFile; 9] = [
-    // claude-code
     AssetFile {
-        key: "claude-code/commands/sdd.auto.md",
-        target: ".claude/commands/sdd.auto.md",
-        content: include_str!("../../../assets/adapters/claude-code/commands/sdd.auto.md"),
+        key: "omp/skills/sdd-harness/SKILL.md",
+        target: ".omp/skills/sdd-harness/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-harness/SKILL.md"),
     },
     AssetFile {
-        key: "claude-code/commands/sdd.status.md",
-        target: ".claude/commands/sdd.status.md",
-        content: include_str!("../../../assets/adapters/claude-code/commands/sdd.status.md"),
+        key: "omp/commands/sdd.md",
+        target: ".omp/commands/sdd.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.md"),
     },
     AssetFile {
-        key: "claude-code/AGENTS.md",
-        target: "AGENTS.md",
-        content: include_str!("../../../assets/adapters/claude-code/AGENTS.md"),
-    },
-    // codex
-    AssetFile {
-        key: "codex/rules/sdd-harness.md",
-        target: ".codex/rules/sdd-harness.md",
-        content: include_str!("../../../assets/adapters/codex/rules/sdd-harness.md"),
+        key: "omp/commands/sdd.init.md",
+        target: ".omp/commands/sdd.init.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.init.md"),
     },
     AssetFile {
-        key: "codex/skills/sdd.md",
-        target: ".codex/skills/sdd-harness/sdd.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd.md"),
-    },
-    // opencode
-    AssetFile {
-        key: "opencode/rules/sdd-harness.md",
-        target: ".opencode/rules/sdd-harness.md",
-        content: include_str!("../../../assets/adapters/opencode/rules/sdd-harness.md"),
+        key: "omp/commands/sdd.status.md",
+        target: ".omp/commands/sdd.status.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.status.md"),
     },
     AssetFile {
-        key: "opencode/docs/opencode-setup.md",
-        target: ".opencode/docs/opencode-setup.md",
-        content: include_str!("../../../assets/adapters/opencode/docs/opencode-setup.md"),
-    },
-    // generic-agent
-    AssetFile {
-        key: "generic-agent/docs/AGENT_PROTOCOL.md",
-        target: "AGENT_PROTOCOL.md",
-        content: include_str!("../../../assets/adapters/generic-agent/docs/AGENT_PROTOCOL.md"),
+        key: "omp/commands/sdd.plan.md",
+        target: ".omp/commands/sdd.plan.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.plan.md"),
     },
     AssetFile {
-        key: "generic-agent/examples/minimal-agent.mjs",
-        target: "examples/minimal-agent.mjs",
-        content: include_str!("../../../assets/adapters/generic-agent/examples/minimal-agent.mjs"),
+        key: "omp/commands/sdd.verify.md",
+        target: ".omp/commands/sdd.verify.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.verify.md"),
+    },
+    AssetFile {
+        key: "omp/commands/sdd.review.md",
+        target: ".omp/commands/sdd.review.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.review.md"),
+    },
+    AssetFile {
+        key: "omp/commands/sdd.archive.md",
+        target: ".omp/commands/sdd.archive.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.archive.md"),
+    },
+    AssetFile {
+        key: "omp/agents/sdd-worker.md",
+        target: ".omp/agents/sdd-worker.md",
+        content: include_str!("../../../assets/adapters/omp/agents/sdd-worker.md"),
     },
 ];
 
-/// 每个 Agent 对应的资产键前缀
-pub fn assets_for_agent(agent: &str) -> Vec<&'static str> {
-    let prefix = match agent {
-        "claude" => "claude-code/",
-        "codex" => "codex/",
-        "opencode" => "opencode/",
-        // generic 与未知 agent 一律写 generic-agent
-        _ => "generic-agent/",
-    };
-    ADAPTER_ASSETS
-        .iter()
-        .filter(|asset| asset.key.starts_with(prefix))
-        .map(|asset| asset.key)
-        .collect()
-}
-
-/// 把指定 Agent 的模板写入项目（幂等：目标已存在且内容相同则跳过）
-pub fn write_adapter_files(
-    project_root: &str,
-    agent: &str,
-    force: bool,
-) -> Result<Vec<String>, SddError> {
+/// 写入 OMP 模板（幂等：目标已存在且内容相同则跳过）。
+pub fn write_adapter_files(project_root: &str, force: bool) -> Result<Vec<String>, SddError> {
     let mut written = Vec::new();
-    let prefix = match agent {
-        "claude" => "claude-code/",
-        "codex" => "codex/",
-        "opencode" => "opencode/",
-        _ => "generic-agent/",
-    };
-    for asset in ADAPTER_ASSETS.iter().filter(|a| a.key.starts_with(prefix)) {
+    for asset in ADAPTER_ASSETS {
         let target = PathBuf::from(project_root).join(asset.target);
         let existing = match fs::read_to_string(&target) {
             Ok(content) => Some(content),
@@ -111,20 +74,14 @@ pub fn write_adapter_files(
             Err(error) => {
                 return Err(SddError::new(
                     "E_STATE_CORRUPTED",
-                    &format!("读取已有 Adapter 文件 {} 失败：{error}", target.display()),
+                    &format!("读取已有 OMP 文件 {} 失败：{error}", target.display()),
                 ));
             }
         };
-        let content = if asset.target == "AGENTS.md" {
-            refresh_managed(existing.as_deref().unwrap_or(""), asset.content)
-        } else {
-            asset.content.to_string()
-        };
-        if existing.as_deref() == Some(content.as_str()) {
+        if existing.as_deref() == Some(asset.content) {
             continue;
         }
-        if existing.is_some() && !force && asset.target != "AGENTS.md" {
-            // 用户已有同名文件且内容不同：不覆盖，记录跳过
+        if existing.is_some() && !force {
             written.push(format!("跳过（已存在且内容不同）：{}", asset.target));
             continue;
         }
@@ -132,7 +89,7 @@ pub fn write_adapter_files(
             fs::create_dir_all(parent)
                 .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建目录失败：{e}")))?;
         }
-        fs::write(&target, content).map_err(|e| {
+        fs::write(&target, asset.content).map_err(|e| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("写入 {} 失败：{e}", asset.target),
@@ -141,27 +98,4 @@ pub fn write_adapter_files(
         written.push(format!("写入：{}", asset.target));
     }
     Ok(written)
-}
-
-fn refresh_managed(existing: &str, managed: &str) -> String {
-    let block = format!("{MANAGED_START}\n{}\n{MANAGED_END}", managed.trim());
-    let Some(start) = existing.find(MANAGED_START) else {
-        return if existing.trim().is_empty() {
-            format!("{block}\n")
-        } else {
-            format!("{}\n\n{block}\n", existing.trim_end())
-        };
-    };
-    let suffix_start = existing[start..]
-        .find(MANAGED_END)
-        .map(|offset| start + offset + MANAGED_END.len());
-    match suffix_start {
-        Some(end) => format!("{}{}{}", &existing[..start], block, &existing[end..]),
-        None => format!("{}{block}\n", &existing[..start]),
-    }
-}
-
-/// 已注册的 agent 列表
-pub fn known_agents() -> [&'static str; 4] {
-    ["claude", "codex", "opencode", "generic"]
 }

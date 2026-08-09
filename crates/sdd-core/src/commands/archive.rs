@@ -1,6 +1,6 @@
-//! archive 命令：归档收敛为三个文件。
+//! archive 命令：将三份审核文档整合为 archive.md 后清理变更目录。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/archive.ts`：
+//! 翻译自 早期 Node 实现：
 //! - 重新验证报告摘要与文件范围
 //! - 收敛 .sdd/changes/<id>/ 为 archive.json + archive.md + .archived
 //! - 状态 ARCHIVED；中断后可再次执行收敛
@@ -61,8 +61,17 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
         });
     }
 
+    let spec_json_raw = require_file(&change_dir, "spec.json")?;
+    let spec_json: serde_json::Value = serde_json::from_str(&spec_json_raw)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec.json 解析失败：{e}")))?;
     let spec = require_file(&change_dir, "spec.md")?;
-    let design = require_file(&change_dir, "design.md")?;
+    let plan_md = require_file(&change_dir, "plan.md")?;
+    let tasks_md = require_file(&change_dir, "tasks.md")?;
+    let design = spec_json
+        .get("design")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "spec.json 缺少 design 字段"))?
+        .to_string();
     let plan_raw = require_file(&change_dir, "plan.json")?;
     let plan: serde_json::Value = serde_json::from_str(&plan_raw)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("plan.json 解析失败：{e}")))?;
@@ -129,9 +138,11 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
     }
     for key in [
         format!("{change_id}:spec"),
-        format!("{change_id}:spec-md"),
+        format!("{change_id}:spec-json"),
         format!("{change_id}:design"),
         format!("{change_id}:plan"),
+        format!("{change_id}:plan-md"),
+        format!("{change_id}:tasks-md"),
         format!("{change_id}:verify-report"),
         format!("{change_id}:review-report"),
     ] {
@@ -163,42 +174,46 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
         None
     };
 
-    // 归档内容
+    let archived_at = crate::state::state_store::now_iso();
     let archive_md = [
-        "# 归档".to_string(),
+        "# 需求归档".to_string(),
         String::new(),
-        format!("## Change: {change_id}"),
-        String::new(),
-        "## 规格".to_string(),
-        String::new(),
-        spec.clone(),
-        String::new(),
-        "## 设计".to_string(),
-        String::new(),
-        design.clone(),
-        String::new(),
-        "## 计划".to_string(),
-        String::new(),
-        plan.get("tasksMarkdown")
-            .and_then(|value| value.as_str())
-            .unwrap_or("（plan.json 未包含 tasksMarkdown）")
-            .to_string(),
-        String::new(),
-        "## 验证报告".to_string(),
-        String::new(),
+        format!("- 变更：{change_id}"),
         format!(
-            "- passed: {}\n- summary: {}",
-            verify_report.passed, verify_report.summary
+            "- 目标：{}",
+            spec_json
+                .get("requirement")
+                .and_then(|value| value.as_str())
+                .unwrap_or("未记录")
         ),
+        format!("- 任务：{} 个", tasks.len()),
         String::new(),
-        "## 审查报告".to_string(),
+        "## 需求规格".to_string(),
         String::new(),
-        format!(
-            "- passed: {}\n- summary: {}",
-            review_report.passed, review_report.summary
-        ),
+        spec.trim().to_string(),
+        String::new(),
+        "## 实施计划".to_string(),
+        String::new(),
+        plan_md.trim().to_string(),
+        String::new(),
+        "## 开发任务".to_string(),
+        String::new(),
+        tasks_md.trim().to_string(),
+        String::new(),
+        "## 验证结果".to_string(),
+        String::new(),
+        format!("- 结果：{}", verify_report.summary),
+        String::new(),
+        "## 审查结果".to_string(),
+        String::new(),
+        format!("- 结果：{}", review_report.summary),
+        String::new(),
+        "## 归档时间".to_string(),
+        String::new(),
+        archived_at.clone(),
     ]
-    .join("\n");
+    .join("\n")
+        + "\n";
 
     let archive_json = json!({
         "schemaVersion": "2.0.0",
@@ -206,11 +221,13 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
         "spec": spec,
         "design": design,
         "plan": plan,
+        "planDocument": plan_md,
+        "tasksDocument": tasks_md,
         "taskResults": task_results,
         "verifyReport": verify_report,
         "reviewReport": review_report,
         "git": git,
-        "archivedAt": crate::state::state_store::now_iso(),
+        "archivedAt": archived_at,
     });
 
     fs::write(change_dir.join("archive.md"), &archive_md)

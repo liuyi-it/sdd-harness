@@ -3,7 +3,6 @@
 use sdd_core::contracts::{
     error_exit_codes, AgentActionRequired, CodebaseProviderInfo, CommandResult, VerificationCommand,
 };
-use serde_json::json;
 
 #[test]
 fn command_result_serializes_camel_case() {
@@ -137,7 +136,7 @@ fn status_json_matches_contract_shape() {
     sdd_core::run(&sdd_core::contracts::CommandRequest {
         command: "init".into(),
         cwd: cwd.clone(),
-        args: Some(json!({ "agent": "claude" })),
+        args: None,
     })
     .unwrap();
     let result = sdd_core::run(&sdd_core::contracts::CommandRequest {

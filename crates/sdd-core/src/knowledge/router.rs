@@ -122,20 +122,14 @@ impl KnowledgeRouter {
             .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入索引诊断失败：{e}")))?;
 
         let fallback = fallback_scan(root, KnowledgeIntent::Architecture, "");
-        for (key, name) in [
-            ("codebaseSummary", "codebase-summary.md"),
-            ("packageStructure", "package-structure.md"),
-            ("architecture", "architecture.md"),
-        ] {
-            let value = fallback
-                .payload
-                .get(key)
-                .and_then(|value| value.as_str())
-                .unwrap_or("");
-            std::fs::write(dir.join(name), value).map_err(|e| {
-                SddError::new("E_STATE_CORRUPTED", &format!("写入 {name} 失败：{e}"))
-            })?;
-        }
+        let summary = ["codebaseSummary", "packageStructure", "architecture"]
+            .iter()
+            .filter_map(|key| fallback.payload.get(*key).and_then(|value| value.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        std::fs::write(dir.join("summary.md"), summary).map_err(|e| {
+            SddError::new("E_STATE_CORRUPTED", &format!("写入 summary.md 失败：{e}"))
+        })?;
         Ok(())
     }
 

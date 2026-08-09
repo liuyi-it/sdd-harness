@@ -1,7 +1,7 @@
 //! StateStore 负责工作流状态的读取、校验与原子写入。
 //!
 //! 维护 `.sdd/state.json` 这一工作流事实源。翻译自 Node 版
-//! `packages/core/src/state/state-store.ts`，字段语义保持一致，
+//! 早期 Node 实现，字段语义保持一致，
 //! 磁盘格式按"允许重构"决策精简（camelCase 键名保持可读性）。
 
 use std::collections::HashMap;

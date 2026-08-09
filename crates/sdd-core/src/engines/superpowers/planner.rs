@@ -1,4 +1,4 @@
-//! 任务原子拆分器（翻译自 `packages/core/src/engines/superpowers/planner.ts`）。
+//! 任务原子拆分器（翻译自 早期 Node 实现）。
 //!
 //! createAtomicTasks：从 spec/design/impact 生成 RED/GREEN/REFACTOR/VERIFY
 //! 任务链，并对文件范围做精确映射与重叠检测。
@@ -150,37 +150,45 @@ pub fn create_atomic_tasks(
 
 /// 渲染任务 markdown（renderTasks）
 pub fn render_tasks(tasks: &[TaskDefinition]) -> String {
-    let mut lines = vec!["# Tasks".to_string()];
+    let mut lines = vec!["# 开发任务".to_string()];
     for task in tasks {
         lines.push(String::new());
-        lines.push(format!("## {}: {}", task.id, task.title));
+        lines.push(format!("## [ ] {}：{}", task.id, task.title));
         lines.push(String::new());
-        lines.push(format!("Phase: {}", task.phase));
+        lines.push(format!("- 阶段：{}", task.phase));
         lines.push(String::new());
-        lines.push(format!("Status: {}", task.status));
+        lines.push(format!("- 状态：{}", task.status));
         lines.push(String::new());
-        lines.push(format!(
-            "TDD Instruction: {}",
-            phase_instruction(&task.phase)
-        ));
+        lines.push(format!("- 执行要求：{}", phase_instruction(&task.phase)));
         lines.push(String::new());
-        push_list(&mut lines, "Requirements", &task.requirements);
+        push_checklist(&mut lines, "关联需求", &task.requirements);
         lines.push(String::new());
-        push_list(&mut lines, "Scenarios", &task.scenarios);
+        push_checklist(&mut lines, "关联场景", &task.scenarios);
         lines.push(String::new());
-        push_list(&mut lines, "Depends On", &task.depends_on);
+        push_checklist(&mut lines, "前置任务", &task.depends_on);
         lines.push(String::new());
-        push_list(&mut lines, "Allowed Files", &task.allowed_files);
+        push_checklist(&mut lines, "允许修改", &task.allowed_files);
         lines.push(String::new());
-        push_list(&mut lines, "Expected New Files", &task.expected_new_files);
+        push_checklist(&mut lines, "预期新增", &task.expected_new_files);
         lines.push(String::new());
-        push_list(&mut lines, "Forbidden Files", &task.forbidden_files);
+        push_checklist(&mut lines, "禁止修改", &task.forbidden_files);
         lines.push(String::new());
-        push_list(&mut lines, "Verification", &task.verification);
+        push_checklist(&mut lines, "验证命令", &task.verification);
         lines.push(String::new());
-        push_list(&mut lines, "Done Criteria", &task.done_criteria);
+        push_checklist(&mut lines, "完成标准", &task.done_criteria);
     }
     lines.join("\n")
+}
+
+fn push_checklist(lines: &mut Vec<String>, title: &str, values: &[String]) {
+    lines.push(format!("### {title}"));
+    if values.is_empty() {
+        lines.push("- [ ] 无".to_string());
+    } else {
+        for value in values {
+            lines.push(format!("- [ ] {value}"));
+        }
+    }
 }
 
 /// 渲染测试计划（renderTestPlan）

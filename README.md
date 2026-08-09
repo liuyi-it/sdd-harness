@@ -5,12 +5,12 @@
 ## 核心能力
 
 - CLI-first：`sdd` 是唯一确定性入口，Core 是唯一状态与门禁执行层。
-- Agent-agnostic：内置 Claude Code、Codex、OpenCode Adapter，并提供通用 Agent 协议。
+- OMP 原生：只内置 Oh My Pi 项目级 Skill、`/sdd` 与 6 个精简阶段命令和低成本 subagent 接入。
 - 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
 - 代码库理解：自动探测并索引 GitNexus / CodeGraph 知识图谱，按 intent 路由查询；不可用时显式降级到受限文件扫描。
 - 安全可追溯：校验路径、命令、文件范围、Git delta、TDD 证据和敏感信息。
 - 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
-- 精简制品：目录按需创建，Context Pack 按任务生成，归档最终收敛为三个文件。
+- 精简制品：活动需求只保留人工审核的 `spec.md`、`plan.md`、`tasks.md`，机器状态写入 JSON；归档后整合为一个 `archive.md`。
 
 ## 环境要求
 
@@ -19,6 +19,7 @@
 - GitNexus / CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
   - CodeGraph 可使用独立安装包，无需 Node.js。
   - GitNexus 作为外部 npm CLI 使用时，当前要求 Node.js 22 或更高版本；sdd-harness 自身运行时不依赖 Node.js。
+- Oh My Pi（OMP；`sdd init` 写入项目级 Skill、精简 slash 命令集和低成本 subagent）
 - macOS、Windows（Git Bash）或 Linux
 
 ## 安装
@@ -64,9 +65,11 @@ bash scripts/uninstall.sh
 在需要管理的项目根目录执行：
 
 ```bash
-sdd init --agent codex
+sdd init
 sdd auto "实现订单取消功能"
 ```
+
+在 OMP 中可以直接描述需求静默触发，也可以使用 `/sdd 需求` 显式调用。需要控制具体阶段时使用 `/sdd.status`、`/sdd.plan`、`/sdd.verify` 等已注册命令。简单、独立的任务会优先交给 OMP 当前可用的低成本模型，主 Agent 负责检查和最终审查。
 
 也可以逐阶段推进：
 
@@ -112,7 +115,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 | 命令                      | 作用                                        |
 | ------------------------- | ------------------------------------------- |
-| `sdd init`                | 初始化 `.sdd/`、代码库索引和 Agent 接入文件 |
+| `sdd init`                | 初始化 `.sdd/`、代码库索引和 OMP 接入文件 |
 | `sdd status`              | 查看当前阶段、错误和下一步建议              |
 | `sdd new <需求>`          | 澄清需求并生成规格                          |
 | `sdd design`              | 生成技术设计                                |
@@ -151,21 +154,24 @@ CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm
 ├── changes/<change-id>/
 │   ├── spec.md
 │   ├── spec.json
-│   ├── design.md
+│   ├── plan.md
+│   ├── tasks.md
 │   ├── plan.json
 │   ├── verify-report.json
 │   └── review-report.json
 ├── context-packs/<task-id>/context.md
 ├── runs/<run-id>/tasks/<task-id>.result.json
-└── index/knowledge.json
+└── index/
+    ├── knowledge.json
+    └── summary.md
 ```
 
 执行 `sdd archive` 后，变更目录只保留：
 
 ```text
 .sdd/changes/<change-id>/
-├── archive.json   # 规格、计划、质量与归档摘要
-├── archive.md     # 人工可读归档报告
+├── archive.md     # 合并后的需求、计划、任务与质量结果
+├── archive.json   # 完整机器归档
 └── .archived      # 完整性标记
 ```
 
@@ -176,7 +182,7 @@ CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm
 | `crates/sdd-cli`              | 参数解析和命令路由（bin: sdd）    |
 | `crates/sdd-core`             | 状态机、制品、Git、安全与质量门禁 |
 | `crates/sdd-core/src/knowledge` | GitNexus/CodeGraph 探测、路由与降级 |
-| `assets/adapters`             | 各 Agent 的命令、Skill 或规则模板（编译期嵌入） |
+| `assets/adapters/omp`         | OMP 的 Skill、精简 slash 命令集和 subagent 模板（编译期嵌入） |
 | `vendor`                      | 上游快照（openspec/superpowers）  |
 | `fixtures`                    | 测试样例项目                       |
 

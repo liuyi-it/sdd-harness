@@ -1,4 +1,4 @@
-//! 敏感信息扫描（翻译自 `packages/core/src/security/secrets-scanner.ts`）。
+//! 敏感信息扫描（翻译自 早期 Node 实现）。
 //!
 //! 检测密钥材料与凭据模式；命中时以 E_SECURITY_BLOCKED 阻断审查/提交。
 

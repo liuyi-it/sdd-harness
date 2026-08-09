@@ -1,6 +1,6 @@
 //! FileLock 为所有写命令提供仓库级串行化保护。
 //!
-//! 翻译自 Node 版 `packages/core/src/state/file-lock.ts`：
+//! 翻译自 早期 Node 实现：
 //! - 锁文件 `.sdd/lock` 包含 JSON 元数据（pid/command/createdAt/expiresAt）
 //! - 未过期或旧进程仍存活时拒绝新锁
 //! - 设置了超时且超时耗尽 → E_LOCK_TIMEOUT；未设置超时 → E_CONCURRENT_RUN

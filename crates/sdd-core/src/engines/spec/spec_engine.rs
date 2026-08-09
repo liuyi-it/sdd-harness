@@ -1,6 +1,6 @@
 //! SpecEngine：从需求文本生成 OpenSpec 规格制品。
 //!
-//! 翻译自 `packages/core/src/engines/spec/spec-engine.ts`：
+//! 翻译自 早期 Node 实现：
 //! - analyze：语义槽缺失检测（BLOCKER 澄清问题）
 //! - generate：生成 proposal/impact/questions/answers/assumptions/spec/delta/model
 //! - build_model：行为分割 → 需求/场景生成（GIVEN/WHEN/THEN）

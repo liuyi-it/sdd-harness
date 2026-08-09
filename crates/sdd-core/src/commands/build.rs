@@ -1,6 +1,6 @@
 //! build 命令：获取下一个任务（build next）或提交 Agent 结果（build complete）。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/build.ts` 的核心裁决语义：
+//! 翻译自 早期 Node 实现 的核心裁决语义：
 //! - next：找下一个可执行任务，写 pendingAgentTask，返回 actionRequired
 //! - complete：校验结果结构/任务身份/TDD evidence，写运行级结果并推进任务状态
 //!
@@ -539,7 +539,7 @@ fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddEr
     let state = StateStore::new(cwd.to_string()).read()?;
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
-    let references = ["spec.json", "design.md", "plan.json"]
+    let references = ["spec.md", "plan.md", "tasks.md", "plan.json"]
         .iter()
         .map(|name| {
             let path = change_dir.join(name);
@@ -553,7 +553,8 @@ fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddEr
         })
         .collect::<Result<Vec<_>, SddError>>()?
         .join("\n");
-    let codebase = fs::read_to_string(PathBuf::from(cwd).join(".sdd/index/codebase-summary.md"))
+    let index_dir = PathBuf::from(cwd).join(".sdd/index");
+    let codebase = fs::read_to_string(index_dir.join("summary.md"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?
         .replace(
             "END_UNTRUSTED_CODEBASE_CONTEXT",

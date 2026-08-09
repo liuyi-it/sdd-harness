@@ -23,7 +23,27 @@ fn init_creates_sdd_and_index_ready() {
     assert_eq!(result.state, "INDEX_READY");
     assert!(dir.path().join(".sdd/state.json").exists());
     assert!(dir.path().join(".sdd/config.json").exists());
+    let config: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/config.json")).unwrap(),
+    )
+    .unwrap();
+    let plugins = config
+        .get("plugins")
+        .and_then(|plugins| plugins.as_object());
+    assert_eq!(plugins.map(|plugins| plugins.len()), Some(1));
+    assert!(plugins.is_some_and(|plugins| plugins.contains_key("omp")));
     assert!(dir.path().join(".sdd/index/knowledge.json").exists());
+    assert!(dir.path().join(".sdd/index/summary.md").exists());
+    assert!(dir.path().join(".omp/skills/sdd-harness/SKILL.md").exists());
+    assert!(dir.path().join(".omp/commands/sdd.md").exists());
+    assert!(dir.path().join(".omp/agents/sdd-worker.md").exists());
+    for legacy in [
+        "codebase-summary.md",
+        "package-structure.md",
+        "architecture.md",
+    ] {
+        assert!(!dir.path().join(".sdd/index").join(legacy).exists());
+    }
 }
 
 #[test]

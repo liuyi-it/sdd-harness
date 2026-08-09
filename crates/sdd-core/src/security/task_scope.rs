@@ -1,4 +1,4 @@
-//! 任务文件范围校验（翻译自 `packages/core/src/security/task-scope.ts`）。
+//! 任务文件范围校验（翻译自 早期 Node 实现）。
 //!
 //! 裁决顺序：路径规范化 → 禁止文件（E_SECURITY_BLOCKED）→ 允许文件集
 //! （E_UNDECLARED_FILE_CHANGE）→ 期望新增文件核对。

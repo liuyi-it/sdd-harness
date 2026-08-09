@@ -1,6 +1,6 @@
 //! auto 命令：自动推进 SDD Loop。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/auto.ts` + loop-engine 的核心语义：
+//! 翻译自 早期 Node 实现 + loop-engine 的核心语义：
 //! - 确定性步骤（new→design→plan→build→verify→review→archive）自动推进
 //! - 遇到澄清（CLARIFYING）或 Agent 编码（BUILD_WAITING_AGENT）时暂停，
 //!   返回当前状态与原因，不绕过交互边界

@@ -5,6 +5,7 @@ use sdd_core::contracts::CommandRequest;
 use sdd_core::engines::spec::spec_engine::SpecEngine;
 use sdd_core::run;
 use serde_json::json;
+use std::io::Write;
 use std::process::Command;
 
 const FULL_REQUIREMENT: &str = "授权用户通过 API 请求取消待处理订单，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
@@ -29,7 +30,7 @@ fn prepare(dir: &std::path::Path) -> String {
     .unwrap();
     std::fs::create_dir_all(dir.join(".sdd/index")).unwrap();
     std::fs::write(
-        dir.join(".sdd/index/codebase-summary.md"),
+        dir.join(".sdd/index/summary.md"),
         "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
     )
     .unwrap();
@@ -152,7 +153,7 @@ fn full_chain_verify_review_archive() {
     .unwrap();
     assert!(archive.ok, "archive 应成功: {:?}", archive.error);
     assert_eq!(archive.state, "ARCHIVED");
-    // 收敛为三个文件
+    // 归档整合为一个人工文档和机器归档、完整性标记
     let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
         .unwrap()
         .next()
@@ -166,6 +167,73 @@ fn full_chain_verify_review_archive() {
     assert!(names.contains(&"archive.json".to_string()));
     assert!(names.contains(&"archive.md".to_string()));
     assert!(names.contains(&".archived".to_string()));
+    assert!(!names.contains(&"spec.md".to_string()));
+    assert!(!names.contains(&"plan.md".to_string()));
+    assert!(!names.contains(&"tasks.md".to_string()));
+    let archive_markdown = std::fs::read_to_string(change_dir.join("archive.md")).unwrap();
+    assert!(archive_markdown.contains("## 需求规格"));
+    assert!(archive_markdown.contains("## 实施计划"));
+    assert!(archive_markdown.contains("## 开发任务"));
+}
+
+#[test]
+fn verify_rejects_tampered_spec_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(change_dir.join("spec.md"))
+        .unwrap()
+        .write_all(b"\ntampered")
+        .unwrap();
+
+    let err = run(&CommandRequest {
+        command: "verify".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, "E_COMPONENT_INTEGRITY_FAILED");
+}
+
+#[test]
+fn review_rejects_tampered_tasks_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(change_dir.join("tasks.md"))
+        .unwrap()
+        .write_all(b"\ntampered")
+        .unwrap();
+
+    let err = run(&CommandRequest {
+        command: "review".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, "E_COMPONENT_INTEGRITY_FAILED");
 }
 
 #[test]

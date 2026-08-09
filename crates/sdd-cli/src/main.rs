@@ -1,6 +1,6 @@
 //! sdd / sdd-harness CLI 入口 — 参数解析、命令路由、输出格式化。
 //!
-//! 参数与输出契约对齐 Node 版 `packages/cli/src/cli.ts`：
+//! 参数与输出契约对齐 早期 Node 实现：
 //! - 全局参数：--json/--cwd/--change/--timeout/--non-interactive/--force/--verbose
 //! - 命令：init/status/new/design/plan/build/verify/review/archive/auto/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
@@ -53,9 +53,6 @@ struct GlobalArgs {
 enum Command {
     /// 初始化 .sdd/
     Init {
-        /// 指定 Agent（claude/codex/opencode），可逗号分隔
-        #[arg(long)]
-        agent: Option<String>,
         /// 空项目目录结构策略
         #[arg(long = "structurePolicy", alias = "structure-policy", value_parser = ["free-design", "user-defined"])]
         structure_policy: Option<String>,
@@ -310,13 +307,7 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
     }
 
     let command: &'static str = match &cli.command {
-        Command::Init {
-            agent,
-            structure_policy,
-        } => {
-            if let Some(agent) = agent {
-                args.insert("agent".into(), serde_json::json!(agent));
-            }
+        Command::Init { structure_policy } => {
             if let Some(policy) = structure_policy {
                 args.insert("structurePolicy".into(), serde_json::json!(policy));
             }

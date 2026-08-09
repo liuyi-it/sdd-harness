@@ -1,6 +1,6 @@
 //! 对外稳定契约：命令集合、阶段枚举、错误码到退出码映射、请求/响应结构。
 //!
-//! 翻译自 Node 版 `packages/core/src/contracts.ts`，字段名与枚举值保持一致。
+//! 翻译自 早期 Node 实现，字段名与枚举值保持一致。
 //! `codebase.provider` 使用 `gitnexus | codegraph | fallback-file-scan`。
 
 use serde::{Deserialize, Serialize};

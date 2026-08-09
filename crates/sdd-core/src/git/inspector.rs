@@ -1,6 +1,6 @@
 //! GitInspector：Git 快照、变更 delta 与文件范围校验。
 //!
-//! 翻译自 Node 版 `packages/core/src/git/git-inspector.ts`：
+//! 翻译自 早期 Node 实现：
 //! - snapshot：捕获 HEAD 与工作区状态
 //! - compute_delta：两个提交间的 A/M/D 变更
 //! - changed_files：当前工作区未提交变更

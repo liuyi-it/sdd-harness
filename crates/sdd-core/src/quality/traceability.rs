@@ -1,6 +1,6 @@
 //! 可追溯性矩阵：Requirement/Scenario → 任务 → 证据覆盖。
 //!
-//! 翻译自 `packages/core/src/quality/traceability.ts`：
+//! 翻译自 早期 Node 实现：
 //! verify 检查规格中的每个 Requirement/Scenario 都有对应任务与完成证据。
 
 use crate::engines::superpowers::protocol::TaskDefinition;

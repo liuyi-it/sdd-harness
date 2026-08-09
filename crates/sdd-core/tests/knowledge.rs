@@ -66,7 +66,7 @@ fn initialize_writes_diagnostics_without_failing() {
     assert_eq!(diags.len(), 2); // gitnexus + codegraph 各一条
                                 // 诊断文件已写入
     assert!(dir.path().join(".sdd/index/knowledge.json").exists());
-    assert!(dir.path().join(".sdd/index/codebase-summary.md").exists());
+    assert!(dir.path().join(".sdd/index/summary.md").exists());
 }
 
 #[test]

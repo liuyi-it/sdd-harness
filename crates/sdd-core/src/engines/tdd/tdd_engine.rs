@@ -1,13 +1,12 @@
 //! TddEngine：设计文档生成与任务计划生成。
 //!
-//! 翻译自 `packages/core/src/engines/tdd/tdd-engine.ts`：
+//! 翻译自 早期 Node 实现：
 //! - generateDesign：拼接设计提示（含既有设计保留规则）
-//! - generatePlan：经 superpowers planner 生成原子任务链
+//! - generatePlan：经受控任务规划器生成原子任务链
 
 use super::super::openspec::parser::parse_spec;
 use super::super::superpowers::planner::{build_plan_artifacts, extract_paths};
 use super::super::superpowers::protocol::PlanArtifacts;
-use crate::engines::superpowers::planner::render_tasks;
 use crate::error::SddError;
 
 pub struct DesignInput {
@@ -147,11 +146,6 @@ impl TddEngine {
         spec: &str,
     ) -> Result<super::super::openspec::model::SpecDocument, String> {
         parse_spec(spec)
-    }
-
-    /// 渲染任务 markdown（供 plan.md 落盘）
-    pub fn render_tasks_markdown(&self, artifacts: &PlanArtifacts) -> String {
-        render_tasks(&artifacts.tasks)
     }
 }
 

@@ -3,7 +3,7 @@
 //! - 未初始化时返回 NOT_INITIALIZED
 //! - 已初始化时原样回报当前持久化状态和建议下一步命令
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/status.ts`。
+//! 翻译自 早期 Node 实现。
 
 use serde_json::json;
 

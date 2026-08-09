@@ -1,7 +1,7 @@
 //! SddError 是 Core 内部统一错误类型。
 //!
 //! 每个错误都带有稳定的错误码（E_*）、退出码以及建议的下一步命令。
-//! 翻译自 Node 版 `packages/core/src/errors.ts`。
+//! 翻译自 早期 Node 实现。
 
 use crate::contracts::{error_exit_codes, CommandError};
 

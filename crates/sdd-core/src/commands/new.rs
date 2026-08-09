@@ -1,9 +1,9 @@
 //! new 命令：接收粗略需求、提出阻塞问题，并在信息充分后生成首批规格制品。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/new.ts`：
+//! 翻译自 早期 Node 实现：
 //! - 无需求（或空需求）→ E_MISSING_ARTIFACT
-//! - 有需求但存在未回答的 BLOCKER 问题 → 写 CLARIFYING 状态的 spec.json 并返回问题
-//! - 需求充分 → 生成 spec.md + spec.json（status=READY），状态推进 SPEC_READY
+//! - 有需求但存在未回答的 BLOCKER 问题 → 写 CLARIFYING 状态的 spec.md/spec.json 并返回问题
+//! - 需求充分 → 生成供人工审核的 spec.md 和机器状态 spec.json
 
 use std::collections::HashMap;
 use std::fs;
@@ -250,7 +250,7 @@ pub fn run_new(
         .collect();
 
     if !unanswered.is_empty() {
-        // 写 CLARIFYING 状态的 spec.json（供审计与恢复）
+        let spec_markdown = render_clarifying_spec(&requirement, &unanswered);
         let spec_json = json!({
             "schemaVersion": SPEC_SCHEMA_VERSION,
             "status": "CLARIFYING",
@@ -261,8 +261,26 @@ pub fn run_new(
         });
         let spec_json_text = serde_json::to_string_pretty(&spec_json)
             .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化澄清规格失败：{e}")))?;
-        fs::write(change_dir.join("spec.json"), spec_json_text)
+        fs::write(change_dir.join("spec.md"), &spec_markdown)
+            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
+        fs::write(change_dir.join("spec.json"), &spec_json_text)
             .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入澄清规格失败：{e}")))?;
+        crate::state::artifact_store::record_artifact(
+            cwd,
+            &format!("{change_id}:spec"),
+            "spec",
+            &format!(".sdd/changes/{change_id}/spec.md"),
+            &spec_markdown,
+            json!({ "requirement": requirement }),
+        )?;
+        crate::state::artifact_store::record_artifact(
+            cwd,
+            &format!("{change_id}:spec-json"),
+            "spec",
+            &format!(".sdd/changes/{change_id}/spec.json"),
+            &spec_json_text,
+            json!({ "requirement": requirement }),
+        )?;
         if parsed.non_interactive {
             return Err(SddError::new(
                 "E_UNRESOLVED_BLOCKER",
@@ -297,10 +315,9 @@ pub fn run_new(
     }
 
     // 需求充分：生成规格
-    let codebase_summary = fs::read_to_string(
-        PathBuf::from(cwd).join(".sdd/index/codebase-summary.md"),
-    )
-    .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?;
+    let index_dir = PathBuf::from(cwd).join(".sdd/index");
+    let codebase_summary = fs::read_to_string(index_dir.join("summary.md"))
+        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?;
     let input = GenerateSpecInput {
         requirement: requirement.clone(),
         codebase_summary,
@@ -310,40 +327,36 @@ pub fn run_new(
         .generate(&input)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("生成规格失败：{e}")))?;
 
-    // 写 spec.md 与 spec.json（status=READY）
+    let spec_markdown = render_spec_document(&requirement, &parsed.answers, &artifacts.spec);
     let spec_json = json!({
         "schemaVersion": SPEC_SCHEMA_VERSION,
         "status": "READY",
         "requirement": requirement,
-        "proposal": artifacts.proposal,
         "impact": artifacts.impact,
-        "questions": artifacts.questions,
-        "answers": artifacts.answers,
-        "assumptions": artifacts.assumptions,
-        "delta": artifacts.delta,
+        "answers": parsed.answers,
         "model": artifacts.model,
     });
-    fs::write(change_dir.join("spec.md"), &artifacts.spec)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
     let spec_json_text = serde_json::to_string_pretty(&spec_json)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 spec.json 失败：{e}")))?;
+    fs::write(change_dir.join("spec.md"), &spec_markdown)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
     fs::write(change_dir.join("spec.json"), &spec_json_text)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.json 失败：{e}")))?;
     crate::state::artifact_store::record_artifact(
         cwd,
         &format!("{change_id}:spec"),
         "spec",
-        &format!(".sdd/changes/{change_id}/spec.json"),
-        &spec_json_text,
+        &format!(".sdd/changes/{change_id}/spec.md"),
+        &spec_markdown,
         json!({ "requirement": requirement }),
     )?;
     crate::state::artifact_store::record_artifact(
         cwd,
-        &format!("{change_id}:spec-md"),
+        &format!("{change_id}:spec-json"),
         "spec",
-        &format!(".sdd/changes/{change_id}/spec.md"),
-        &artifacts.spec,
-        json!({ "specJson": crate::policies::digest::digest(&spec_json_text) }),
+        &format!(".sdd/changes/{change_id}/spec.json"),
+        &spec_json_text,
+        json!({ "requirement": requirement }),
     )?;
 
     store.update(|s| {
@@ -414,4 +427,74 @@ pub fn current_change_id(state: &WorkflowState) -> Result<String, SddError> {
     })?;
     crate::git::isolation::validate_change_id(&change_id)?;
     Ok(change_id)
+}
+
+fn render_clarifying_spec(
+    requirement: &str,
+    questions: &[&crate::engines::spec::spec_engine::ClarifyingQuestion],
+) -> String {
+    let mut lines = vec![
+        "# 需求规格".to_string(),
+        String::new(),
+        "## 当前需求".to_string(),
+        String::new(),
+        requirement.to_string(),
+        String::new(),
+        "## 待澄清问题".to_string(),
+        String::new(),
+    ];
+    for question in questions {
+        lines.push(format!("- [ ] {}：{}", question.id, question.question));
+    }
+    lines.join("\n") + "\n"
+}
+
+fn render_spec_document(
+    requirement: &str,
+    answers: &HashMap<String, String>,
+    structured_spec: &str,
+) -> String {
+    let structured_body = structured_spec
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut lines = vec![
+        "# 需求规格".to_string(),
+        String::new(),
+        "## 目标与价值".to_string(),
+        String::new(),
+        requirement.to_string(),
+        String::new(),
+        "## 范围".to_string(),
+        String::new(),
+        "- 包含：需求正文及其验收场景明确的用户行为。".to_string(),
+        "- 不包含：未在需求、约束和验收标准中明确的功能、重构或依赖。".to_string(),
+        String::new(),
+        "## 关键设计决策".to_string(),
+        String::new(),
+        "- 以需求和场景作为验收边界，具体技术实现放在 plan.md 中审核。".to_string(),
+        "- 保持未明确变更的既有行为和对外契约。".to_string(),
+        String::new(),
+        "## 约束".to_string(),
+        String::new(),
+        "- 变更必须覆盖安全边界、必要审计和自动化测试。".to_string(),
+    ];
+    if !answers.is_empty() {
+        lines.push(String::new());
+        lines.push("### 已确认约束".to_string());
+        let mut answer_ids: Vec<&String> = answers.keys().collect();
+        answer_ids.sort();
+        for id in answer_ids {
+            lines.push(format!("- {}：{}", id, answers[id]));
+        }
+    }
+    lines.extend([
+        String::new(),
+        "## 验收标准".to_string(),
+        String::new(),
+        structured_body,
+        String::new(),
+    ]);
+    lines.join("\n")
 }

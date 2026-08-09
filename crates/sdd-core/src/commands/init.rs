@@ -26,6 +26,13 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         .map(|s| (s * 1000.0) as u64);
     let _guard = lock_sdd(cwd, "sdd init", None, timeout_ms)?;
 
+    if args.and_then(|value| value.get("agent")).is_some() {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "项目只支持 OMP 原生接入，sdd init 不接受 Agent 选择",
+        ));
+    }
+
     let sdd_root = PathBuf::from(cwd).join(".sdd");
     fs::create_dir_all(&sdd_root)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{e}")))?;
@@ -57,30 +64,12 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     // 写入默认配置（config.json）；重复 init 仅更新显式指定的结构策略。
     write_default_config(cwd, &sdd_root, structure_policy)?;
 
-    // 写入 Agent 接入文件（支持逗号分隔；未指定时安装全部内置 Adapter）
-    let agents = args
-        .and_then(|a| a.get("agent"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .unwrap_or("claude,codex,opencode");
+    // 项目只支持 OMP 原生接入。
     let force = args
         .and_then(|a| a.get("force"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let mut adapter_files = Vec::new();
-    for agent in agents
-        .split(',')
-        .map(str::trim)
-        .filter(|agent| !agent.is_empty())
-    {
-        if !crate::assets::known_agents().contains(&agent) {
-            return Err(SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                &format!("未知 Agent：{agent}"),
-            ));
-        }
-        adapter_files.extend(crate::assets::write_adapter_files(cwd, agent, force)?);
-    }
+    let adapter_files = crate::assets::write_adapter_files(cwd, force)?;
 
     // 空项目检测：无源文件时附加 warning（一期不做 CLARIFYING 暂停）
     let empty_project = is_empty_project(cwd);
@@ -183,9 +172,7 @@ fn write_default_config(
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "project": { "name": project_name },
         "plugins": {
-            "claudeCode": { "enabled": true },
-            "codex": { "enabled": true },
-            "openCode": { "enabled": true }
+            "omp": { "enabled": true }
         },
         "codebase": {
             "providers": ["gitnexus", "codegraph"],
@@ -230,6 +217,11 @@ fn write_default_config(
             "config.json 必须包含 workflow 对象",
         ));
     }
+    let omp_plugin = config
+        .pointer("/plugins/omp")
+        .cloned()
+        .unwrap_or_else(|| json!({ "enabled": true }));
+    config["plugins"] = json!({ "omp": omp_plugin });
     if let Some(policy) = structure_policy {
         config
             .get_mut("workflow")

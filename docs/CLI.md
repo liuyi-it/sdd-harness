@@ -16,7 +16,7 @@ bash scripts/install.sh
 
 重复安装会先备份并清除旧版全局 CLI，再通过 `cargo build --release` 构建并注册命令；安装后会验证命令可运行。失败安装会恢复原版本。可用 `PREFIX=/path bash scripts/install.sh` 指定安装目录。`bash scripts/uninstall.sh` 执行完整卸载，但不会删除业务项目中的 `.sdd/` 用户数据。
 
-在业务项目中重新执行 `sdd init` 会刷新所选 Adapter 文件和代码库索引；工作流状态、变更、运行、归档与有效用户配置会保留。`AGENTS.md` 只替换 sdd-harness 受管区块。
+在业务项目中重新执行 `sdd init` 会刷新 OMP 接入文件和代码库索引；工作流状态、变更、运行、归档与有效用户配置会保留。
 
 所有工作流状态和制品都写入目标项目的 `.sdd/`。
 
@@ -40,13 +40,12 @@ bash scripts/install.sh
 
 ### `sdd init`
 
-初始化 `.sdd/`、配置、代码库索引和 Agent 接入文件。未指定 `--agent` 时安装全部内置 Adapter；CLI 可显式选择一个或多个 Agent。
+初始化 `.sdd/`、配置、代码库索引和唯一的 OMP 原生接入文件。
 空项目可用 `--structurePolicy free-design|user-defined` 固化目录结构策略；未指定时初始化继续完成并返回 `W_EMPTY_PROJECT`。
 
 ```bash
-sdd init --agent codex
-sdd init --agent claude,codex
-sdd init --agent opencode --structurePolicy free-design
+sdd init
+sdd init --structurePolicy free-design
 ```
 
 ### `sdd status`
@@ -60,7 +59,7 @@ sdd status --loop --json
 
 ### `sdd new <需求>`
 
-创建变更并生成 `spec.md`、`spec.json`。首次调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。
+创建变更并生成供人工审核的 `spec.md`，以及供 Core 使用的机器状态 `spec.json`。首次调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。
 
 ```bash
 sdd new "实现订单取消功能"
@@ -72,7 +71,7 @@ sdd new "为待处理订单提供取消 API，包含权限、冲突响应、审�
 
 ### `sdd design`
 
-根据规格和代码库影响生成 `design.md`。
+根据 `spec.md` 和代码库影响生成技术方案，写入 `spec.json.design`，供后续生成 `plan.md`；不单独生成 `design.md`。
 
 ```bash
 sdd design --change add-order-cancel
@@ -80,7 +79,7 @@ sdd design --change add-order-cancel
 
 ### `sdd plan`
 
-生成 `plan.json`，其中包含任务、可读计划、测试计划、上下文摘要和可选依赖决策。此阶段不会批量创建 Context Pack。
+生成机器计划 `plan.json`、人工审核计划 `plan.md` 和可勾选任务清单 `tasks.md`。此阶段不会批量创建 Context Pack。
 
 ```bash
 sdd plan --change add-order-cancel
@@ -120,7 +119,7 @@ sdd review --json
 
 ### `sdd archive`
 
-重新验证质量报告、任务结果、制品哈希和 Git 漂移，然后将完整计划与报告写入归档，并把变更目录压缩为 `archive.json`、`archive.md`、`.archived`。
+重新验证质量报告、任务结果、制品哈希和 Git 漂移，然后将 `spec.md`、`plan.md`、`tasks.md` 与验证/审查结果整合为完整 `archive.md`，删除三份活动文档，变更目录最终只保留 `archive.md`、`archive.json` 和 `.archived`。
 
 ```bash
 sdd archive --json

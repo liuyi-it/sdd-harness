@@ -22,7 +22,7 @@ fn prepare(dir: &std::path::Path) -> String {
     // 写入 index 摘要（含源码与测试文件路径，供 planner 推导范围）
     std::fs::create_dir_all(dir.join(".sdd/index")).unwrap();
     std::fs::write(
-        dir.join(".sdd/index/codebase-summary.md"),
+        dir.join(".sdd/index/summary.md"),
         "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
     )
     .unwrap();
@@ -77,14 +77,13 @@ fn design_then_plan_updates_phases() {
     .unwrap();
     assert!(design.ok, "design 应成功: {:?}", design.error);
     assert_eq!(design.state, "DESIGN_READY");
-    assert!(
-        dir.path().join(".sdd/changes").join("design.md").exists()
-            || std::fs::read_dir(dir.path().join(".sdd/changes"))
-                .unwrap()
-                .next()
-                .is_none()
-            || find_change_dir(dir.path()).join("design.md").exists()
-    );
+    assert!(!find_change_dir(dir.path()).join("design.md").exists());
+    assert!(find_change_dir(dir.path()).join("spec.md").exists());
+    let spec_json: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(find_change_dir(dir.path()).join("spec.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(spec_json.get("design").and_then(|v| v.as_str()).is_some());
 
     let plan = run(&CommandRequest {
         command: "plan".into(),
@@ -96,7 +95,11 @@ fn design_then_plan_updates_phases() {
     assert_eq!(plan.state, "PLAN_READY");
     let change_dir = find_change_dir(dir.path());
     assert!(change_dir.join("plan.json").exists());
-    assert!(!change_dir.join("plan.md").exists());
+    let plan_markdown = std::fs::read_to_string(change_dir.join("plan.md")).unwrap();
+    assert!(plan_markdown.contains("## 技术方案与架构"));
+    let tasks_markdown = std::fs::read_to_string(change_dir.join("tasks.md")).unwrap();
+    assert!(tasks_markdown.contains("# 开发任务"));
+    assert!(tasks_markdown.contains("## [ ] TASK-001-RED"));
     let plan_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(change_dir.join("plan.json")).unwrap())
             .unwrap();

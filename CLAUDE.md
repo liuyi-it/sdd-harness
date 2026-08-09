@@ -2,7 +2,7 @@
 
 ## 项目结构与模块划分
 
-本仓库是一个 Rust Cargo workspace 项目。核心领域逻辑在 `crates/sdd-core/src`，包括状态机、命令实现、安全校验、知识图谱适配与引擎；对应测试在 `crates/sdd-core/tests`。CLI 入口在 `crates/sdd-cli`，提供 `sdd` / `sdd-harness` 命令。`assets/adapters/` 存放 Agent Adapter 模板（claude/codex/opencode/generic-agent 的命令、技能与规则文件），编译期嵌入二进制，`sdd init` 时按 Agent 写出。`crates/sdd-core/src/knowledge/` 负责 GitNexus / CodeGraph 双引擎探测、索引、按 intent 路由与降级文件扫描。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目，`vendor/` 存放上游快照（openspec/superpowers）。
+本仓库是一个 Rust Cargo workspace 项目。核心领域逻辑在 `crates/sdd-core/src`，包括状态机、命令实现、安全校验、知识图谱适配与引擎；对应测试在 `crates/sdd-core/tests`。CLI 入口在 `crates/sdd-cli`，提供 `sdd` / `sdd-harness` 命令。`assets/adapters/omp/` 存放唯一的 OMP 原生 Skill、完整 slash 命令集和 subagent 模板，编译期嵌入二进制，`sdd init` 时写出到 `.omp/`。`crates/sdd-core/src/knowledge/` 负责 GitNexus / CodeGraph 双引擎探测、索引、按 intent 路由与降级文件扫描。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目，`vendor/` 存放上游快照（openspec/superpowers）。
 
 ## Karpathy 风格执行规则
 
@@ -31,11 +31,11 @@
 
 ## 提交与 PR 规范
 
-现有提交风格以简短前缀为主，例如 `docs: ...`、`feat: ...`、`fix: ...`。PR 应说明变更目的、影响范围、验证命令与结果；若改动命令文案、README 或 Adapter 模板，附关键示例即可。
+现有提交风格以简短前缀为主，例如 `docs: ...`、`feat: ...`、`fix: ...`。PR 应说明变更目的、影响范围、验证命令与结果；若改动命令文案、README 或 OMP 模板，附关键示例即可。
 
 ## 额外约束
 
-不要提交密钥、凭据、生成产物（target/）或无关依赖变更。涉及 Adapter 行为时，同时检查 `assets/adapters/` 模板与 `crates/sdd-core/src/assets.rs` 的写入映射。
+不要提交密钥、凭据、生成产物（target/）或无关依赖变更。涉及 OMP 接入行为时，同时检查 `assets/adapters/omp/` 模板与 `crates/sdd-core/src/assets.rs` 的写入映射。
 
 ## 其他规则
 

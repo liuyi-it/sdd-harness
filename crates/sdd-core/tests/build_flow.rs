@@ -20,7 +20,7 @@ fn prepare(dir: &std::path::Path) -> String {
     .unwrap();
     std::fs::create_dir_all(dir.join(".sdd/index")).unwrap();
     std::fs::write(
-        dir.join(".sdd/index/codebase-summary.md"),
+        dir.join(".sdd/index/summary.md"),
         "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
     )
     .unwrap();

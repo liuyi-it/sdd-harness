@@ -1,4 +1,4 @@
-//! 语义词典（翻译自 `packages/core/src/engines/spec/semantic-lexicon.ts`）。
+//! 语义词典（翻译自 早期 Node 实现）。
 //!
 //! 用于动作检测与提取。JS 的 /i 标志在 Rust 中通过 RegexBuilder case_insensitive。
 

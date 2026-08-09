@@ -125,7 +125,7 @@ fn assert_full_workflow(dir: &tempfile::TempDir) {
 
     // 补充 index 摘要（供 planner 推导范围）
     std::fs::write(
-        dir.path().join(".sdd/index/codebase-summary.md"),
+        dir.path().join(".sdd/index/summary.md"),
         "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
     )
     .unwrap();

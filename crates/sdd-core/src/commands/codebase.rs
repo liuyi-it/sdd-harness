@@ -1,6 +1,6 @@
 //! codebase 命令：代码库上下文管理（status/doctor/index/query/rebuild）。
 //!
-//! 翻译自 Node 版 `packages/cli/src/commands/codebase.ts` 的分发与校验语义；
+//! 翻译自 早期 Node 实现 的分发与校验语义；
 //! 底层由 knowledge 模块（GitNexus/CodeGraph）提供能力。
 
 use crate::contracts::CommandResult;
@@ -128,12 +128,7 @@ pub fn run_codebase(
 }
 
 pub(crate) fn record_index_artifacts(cwd: &str) -> Result<(), SddError> {
-    for name in [
-        "knowledge.json",
-        "codebase-summary.md",
-        "package-structure.md",
-        "architecture.md",
-    ] {
+    for name in ["knowledge.json", "summary.md"] {
         let content =
             std::fs::read_to_string(std::path::Path::new(cwd).join(".sdd/index").join(name))
                 .map_err(|e| {

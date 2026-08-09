@@ -54,7 +54,7 @@ fn new_with_incomplete_requirement_enters_clarifying() {
         .and_then(|c| c.get("questions"))
         .and_then(|q| q.as_array());
     assert!(questions.is_some() && !questions.unwrap().is_empty());
-    // spec.json 落盘为 CLARIFYING 状态
+    // spec.json 落盘为 CLARIFYING 状态，人工文档同步存在
     let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
         .unwrap()
         .next()
@@ -65,6 +65,7 @@ fn new_with_incomplete_requirement_enters_clarifying() {
         serde_json::from_str(&std::fs::read_to_string(change_dir.join("spec.json")).unwrap())
             .unwrap();
     assert_eq!(spec_json.get("status").unwrap(), "CLARIFYING");
+    assert!(change_dir.join("spec.md").exists());
 }
 
 #[test]
@@ -80,11 +81,14 @@ fn new_with_full_requirement_writes_spec() {
         .unwrap()
         .unwrap()
         .path();
-    assert!(change_dir.join("spec.md").exists());
+    let spec_markdown = std::fs::read_to_string(change_dir.join("spec.md")).unwrap();
+    assert!(spec_markdown.contains("## 目标与价值"));
+    assert!(spec_markdown.contains("## 验收标准"));
     let spec_json: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(change_dir.join("spec.json")).unwrap())
             .unwrap();
     assert_eq!(spec_json.get("status").unwrap(), "READY");
+    assert!(spec_json.get("spec").is_none());
     let model: SpecDocument =
         serde_json::from_value(spec_json.get("model").unwrap().clone()).unwrap();
     assert!(!model.requirements.is_empty());

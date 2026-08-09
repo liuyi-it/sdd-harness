@@ -1,7 +1,7 @@
-//! plan 命令：生成单一事实源 plan.json。
+//! plan 命令：生成机器计划和供人工审核的 plan.md/tasks.md。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/plan.ts`：
-//! 读取 spec/design，经 TddEngine 生成原子任务链，状态推进 PLAN_READY。
+//! 翻译自 早期 Node 实现：
+//! 读取 spec.md 与机器设计状态，经 TddEngine 生成原子任务链，状态推进 PLAN_READY。
 
 use std::fs;
 use std::path::PathBuf;
@@ -37,52 +37,57 @@ pub fn run_plan(
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
     for key in [
         format!("{change_id}:spec"),
-        format!("{change_id}:spec-md"),
+        format!("{change_id}:spec-json"),
         format!("{change_id}:design"),
     ] {
         crate::state::artifact_store::verify_artifact(cwd, &key)?;
     }
 
-    let spec = fs::read_to_string(change_dir.join("spec.md"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
-    let design = fs::read_to_string(change_dir.join("design.md"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 design.md 失败：{e}")))?;
     let spec_json_raw = fs::read_to_string(change_dir.join("spec.json"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.json 失败：{e}")))?;
     let spec_json: serde_json::Value = serde_json::from_str(&spec_json_raw)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec.json 解析失败：{e}")))?;
+    let spec = fs::read_to_string(change_dir.join("spec.md"))
+        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
+    let design = spec_json
+        .get("design")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "spec.json 缺少 design 字段"))?
+        .to_string();
     let impact = spec_json
         .get("impact")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
     let index_dir = PathBuf::from(cwd).join(".sdd/index");
-    let codebase_summary = fs::read_to_string(index_dir.join("codebase-summary.md"))
+    let codebase_summary = fs::read_to_string(index_dir.join("summary.md"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?;
-    let spec_digest = crate::policies::digest::digest(&spec_json_raw);
+    let spec_digest = crate::policies::digest::digest(&spec);
     let design_digest = crate::policies::digest::digest(&design);
 
     let artifacts = engine.generate_plan(&PlanningInputRust {
         spec,
-        design,
+        design: design.clone(),
         impact,
         codebase_summary,
     })?;
 
-    // 写 plan.json（任务列表 + 可读计划 + 测试计划 + 上下文摘要）
+    let plan_markdown = render_plan_document(&design, &artifacts.test_plan, &dependencies);
+    let tasks_markdown = artifacts.tasks_markdown.clone();
     let plan_json = json!({
         "schemaVersion": "2.0.0",
         "changeId": change_id,
         "tasks": artifacts.tasks,
-        "tasksMarkdown": artifacts.tasks_markdown,
-        "testPlan": artifacts.test_plan,
-        "context": artifacts.context,
         "dependencies": dependencies,
     });
     let plan_text = serde_json::to_string_pretty(&plan_json)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 plan.json 失败：{e}")))?;
     fs::write(change_dir.join("plan.json"), &plan_text)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.json 失败：{e}")))?;
+    fs::write(change_dir.join("plan.md"), &plan_markdown)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.md 失败：{e}")))?;
+    fs::write(change_dir.join("tasks.md"), &tasks_markdown)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 tasks.md 失败：{e}")))?;
     crate::state::artifact_store::record_artifact(
         cwd,
         &format!("{change_id}:plan"),
@@ -93,6 +98,22 @@ pub fn run_plan(
             "spec": spec_digest,
             "design": design_digest,
         }),
+    )?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:plan-md"),
+        "plan",
+        &format!(".sdd/changes/{change_id}/plan.md"),
+        &plan_markdown,
+        json!({ "plan": crate::policies::digest::digest(&plan_text) }),
+    )?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:tasks-md"),
+        "plan",
+        &format!(".sdd/changes/{change_id}/tasks.md"),
+        &tasks_markdown,
+        json!({ "plan": crate::policies::digest::digest(&plan_text) }),
     )?;
     store.update(|s| {
         s.current_phase = "PLAN_READY".to_string();
@@ -114,6 +135,54 @@ pub fn run_plan(
         action_required: None,
         error: None,
     })
+}
+
+fn render_plan_document(design: &str, test_plan: &str, dependencies: &serde_json::Value) -> String {
+    let design = design.strip_prefix("# Design").unwrap_or(design).trim();
+    let test_plan = test_plan
+        .strip_prefix("# Test Plan")
+        .unwrap_or(test_plan)
+        .trim();
+    let mut lines = vec![
+        "# 实施计划".to_string(),
+        String::new(),
+        "## 技术方案与架构".to_string(),
+        String::new(),
+        design.to_string(),
+        String::new(),
+        "## 实施顺序".to_string(),
+        String::new(),
+        "1. 按 tasks.md 的任务依赖顺序执行。".to_string(),
+        "2. 每个需求依次完成 RED、GREEN、REFACTOR、VERIFY。".to_string(),
+        String::new(),
+        "## 测试计划".to_string(),
+        String::new(),
+        test_plan.to_string(),
+        String::new(),
+        "## 依赖决策".to_string(),
+        String::new(),
+    ];
+    match dependencies.as_array() {
+        Some(entries) if !entries.is_empty() => {
+            for entry in entries {
+                let name = entry
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未知依赖");
+                let action = entry
+                    .get("action")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未知操作");
+                let reason = entry
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("未说明原因");
+                lines.push(format!("- {name}（{action}）：{reason}"));
+            }
+        }
+        _ => lines.push("- 无新增依赖。".to_string()),
+    }
+    lines.join("\n") + "\n"
 }
 
 fn validate_dependencies(dependencies: &serde_json::Value) -> Result<(), SddError> {

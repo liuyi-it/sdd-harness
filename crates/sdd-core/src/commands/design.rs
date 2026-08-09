@@ -1,7 +1,7 @@
-//! design 命令：生成技术设计文档（design.md）。
+//! design 命令：生成供 plan.md 使用的技术方案并写入机器状态。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/design.ts`：
-//! 读取 change 下 spec.md/spec.json，经 TddEngine 生成 design.md，状态推进 DESIGN_READY。
+//! 翻译自 早期 Node 实现：
+//! 读取 spec.md，经 TddEngine 生成设计字段，状态推进 DESIGN_READY。
 
 use std::fs;
 use std::path::PathBuf;
@@ -30,16 +30,20 @@ pub fn run_design(
     let state = store.read()?;
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
-    for key in [format!("{change_id}:spec"), format!("{change_id}:spec-md")] {
+    for key in [
+        format!("{change_id}:spec"),
+        format!("{change_id}:spec-json"),
+    ] {
         crate::state::artifact_store::verify_artifact(cwd, &key)?;
     }
 
-    let spec = fs::read_to_string(change_dir.join("spec.md"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
     let spec_json_raw = fs::read_to_string(change_dir.join("spec.json"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.json 失败：{e}")))?;
-    let spec_json: serde_json::Value = serde_json::from_str(&spec_json_raw)
+    let mut spec_json: serde_json::Value = serde_json::from_str(&spec_json_raw)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec.json 解析失败：{e}")))?;
+    let spec = fs::read_to_string(change_dir.join("spec.md"))
+        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
+    let spec_digest = crate::policies::digest::digest(&spec);
     let impact = spec_json
         .get("impact")
         .and_then(|v| v.as_str())
@@ -48,28 +52,19 @@ pub fn run_design(
 
     // 从知识图谱获取代码库摘要（降级时使用文件扫描结果）
     let index_dir = PathBuf::from(cwd).join(".sdd/index");
-    let read_index = |name: &str| -> Result<String, SddError> {
-        fs::read_to_string(index_dir.join(name)).map_err(|e| {
-            SddError::new(
-                "E_MISSING_ARTIFACT",
-                &format!("读取索引摘要 {name} 失败：{e}"),
-            )
-        })
-    };
-    let codebase_summary = read_index("codebase-summary.md")?;
-    let package_structure = read_index("package-structure.md")?;
-    let architecture = read_index("architecture.md")?;
+    let codebase_summary = fs::read_to_string(index_dir.join("summary.md")).map_err(|e| {
+        SddError::new(
+            "E_MISSING_ARTIFACT",
+            &format!("读取索引摘要 summary.md 失败：{e}"),
+        )
+    })?;
+    let package_structure = codebase_summary.clone();
+    let architecture = codebase_summary.clone();
 
-    let existing_design = match fs::read_to_string(change_dir.join("design.md")) {
-        Ok(content) => Some(content),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("读取已有 design.md 失败：{error}"),
-            ));
-        }
-    };
+    let existing_design = spec_json
+        .get("design")
+        .and_then(|value| value.as_str())
+        .map(String::from);
     let design = engine.generate_design(&DesignInput {
         spec,
         impact,
@@ -78,15 +73,32 @@ pub fn run_design(
         architecture,
         existing_design,
     });
-    fs::write(change_dir.join("design.md"), &design)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 design.md 失败：{e}")))?;
+    spec_json
+        .as_object_mut()
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "spec.json 必须是对象"))?
+        .insert("design".to_string(), json!(design));
+    let spec_json_text = serde_json::to_string_pretty(&spec_json)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 spec.json 失败：{e}")))?;
+    fs::write(change_dir.join("spec.json"), &spec_json_text)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("更新 spec.json 失败：{e}")))?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:spec-json"),
+        "spec",
+        &format!(".sdd/changes/{change_id}/spec.json"),
+        &spec_json_text,
+        json!({ "updatedBy": "sdd design" }),
+    )?;
     crate::state::artifact_store::record_artifact(
         cwd,
         &format!("{change_id}:design"),
         "design",
-        &format!(".sdd/changes/{change_id}/design.md"),
-        &design,
-        json!({ "spec": crate::policies::digest::digest(&spec_json_raw) }),
+        &format!(".sdd/changes/{change_id}/spec.json"),
+        &spec_json_text,
+        json!({
+            "spec": spec_digest,
+            "specJson": crate::policies::digest::digest(&spec_json_raw),
+        }),
     )?;
 
     store.update(|s| {

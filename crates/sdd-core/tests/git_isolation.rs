@@ -67,7 +67,7 @@ fn new_records_isolated_business_workspace_when_enabled() {
     run(&CommandRequest {
         command: "init".into(),
         cwd: cwd.clone(),
-        args: Some(serde_json::json!({ "agent": "codex" })),
+        args: None,
     })
     .unwrap();
     let config_path = dir.path().join(".sdd/config.json");
