@@ -17,6 +17,7 @@ pub fn next_command(phase: &str) -> Option<String> {
         "NOT_INITIALIZED" => "sdd init",
         "INDEX_READY" => "sdd new",
         "CLARIFYING" => "sdd new",
+        "NEW_STARTED" => "sdd auto --resume",
         "SPEC_READY" => "sdd design",
         "DESIGN_READY" => "sdd plan",
         "PLAN_READY" => "sdd build next",

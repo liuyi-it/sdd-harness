@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": ["schemaVersion", "state", "config", "artifacts", "changes", "runs", "loop", "index"],
+  "properties": {
+    "schemaVersion": { "type": "integer" },
+    "state": { "type": "object" },
+    "config": { "type": "object" },
+    "artifacts": { "type": "object" },
+    "changes": { "type": "object" },
+    "runs": { "type": "object" },
+    "loop": { "type": "object" },
+    "index": { "type": "object" }
+  }
+}

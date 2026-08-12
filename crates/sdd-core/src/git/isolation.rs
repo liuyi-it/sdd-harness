@@ -17,23 +17,17 @@ pub struct GitIsolationManager;
 
 impl GitIsolationManager {
     pub fn enabled(cwd: &str) -> Result<bool, SddError> {
-        let path = PathBuf::from(cwd).join(".sdd/config.json");
-        if !path.exists() {
+        let config = crate::state::runtime_store::read_config(cwd)?;
+        if config == serde_json::Value::Null || config == serde_json::json!({}) {
             return Ok(false);
         }
-        let raw = fs::read_to_string(&path).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("读取 config.json 失败：{e}"))
-        })?;
-        let config: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("config.json 解析失败：{e}"))
-        })?;
         if !config
             .get("workflow")
             .is_some_and(serde_json::Value::is_object)
         {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
-                "config.json 必须包含 workflow 对象",
+                "runtime.json 的 config 必须包含 workflow 对象",
             ));
         }
         Ok(config
@@ -188,7 +182,8 @@ fn worktrees(root: &Path) -> Result<Vec<WorktreeEntry>, SddError> {
 pub fn validate_change_id(change_id: &str) -> Result<(), SddError> {
     if change_id.is_empty()
         || !change_id.chars().all(|character| {
-            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+            (character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-')
+                || (!character.is_ascii() && character.is_alphanumeric())
         })
     {
         return Err(SddError::new(

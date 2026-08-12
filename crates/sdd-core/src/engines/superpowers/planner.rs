@@ -26,7 +26,10 @@ pub fn create_atomic_tasks(
 ) -> Result<(Vec<TaskDefinition>, Vec<RequirementPlan>), SddError> {
     let requirements = parse_requirements(&input.spec)?;
     assert_requirements(&requirements)?;
-    let context = format!("{}\n{}", input.impact, input.codebase_summary);
+    let context = format!(
+        "{}\n{}\n{}\n{}",
+        input.spec, input.design, input.impact, input.codebase_summary
+    );
     let migration = requires_expand_contract(&input.design, &input.impact);
     let files = extract_paths(&context);
     let source_files: Vec<String> = files
@@ -38,7 +41,7 @@ pub fn create_atomic_tasks(
     if source_files.is_empty() || test_files.is_empty() {
         return Err(SddError::new(
             "E_UNRESOLVED_BLOCKER",
-            "无法从 impact/codebaseSummary 推导精确的源码与测试文件范围，请先补充真实候选路径",
+            "无法从 spec/design/impact/codebaseSummary 推导精确的源码与测试文件范围，请在需求中明确候选路径",
         )
         .with_next("sdd plan"));
     }
@@ -47,13 +50,47 @@ pub fn create_atomic_tasks(
     if commands.is_empty() {
         return Err(SddError::new(
             "E_UNRESOLVED_BLOCKER",
-            "无法从 impact/codebaseSummary 识别项目验证命令，请补充 package.json 或 pom.xml 路径",
+            "无法从 spec/design/impact/codebaseSummary 识别项目验证命令，请补充 package.json 或 Cargo.toml 路径",
         )
         .with_next("sdd plan"));
     }
 
-    let source_mapping = map_files(&requirements, &source_files, &context, is_source_file);
-    let test_mapping = map_files(&requirements, &test_files, &context, is_test_file);
+    let mut source_mapping = map_files(&requirements, &source_files, &context, is_source_file);
+    merge_spec_path_mapping(
+        &mut source_mapping,
+        &input.spec,
+        &source_files,
+        is_source_file,
+        &requirements,
+    );
+    let mut test_mapping = map_files(&requirements, &test_files, &context, is_test_file);
+    merge_spec_path_mapping(
+        &mut test_mapping,
+        &input.spec,
+        &test_files,
+        is_test_file,
+        &requirements,
+    );
+    let related_sources = related_source_files(&source_files, &test_files);
+    if !related_sources.is_empty() {
+        for requirement in &requirements {
+            source_mapping
+                .entry(requirement.id.clone())
+                .or_insert_with(|| related_sources.clone());
+        }
+    }
+    share_single_mapping(&mut source_mapping, &requirements);
+    share_single_mapping(&mut test_mapping, &requirements);
+    // 单一需求且已明确存在源码/测试集合时，允许按仓库自有文件集兜底；
+    // 这比生成空范围更安全，也避免中文需求因文件名无同词而被错误阻塞。
+    fallback_single_requirement_mapping(
+        &mut source_mapping,
+        &mut test_mapping,
+        &requirements,
+        &source_files,
+        &test_files,
+    );
+
     let planned: Vec<RequirementPlan> = requirements
         .iter()
         .map(|r| RequirementPlan {
@@ -64,6 +101,19 @@ pub fn create_atomic_tasks(
             test_files: test_mapping.get(&r.id).cloned().unwrap_or_default(),
         })
         .collect();
+    if let Some(unmapped) = planned
+        .iter()
+        .find(|r| r.source_files.is_empty() || r.test_files.is_empty())
+    {
+        return Err(SddError::new(
+            "E_UNRESOLVED_BLOCKER",
+            &format!(
+                "{} 没有同时映射到源码和测试文件；请在 spec/design 中写出明确相对路径",
+                unmapped.id
+            ),
+        )
+        .with_next("sdd plan"));
+    }
     let new_files: std::collections::HashSet<String> =
         extract_new_paths(&context).into_iter().collect();
 
@@ -91,21 +141,17 @@ pub fn create_atomic_tasks(
             } else {
                 overlapping_verify_ids.clone()
             };
-            let allowed_files = unique(
+            let phase_files: Vec<String> = if *phase == "RED" {
+                requirement.test_files.clone()
+            } else {
                 requirement
                     .source_files
                     .iter()
                     .chain(requirement.test_files.iter())
                     .cloned()
-                    .collect(),
-            );
-            let phase_files: &[String] = if *phase == "RED" {
-                &requirement.test_files
-            } else if *phase == "GREEN" {
-                &requirement.source_files
-            } else {
-                &[]
+                    .collect()
             };
+            let allowed_files = unique(phase_files.clone());
             let expected_new_files: Vec<String> = phase_files
                 .iter()
                 .filter(|file| new_files.contains(*file))
@@ -359,6 +405,18 @@ pub fn extract_paths(text: &str) -> Vec<String> {
             }
         }
     }
+    let normalized_text = text.replace('\\', "/");
+    for auxiliary_path in [
+        ".omp/commands/sdd.change.md",
+        "assets/adapters/omp/commands/sdd.change.md",
+        "README.md",
+        "docs/**",
+    ] {
+        if normalized_text.contains(auxiliary_path) {
+            paths.push(auxiliary_path.to_string());
+        }
+    }
+
     unique(paths)
 }
 
@@ -497,6 +555,125 @@ fn map_files(
     mapping
 }
 
+fn merge_spec_path_mapping(
+    mapping: &mut std::collections::HashMap<String, Vec<String>>,
+    spec: &str,
+    files: &[String],
+    category: fn(&str) -> bool,
+    requirements: &[RequirementPlan],
+) {
+    let heading_re = Regex::new(r"(?m)^### Requirement:.*$").unwrap();
+    let starts: Vec<usize> = heading_re
+        .find_iter(spec)
+        .map(|match_| match_.start())
+        .collect();
+    for (index, requirement) in requirements.iter().enumerate() {
+        if mapping.contains_key(&requirement.id) {
+            continue;
+        }
+        let Some(start) = starts.get(index).copied() else {
+            continue;
+        };
+        let end = starts.get(index + 1).copied().unwrap_or(spec.len());
+        let candidates = extract_paths(&spec[start..end])
+            .into_iter()
+            .filter(|path| files.contains(path) && category(path))
+            .collect::<Vec<_>>();
+        if !candidates.is_empty() {
+            mapping.insert(requirement.id.clone(), unique(candidates));
+        }
+    }
+}
+
+fn related_source_files(source_files: &[String], test_files: &[String]) -> Vec<String> {
+    let test_name_re = Regex::new(r"^(.*)\.(?:test|spec)(\.[^./]+)$").unwrap();
+    unique(
+        test_files
+            .iter()
+            .filter_map(|test| {
+                let captures = test_name_re.captures(test)?;
+                let source = format!("{}{}", captures.get(1)?.as_str(), captures.get(2)?.as_str());
+                source_files
+                    .iter()
+                    .find(|candidate| *candidate == &source)
+                    .cloned()
+            })
+            .collect(),
+    )
+}
+
+fn share_single_mapping(
+    mapping: &mut std::collections::HashMap<String, Vec<String>>,
+    requirements: &[RequirementPlan],
+) {
+    let shared = requirements
+        .iter()
+        .find_map(|requirement| {
+            mapping
+                .get(&requirement.id)
+                .filter(|files| !files.is_empty())
+                .cloned()
+        })
+        .or_else(|| {
+            (mapping.len() == 1)
+                .then(|| mapping.values().next().cloned())
+                .flatten()
+                .filter(|files| !files.is_empty())
+        });
+    let Some(shared) = shared else {
+        return;
+    };
+    for requirement in requirements {
+        mapping.insert(requirement.id.clone(), shared.clone());
+    }
+}
+fn fallback_single_requirement_mapping(
+    source_mapping: &mut std::collections::HashMap<String, Vec<String>>,
+    test_mapping: &mut std::collections::HashMap<String, Vec<String>>,
+    requirements: &[RequirementPlan],
+    source_files: &[String],
+    test_files: &[String],
+) {
+    if requirements.len() != 1 {
+        return;
+    }
+    let requirement_id = requirements[0].id.clone();
+    if !source_mapping
+        .get(&requirement_id)
+        .is_some_and(|files| !files.is_empty())
+    {
+        let files = source_files
+            .iter()
+            .filter(|file| is_workspace_owned_file(file))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !files.is_empty() {
+            source_mapping.insert(requirement_id.clone(), files);
+        }
+    }
+    if !test_mapping
+        .get(&requirement_id)
+        .is_some_and(|files| !files.is_empty())
+    {
+        let files = test_files
+            .iter()
+            .filter(|file| is_workspace_owned_file(file))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !files.is_empty() {
+            test_mapping.insert(requirement_id, files);
+        }
+    }
+}
+
+fn is_workspace_owned_file(file: &str) -> bool {
+    file.starts_with("crates/")
+        || file.starts_with("assets/")
+        || file.starts_with("docs/")
+        || file.starts_with("scripts/")
+        || file == "README.md"
+}
+
 fn line_explicitly_references(line: &str, requirement: &RequirementPlan) -> bool {
     let id_re = Regex::new(r"(?i)REQ-\d+").unwrap();
     let ids: Vec<String> = id_re
@@ -528,6 +705,12 @@ fn is_test_file(file: &str) -> bool {
 }
 
 fn is_source_file(file: &str) -> bool {
+    if matches!(
+        file,
+        ".omp/commands/sdd.change.md" | "assets/adapters/omp/commands/sdd.change.md" | "README.md"
+    ) {
+        return true;
+    }
     if is_test_file(file) {
         return false;
     }

@@ -27,12 +27,49 @@ fn command_result_serializes_camel_case() {
 }
 
 #[test]
+fn new_started_points_to_auto_resume() {
+    assert_eq!(
+        sdd_core::commands::status::next_command("NEW_STARTED").as_deref(),
+        Some("sdd auto --resume")
+    );
+}
+
+#[test]
+fn new_started_without_ids_reports_corruption_and_status() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    sdd_core::run(&sdd_core::contracts::CommandRequest {
+        command: "init".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    sdd_core::state::StateStore::new(cwd.clone())
+        .update(|state| {
+            state.current_phase = "NEW_STARTED".into();
+            state.current_change_id = None;
+            state.current_run_id = None;
+        })
+        .unwrap();
+
+    let error = sdd_core::run(&sdd_core::contracts::CommandRequest {
+        command: "verify".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_STATE_CORRUPTED");
+    assert_eq!(error.next.as_deref(), Some("sdd status"));
+}
+
+#[test]
 fn action_required_serializes_camel_case() {
     let action = AgentActionRequired {
         action_type: "AGENT_TASK_EXECUTION".to_string(),
         task_id: "TASK-001-RED".to_string(),
         change_id: "change-1".to_string(),
-        context_pack: ".sdd/context-packs/TASK-001-RED/context.md".to_string(),
+        context_pack: "### Context Pack\n\n".to_string(),
         allowed_files: vec!["src/**".to_string()],
         expected_new_files: vec![],
         forbidden_files: vec![".env".to_string()],
@@ -40,7 +77,7 @@ fn action_required_serializes_camel_case() {
             command: "cargo test".to_string(),
             args: vec![],
         }],
-        result_file: ".sdd/runs/run-1/tasks/TASK-001-RED.result.json".to_string(),
+        result_transport: "inline-json".to_string(),
         codebase: CodebaseProviderInfo {
             provider: "gitnexus".to_string(),
             degraded: false,
@@ -52,10 +89,9 @@ fn action_required_serializes_camel_case() {
         json.get("type").and_then(|v| v.as_str()),
         Some("AGENT_TASK_EXECUTION")
     );
-    assert!(json.get("taskId").is_some());
-    assert!(json.get("allowedFiles").is_some());
-    assert!(json.get("resultFile").is_some());
-    assert!(json.get("codebase").is_some());
+    assert!(json.get("contextPack").is_some());
+    assert!(json.get("resultTransport").is_some());
+    assert!(json.get("resultFile").is_none());
     let codebase = json.get("codebase").unwrap();
     assert!(codebase.get("provider").is_some());
     // provider 契约：gitnexus | codegraph | fallback-file-scan
@@ -124,6 +160,10 @@ fn error_exit_codes_match_contract() {
     assert_eq!(error_exit_codes("E_LOCK_TIMEOUT"), 9);
     assert_eq!(error_exit_codes("E_TIMEOUT"), 124);
     assert_eq!(error_exit_codes("E_STATE_CORRUPTED"), 1);
+    assert_eq!(error_exit_codes("E_REVIEW_BACKEND_UNAVAILABLE"), 5);
+    assert_eq!(error_exit_codes("E_REVIEW_BACKEND_TIMEOUT"), 124);
+    assert_eq!(error_exit_codes("E_REVIEW_BACKEND_FAILED"), 8);
+    assert_eq!(error_exit_codes("E_REVIEW_BACKEND_INVALID_OUTPUT"), 8);
     // 未知错误码兜底 1
     assert_eq!(error_exit_codes("E_UNKNOWN"), 1);
 }

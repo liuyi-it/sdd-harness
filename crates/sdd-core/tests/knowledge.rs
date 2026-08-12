@@ -64,9 +64,13 @@ fn initialize_writes_diagnostics_without_failing() {
     let router = KnowledgeRouter::new();
     let diags = router.initialize(&cwd, 600_000).unwrap();
     assert_eq!(diags.len(), 2); // gitnexus + codegraph 各一条
-                                // 诊断文件已写入
-    assert!(dir.path().join(".sdd/index/knowledge.json").exists());
-    assert!(dir.path().join(".sdd/index/summary.md").exists());
+                                // 诊断摘要已写入 runtime.json
+    let runtime: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(runtime["index"]["diagnostics"].is_array());
+    assert!(runtime["index"]["summary"].is_string());
 }
 
 #[test]

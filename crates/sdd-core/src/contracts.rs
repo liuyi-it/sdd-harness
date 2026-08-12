@@ -5,10 +5,10 @@
 
 use serde::{Deserialize, Serialize};
 
-/// 命令集合（11 个，与 Node 版一致）
-pub const COMMANDS: [&str; 11] = [
-    "init", "auto", "new", "design", "plan", "build", "verify", "review", "archive", "status",
-    "codebase",
+/// 命令集合（12 个，与 Node 版一致）
+pub const COMMANDS: [&str; 12] = [
+    "init", "auto", "new", "change", "design", "plan", "build", "verify", "review", "archive",
+    "status", "codebase",
 ];
 
 /// 阶段枚举（22 个，与 Node 版一致）
@@ -45,7 +45,7 @@ pub fn error_exit_codes(code: &str) -> i32 {
         "E_ACTIVE_CHANGE_EXISTS" => 3,
         "E_MISSING_CHANGE" => 4,
         "E_MISSING_ARTIFACT" => 4,
-        "E_INDEX_NOT_READY" => 5,
+        "E_INVALID_REQUIREMENT" => 6,
         "E_COMPONENT_UNAVAILABLE" => 5,
         "E_COMPONENT_INTEGRITY_FAILED" => 10,
         "E_DEGRADED_MODE" => 0,
@@ -57,6 +57,10 @@ pub fn error_exit_codes(code: &str) -> i32 {
         "E_AGENT_TASK_FAILED" => 7,
         "E_UNDECLARED_FILE_CHANGE" => 10,
         "E_REVIEW_FAILED" => 8,
+        "E_REVIEW_BACKEND_UNAVAILABLE" => 5,
+        "E_REVIEW_BACKEND_TIMEOUT" => 124,
+        "E_REVIEW_BACKEND_FAILED" => 8,
+        "E_REVIEW_BACKEND_INVALID_OUTPUT" => 8,
         "E_UNPLANNED_DEPENDENCY" => 8,
         "E_ARCHIVED_READONLY" => 3,
         "E_CONCURRENT_RUN" => 9,
@@ -104,7 +108,7 @@ pub struct CodebaseProviderInfo {
     pub degraded: bool,
 }
 
-/// Agent 行动要求（build next 返回此结构，指导 Agent 执行任务）
+/// Agent 行动要求（build next 返回此结构，结果通过 inline JSON 提交）。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentActionRequired {
@@ -112,14 +116,15 @@ pub struct AgentActionRequired {
     pub action_type: String,
     pub task_id: String,
     pub change_id: String,
+    /// 完整 Context Pack 内容；不再返回 `.sdd/context-packs` 文件路径。
     pub context_pack: String,
     pub allowed_files: Vec<String>,
     pub expected_new_files: Vec<String>,
     pub forbidden_files: Vec<String>,
     pub verification: Vec<VerificationCommand>,
-    pub result_file: String,
+    /// 固定为 `inline-json`，提示 Adapter 使用 `build complete --result-json`。
+    pub result_transport: String,
     pub codebase: CodebaseProviderInfo,
-    /// 当前任务的渐进加载工程方法；不具备新能力的 Adapter 可安全忽略。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_bundle: Option<serde_json::Value>,
 }
@@ -218,7 +223,7 @@ pub fn is_known_error_code(code: &str) -> bool {
             | "E_ACTIVE_CHANGE_EXISTS"
             | "E_MISSING_CHANGE"
             | "E_MISSING_ARTIFACT"
-            | "E_INDEX_NOT_READY"
+            | "E_INVALID_REQUIREMENT"
             | "E_COMPONENT_UNAVAILABLE"
             | "E_COMPONENT_INTEGRITY_FAILED"
             | "E_DEGRADED_MODE"
@@ -230,6 +235,10 @@ pub fn is_known_error_code(code: &str) -> bool {
             | "E_AGENT_TASK_FAILED"
             | "E_UNDECLARED_FILE_CHANGE"
             | "E_REVIEW_FAILED"
+            | "E_REVIEW_BACKEND_UNAVAILABLE"
+            | "E_REVIEW_BACKEND_TIMEOUT"
+            | "E_REVIEW_BACKEND_FAILED"
+            | "E_REVIEW_BACKEND_INVALID_OUTPUT"
             | "E_UNPLANNED_DEPENDENCY"
             | "E_ARCHIVED_READONLY"
             | "E_CONCURRENT_RUN"

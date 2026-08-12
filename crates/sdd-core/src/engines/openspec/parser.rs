@@ -1,4 +1,4 @@
-//! OpenSpec markdown 解析器（翻译自 早期 Node 实现）。
+//! OpenSpec markdown 解析器（翻译自早期 Node 实现）。
 
 use regex::Regex;
 
@@ -137,7 +137,6 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
         }
         statement_lines.push(line.to_string());
     }
-
     if let Some(req) = requirement.take() {
         requirements.push(finish_requirement(req, &mut statement_lines));
     }

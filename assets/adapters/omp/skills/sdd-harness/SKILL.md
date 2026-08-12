@@ -13,7 +13,7 @@ description: 用户要实现、修复、重构、测试或审查代码时使用�
 
 1. 确认项目已初始化；未初始化时运行 `sdd init`。
 2. 用 `sdd auto "<需求>" --json` 推进；JSON 只供自己读取，不展示给用户。
-3. 遇到 `CLARIFYING` 只向用户提出必要问题；收到答案后继续。
+3. 遇到 `CLARIFYING` 按 `round` 只提出当前 frontier 问题，优先让用户明确目标、范围和验收，再继续追问角色、接口、前置条件和失败路径；收到答案后继续。
 
 ## 显式命令
 
@@ -25,4 +25,4 @@ description: 用户要实现、修复、重构、测试或审查代码时使用�
 
 subagent 完成后，主 Agent 必须重新检查 diff、文件范围和验证结果；不直接相信子 agent 的结论。所有任务完成后执行 `sdd verify`、`sdd review`，通过后归档。
 
-只向用户汇报目标、变更、验证、风险和下一步；不要要求用户阅读 `.sdd`、阶段码、Context Pack 或内部 JSON。Core 是唯一事实源，不直接修改 `.sdd/state.json`。
+只向用户汇报目标、变更、验证、风险和下一步；不要要求用户阅读 `.sdd`、阶段码、Context Pack 或内部 JSON。Core 是唯一事实源，不直接修改 `.sdd/runtime.json`。

@@ -49,7 +49,7 @@ fn invalid_change_id_is_blocked() {
 fn corrupted_config_does_not_silently_disable_isolation() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir(dir.path().join(".sdd")).unwrap();
-    std::fs::write(dir.path().join(".sdd/config.json"), "{").unwrap();
+    std::fs::write(dir.path().join(".sdd/runtime.json"), "{").unwrap();
     let error = GitIsolationManager::enabled(dir.path().to_string_lossy().as_ref()).unwrap_err();
     assert_eq!(error.code, "E_STATE_CORRUPTED");
 }
@@ -70,21 +70,21 @@ fn new_records_isolated_business_workspace_when_enabled() {
         args: None,
     })
     .unwrap();
-    let config_path = dir.path().join(".sdd/config.json");
-    let mut config: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
     config["workflow"]["gitIsolation"] = serde_json::json!(true);
-    std::fs::write(config_path, serde_json::to_string_pretty(&config).unwrap()).unwrap();
+    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
     run(&CommandRequest {
         command: "new".into(),
         cwd: cwd.clone(),
         args: Some(serde_json::json!({
-            "requirement": "授权用户通过 API 取消待处理订单，未授权请求必须拒绝，成功后写审计日志并由自动化测试覆盖"
+            "requirement": "授权用户通过 POST /orders/{id}/cancel 取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求必须拒绝，成功后写审计日志并由自动化测试覆盖"
         })),
     })
     .unwrap();
     let state = sdd_core::state::StateStore::new(cwd).read().unwrap();
     let workspace = state.workspace.expect("应记录隔离工作区");
-    assert!(workspace.branch_name.unwrap().starts_with("sdd/change-"));
+    let branch = workspace.branch_name.unwrap();
+    assert!(branch.starts_with("sdd/"));
+    assert!(!branch.starts_with("sdd/change-"));
     assert!(std::path::Path::new(&workspace.worktree_path.unwrap()).exists());
 }

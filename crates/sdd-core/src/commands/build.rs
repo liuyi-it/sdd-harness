@@ -42,13 +42,24 @@ pub fn run_build(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandR
             let task_id = args.get("task").and_then(|v| v.as_str()).ok_or_else(|| {
                 SddError::new("E_INVALID_PHASE_COMMAND", "build complete 需要 --task <id>")
             })?;
-            let result_path = args.get("result").and_then(|v| v.as_str()).ok_or_else(|| {
-                SddError::new(
+            let result_json = if let Some(result_json) =
+                args.get("resultJson").and_then(|v| v.as_str())
+            {
+                result_json.to_string()
+            } else if let Some(result_path) = args.get("resultPath").and_then(|v| v.as_str()) {
+                fs::read_to_string(result_path).map_err(|error| {
+                    SddError::new(
+                        "E_MISSING_ARTIFACT",
+                        &format!("读取任务结果文件失败：{error}"),
+                    )
+                })?
+            } else {
+                return Err(SddError::new(
                     "E_INVALID_PHASE_COMMAND",
-                    "build complete 需要 --result <path>",
-                )
-            })?;
-            run_build_complete(cwd, task_id, result_path, timeout_ms)
+                    "build complete 需要 --result <path> 或 --result-json '<TaskExecutionResult JSON>'",
+                ));
+            };
+            run_build_complete(cwd, task_id, &result_json, timeout_ms)
         }
         _ => Err(SddError::new(
             "E_INVALID_PHASE_COMMAND",
@@ -70,17 +81,17 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
     if state.current_phase == "BUILD_WAITING_AGENT" && state.pending_agent_task.is_some() {
         if let Some(pending) = &state.pending_agent_task {
             let task_id = pending.get("taskId").and_then(|v| v.as_str()).unwrap_or("");
-            let result_file = pending
-                .get("resultFile")
+            let result_transport = pending
+                .get("resultTransport")
                 .and_then(|v| v.as_str())
-                .unwrap_or("");
+                .unwrap_or("inline-json");
             let task = find_task(cwd, &change_id, task_id)?;
             let context_pack = render_context_pack(cwd, &task)?;
             return Ok(action_required_result(
                 task,
                 change_id,
                 context_pack,
-                result_file,
+                result_transport,
                 state.codebase_provider.clone(),
                 state.degraded,
             ));
@@ -122,15 +133,7 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
                 "没有可执行的 PENDING 任务（任务可能全部完成或存在循环依赖）",
             )
         })?;
-    for command in &next_task.verification {
-        crate::security::verification_command::validate_verification_command(command)?;
-    }
-
-    let result_file = format!(
-        ".sdd/runs/{}/tasks/{}.result.json",
-        state.current_run_id.clone().unwrap_or_else(|| "run".into()),
-        next_task.id
-    );
+    let result_transport = "inline-json";
     // 写 pendingAgentTask + 状态推进
     let git_baseline = match GitInspector::snapshot(&business_cwd) {
         Ok(snapshot) => {
@@ -153,7 +156,7 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
         s.last_error = None;
         s.pending_agent_task = Some(json!({
             "taskId": next_task.id,
-            "resultFile": result_file,
+            "resultTransport": result_transport,
             "since": crate::state::state_store::now_iso(),
             "gitBaseline": git_baseline,
         }));
@@ -162,22 +165,31 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
     })?;
 
     let context_pack = render_context_pack(cwd, next_task)?;
+    if let Some(run_id) = state.current_run_id.as_deref() {
+        crate::state::runtime_store::write_run_field(
+            cwd,
+            run_id,
+            &format!("contexts/{}", next_task.id),
+            json!(context_pack),
+        )?;
+    }
     Ok(action_required_result(
         next_task.clone(),
         change_id,
         context_pack,
-        &result_file,
+        result_transport,
         state.codebase_provider,
         state.degraded,
     ))
 }
 
 /// 构造 actionRequired 结果（契约变更：provider 来自 knowledge 路由）
+/// 构造 actionRequired 结果（结果通过 inline JSON 提交）。
 fn action_required_result(
     task: TaskDefinition,
     change_id: String,
     context_pack: String,
-    result_file: &str,
+    result_transport: &str,
     provider: String,
     degraded: bool,
 ) -> CommandResult {
@@ -218,7 +230,7 @@ fn action_required_result(
             expected_new_files: task.expected_new_files.clone(),
             forbidden_files: task.forbidden_files.clone(),
             verification,
-            result_file: result_file.to_string(),
+            result_transport: result_transport.to_string(),
             codebase: CodebaseProviderInfo { provider, degraded },
             policy_bundle: Some(policy_bundle),
         }),
@@ -230,7 +242,7 @@ fn action_required_result(
 fn run_build_complete(
     cwd: &str,
     task_id: &str,
-    result_path: &str,
+    result_json: &str,
     timeout_ms: Option<u64>,
 ) -> Result<CommandResult, SddError> {
     let _guard = lock_sdd(cwd, "sdd build complete", None, timeout_ms)?;
@@ -265,21 +277,8 @@ fn run_build_complete(
         .with_next("sdd build next"));
     }
 
-    // 读取并校验结果文件
-    let pending_result_file = pending
-        .get("resultFile")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentTask 缺少 resultFile"))?;
-    if result_path != pending_result_file {
-        return Err(SddError::new(
-            "E_PATH_OUTSIDE_REPO",
-            "结果文件路径必须与 build next 返回的 resultFile 完全一致",
-        ));
-    }
-    let result_path = GitInspector::resolve_repo_path(cwd, result_path)?;
-    let raw = fs::read_to_string(&result_path)
-        .map_err(|e| SddError::new("E_AGENT_TASK_FAILED", &format!("读取任务结果失败：{e}")))?;
-    let result: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
+    // 读取并校验 inline JSON 结果。
+    let result: serde_json::Value = serde_json::from_str(result_json).map_err(|e| {
         SddError::new(
             "E_TDD_EVIDENCE_REQUIRED",
             &format!("任务 {task_id} 的执行结果结构无效：{e}"),
@@ -338,34 +337,29 @@ fn run_build_complete(
         &task.forbidden_files,
     )?;
 
-    // 写入运行级结果
+    // 写入 runtime 的 runs.<runId>.tasks.<taskId>。
     let run_id = state
         .current_run_id
         .clone()
         .unwrap_or_else(|| "run".to_string());
-    let result_dir = PathBuf::from(cwd)
-        .join(".sdd/runs")
-        .join(&run_id)
-        .join("tasks");
-    fs::create_dir_all(&result_dir)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建结果目录失败：{e}")))?;
     let result_text = serde_json::to_string_pretty(&result)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化结果失败：{e}")))?;
-    fs::write(
-        result_dir.join(format!("{task_id}.result.json")),
-        &result_text,
-    )
-    .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入结果失败：{e}")))?;
+    let mut run_tasks = crate::state::runtime_store::read_run_field(cwd, &run_id, "tasks")?
+        .unwrap_or_else(|| json!({}));
+    if !run_tasks.is_object() {
+        run_tasks = json!({});
+    }
+    run_tasks[task_id] = result;
+    crate::state::runtime_store::write_run_field(cwd, &run_id, "tasks", run_tasks)?;
     crate::state::artifact_store::record_artifact(
         cwd,
         &format!("{run_id}:{task_id}:result"),
         "report",
-        &format!(".sdd/runs/{run_id}/tasks/{task_id}.result.json"),
+        &format!("runtime://runs/{run_id}/tasks/{task_id}"),
         &result_text,
         json!({ "taskId": task_id }),
     )?;
 
-    // 推进任务状态：以运行时状态计算是否全部完成
     let task_status = if status == "completed" {
         TASK_STATUS_DONE
     } else {
@@ -522,14 +516,6 @@ fn find_task(cwd: &str, change_id: &str, task_id: &str) -> Result<TaskDefinition
 }
 
 fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddError> {
-    // 上下文包按需生成：写 .sdd/context-packs/<task-id>/context.md
-    let dir = PathBuf::from(cwd).join(".sdd/context-packs").join(&task.id);
-    fs::create_dir_all(&dir).map_err(|e| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("创建 Context Pack 目录失败：{e}"),
-        )
-    })?;
     let policies = crate::policies::builtin_build_policies();
     let policy_summary = policies
         .iter()
@@ -539,7 +525,7 @@ fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddEr
     let state = StateStore::new(cwd.to_string()).read()?;
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
-    let references = ["spec.md", "plan.md", "tasks.md", "plan.json"]
+    let references = ["spec.md", "design.md", "plan.md", "tasks.md"]
         .iter()
         .map(|name| {
             let path = change_dir.join(name);
@@ -553,9 +539,9 @@ fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddEr
         })
         .collect::<Result<Vec<_>, SddError>>()?
         .join("\n");
-    let index_dir = PathBuf::from(cwd).join(".sdd/index");
-    let codebase = fs::read_to_string(index_dir.join("summary.md"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?
+    let codebase = crate::state::runtime_store::read_index_field(cwd, "summary")?
+        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?
         .replace(
             "END_UNTRUSTED_CODEBASE_CONTEXT",
             "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
@@ -563,25 +549,13 @@ fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddEr
         .chars()
         .take(8_192)
         .collect::<String>();
-    let content = format!(
+    Ok(format!(
         "{}\n\n## References\n\n{}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n## Policy Bundle\n\n{}",
         crate::engines::superpowers::planner::render_context_pack(task),
         references,
         codebase,
         policy_summary
-    );
-    fs::write(dir.join("context.md"), &content)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 Context Pack 失败：{e}")))?;
-    let content_path = format!(".sdd/context-packs/{}/context.md", task.id);
-    crate::state::artifact_store::record_artifact(
-        cwd,
-        &format!("{}:context", task.id),
-        "context-pack",
-        &content_path,
-        &content,
-        json!({ "taskId": task.id }),
-    )?;
-    Ok(content_path)
+    ))
 }
 
 fn business_changes(cwd: &str) -> Result<Vec<String>, SddError> {

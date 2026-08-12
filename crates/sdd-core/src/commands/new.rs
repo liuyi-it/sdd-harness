@@ -1,10 +1,6 @@
 //! new 命令：接收粗略需求、提出阻塞问题，并在信息充分后生成首批规格制品。
 //!
-//! 翻译自 早期 Node 实现：
-//! - 无需求（或空需求）→ E_MISSING_ARTIFACT
-//! - 有需求但存在未回答的 BLOCKER 问题 → 写 CLARIFYING 状态的 spec.md/spec.json 并返回问题
-//! - 需求充分 → 生成供人工审核的 spec.md 和机器状态 spec.json
-
+//! 机器规格存储在 `.sdd/runtime.json`，change 目录只写可读的 spec.md。
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -18,7 +14,7 @@ use crate::git::GitInspector;
 use crate::state::file_lock::lock_sdd;
 use crate::state::{StateStore, WorkflowState};
 
-/// spec.json 的 schema 版本（与 Node 版一致）
+/// runtime 中规格对象的 schema 版本（与 Node 版一致）。
 const SPEC_SCHEMA_VERSION: &str = "2.0.0";
 
 pub struct NewArgs {
@@ -61,6 +57,8 @@ impl NewArgs {
             change_id: args
                 .get("changeId")
                 .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(String::from),
             answers,
             non_interactive: args
@@ -68,6 +66,33 @@ impl NewArgs {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
         })
+    }
+}
+
+fn can_resume_new(state: &WorkflowState) -> bool {
+    state.current_phase == "NEW_STARTED"
+        && state.current_change_id.is_some()
+        && state.current_run_id.is_some()
+}
+
+fn recovery_error(state: &WorkflowState) -> SddError {
+    if state.current_phase == "NEW_STARTED" && !can_resume_new(state) {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            "NEW_STARTED 状态缺少可恢复的当前 change/run",
+        )
+        .with_next("sdd status")
+    } else {
+        let code = if state.current_change_id.is_some() {
+            "E_ACTIVE_CHANGE_EXISTS"
+        } else {
+            "E_INVALID_PHASE_COMMAND"
+        };
+        SddError::new(
+            code,
+            &format!("无法在 {} 状态下开启新的变更", state.current_phase),
+        )
+        .with_next(state.suggested_command.as_deref().unwrap_or("sdd status"))
     }
 }
 
@@ -97,26 +122,17 @@ pub fn run_new(
             ));
         }
     }
-
-    // 阶段前置检查（对齐 new.ts）：仅 INDEX_READY / CLARIFYING / ARCHIVED 可开启变更
+    // 阶段前置检查：中断在 NEW_STARTED 的当前 change/run 可安全续跑。
     let continuing = state.current_phase == "CLARIFYING"
         || state.current_phase == "SPEC_READY"
-        || state.current_phase == "FAILED";
+        || state.current_phase == "FAILED"
+        || can_resume_new(&state);
     if state.current_phase != "INDEX_READY"
         && state.current_phase != "CLARIFYING"
         && state.current_phase != "ARCHIVED"
         && !continuing
     {
-        let code = if state.current_change_id.is_some() {
-            "E_ACTIVE_CHANGE_EXISTS"
-        } else {
-            "E_INVALID_PHASE_COMMAND"
-        };
-        return Err(SddError::new(
-            code,
-            &format!("无法在 {} 状态下开启新的变更", state.current_phase),
-        )
-        .with_next(state.suggested_command.as_deref().unwrap_or("sdd status")));
+        return Err(recovery_error(&state));
     }
     if state.current_phase == "NOT_INITIALIZED" {
         return Err(
@@ -125,29 +141,39 @@ pub fn run_new(
         );
     }
 
-    let change_id = if continuing {
-        state
-            .current_change_id
-            .clone()
-            .unwrap_or_else(make_change_id)
-    } else {
-        parsed.change_id.clone().unwrap_or_else(make_change_id)
-    };
-    crate::git::isolation::validate_change_id(&change_id)?;
     let run_id = if continuing {
         state.current_run_id.clone().unwrap_or_else(make_run_id)
     } else {
-        state
-            .active_loop
-            .as_ref()
-            .and_then(|active| active.get("runId"))
-            .and_then(|run_id| run_id.as_str())
-            .map(String::from)
-            .unwrap_or_else(make_run_id)
+        make_run_id()
     };
     crate::state::state_store::validate_run_id(&run_id)?;
 
-    let run_dir = PathBuf::from(cwd).join(".sdd/runs").join(&run_id);
+    let requirement = if continuing && parsed.requirement.is_none() {
+        Some(
+            crate::state::runtime_store::read_run_field(cwd, &run_id, "input")?
+                .and_then(|value| value.as_str().map(String::from))
+                .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少需求输入"))?
+                .trim()
+                .to_string(),
+        )
+    } else {
+        parsed.requirement.clone()
+    };
+    let Some(requirement) = requirement.filter(|s| !s.trim().is_empty()) else {
+        return Err(SddError::new("E_MISSING_ARTIFACT", "需求内容不能为空"));
+    };
+
+    let change_id = if continuing {
+        state.current_change_id.clone().unwrap_or_else(|| {
+            make_change_id(&requirement, &PathBuf::from(cwd).join(".sdd/changes"))
+        })
+    } else {
+        parsed.change_id.clone().unwrap_or_else(|| {
+            make_change_id(&requirement, &PathBuf::from(cwd).join(".sdd/changes"))
+        })
+    };
+    crate::git::isolation::validate_change_id(&change_id)?;
+
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
     if !continuing
         && change_dir
@@ -160,8 +186,6 @@ pub fn run_new(
             &format!("变更目录已存在且非空：{change_id}"),
         ));
     }
-    fs::create_dir_all(&run_dir)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 run 目录失败：{e}")))?;
     fs::create_dir_all(&change_dir)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 change 目录失败：{e}")))?;
 
@@ -207,28 +231,31 @@ pub fn run_new(
         }
     }
 
-    // 需求获取：续跑时读取 input.md
-    let requirement = if continuing && parsed.requirement.is_none() {
-        Some(
-            fs::read_to_string(run_dir.join("input.md"))
-                .map_err(|e| {
-                    SddError::new("E_MISSING_ARTIFACT", &format!("读取需求输入失败：{e}"))
-                })?
-                .trim_end()
-                .to_string(),
-        )
+    // 续跑时合并已保存答案，避免每次 `sdd new --answers` 丢失前一轮澄清。
+    let mut answers = if continuing {
+        crate::state::runtime_store::read_run_field(cwd, &run_id, "answers")?
+            .and_then(|value| serde_json::from_value::<HashMap<String, String>>(value).ok())
+            .unwrap_or_default()
     } else {
-        parsed.requirement.clone()
+        HashMap::new()
     };
-    let Some(requirement) = requirement.filter(|s| !s.trim().is_empty()) else {
-        return Err(SddError::new("E_MISSING_ARTIFACT", "需求内容不能为空"));
-    };
+    answers.extend(parsed.answers.clone());
 
-    // 写 input.md（首次）
-    if !continuing {
-        fs::write(run_dir.join("input.md"), &requirement)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入需求输入失败：{e}")))?;
-    }
+    crate::state::runtime_store::write_run_field(cwd, &run_id, "input", json!(requirement))?;
+    crate::state::runtime_store::write_run_field(cwd, &run_id, "answers", json!(answers))?;
+
+    // 需求分析先于状态提交，保证解析失败不会留下不可恢复的 NEW_STARTED。
+    let analysis = engine.analyze(&requirement, &answers);
+    let unanswered: Vec<_> = analysis
+        .questions
+        .iter()
+        .filter(|q| {
+            q.severity == "BLOCKER"
+                && !answers
+                    .get(&q.id)
+                    .is_some_and(|answer| !answer.trim().is_empty())
+        })
+        .collect();
 
     store.update(|s| {
         s.current_change_id = Some(change_id.clone());
@@ -239,15 +266,12 @@ pub fn run_new(
         s.last_error = None;
         s.suggested_command = Some("sdd new".to_string());
         s.workspace = workspace.clone();
+        if !continuing {
+            s.tasks.clear();
+            s.artifacts.clear();
+            s.pending_agent_task = None;
+        }
     })?;
-
-    // 语义分析：未回答的 BLOCKER 问题 → 澄清
-    let analysis = engine.analyze(&requirement, &parsed.answers);
-    let unanswered: Vec<_> = analysis
-        .questions
-        .iter()
-        .filter(|q| q.severity == "BLOCKER" && !parsed.answers.contains_key(&q.id))
-        .collect();
 
     if !unanswered.is_empty() {
         let spec_markdown = render_clarifying_spec(&requirement, &unanswered);
@@ -256,29 +280,23 @@ pub fn run_new(
             "status": "CLARIFYING",
             "requirement": requirement,
             "questions": unanswered.iter().map(|q| json!({
-                "id": q.id, "severity": q.severity, "question": q.question
+                "id": q.id,
+                "round": q.round,
+                "title": q.title,
+                "severity": q.severity,
+                "question": q.question,
+                "recommendation": q.recommendation
             })).collect::<Vec<_>>(),
         });
-        let spec_json_text = serde_json::to_string_pretty(&spec_json)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化澄清规格失败：{e}")))?;
         fs::write(change_dir.join("spec.md"), &spec_markdown)
             .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
-        fs::write(change_dir.join("spec.json"), &spec_json_text)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入澄清规格失败：{e}")))?;
+        crate::state::runtime_store::write_change_field(cwd, &change_id, "spec", spec_json)?;
         crate::state::artifact_store::record_artifact(
             cwd,
             &format!("{change_id}:spec"),
             "spec",
             &format!(".sdd/changes/{change_id}/spec.md"),
             &spec_markdown,
-            json!({ "requirement": requirement }),
-        )?;
-        crate::state::artifact_store::record_artifact(
-            cwd,
-            &format!("{change_id}:spec-json"),
-            "spec",
-            &format!(".sdd/changes/{change_id}/spec.json"),
-            &spec_json_text,
             json!({ "requirement": requirement }),
         )?;
         if parsed.non_interactive {
@@ -303,7 +321,10 @@ pub fn run_new(
                 "clarification": {
                     "questions": unanswered.iter().map(|q| json!({
                         "id": q.id,
-                        "question": q.question
+                        "round": q.round,
+                        "title": q.title,
+                        "question": q.question,
+                        "recommendation": q.recommendation
                     })).collect::<Vec<_>>()
                 }
             })),
@@ -315,47 +336,36 @@ pub fn run_new(
     }
 
     // 需求充分：生成规格
-    let index_dir = PathBuf::from(cwd).join(".sdd/index");
-    let codebase_summary = fs::read_to_string(index_dir.join("summary.md"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?;
+    let codebase_summary = crate::state::runtime_store::read_index_field(cwd, "summary")?
+        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?;
     let input = GenerateSpecInput {
         requirement: requirement.clone(),
         codebase_summary,
-        answers: parsed.answers.clone(),
+        answers: answers.clone(),
     };
     let artifacts = engine
         .generate(&input)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("生成规格失败：{e}")))?;
 
-    let spec_markdown = render_spec_document(&requirement, &parsed.answers, &artifacts.spec);
+    let spec_markdown = render_spec_document(&requirement, &answers, &artifacts.spec);
     let spec_json = json!({
         "schemaVersion": SPEC_SCHEMA_VERSION,
         "status": "READY",
         "requirement": requirement,
         "impact": artifacts.impact,
-        "answers": parsed.answers,
+        "answers": answers,
         "model": artifacts.model,
     });
-    let spec_json_text = serde_json::to_string_pretty(&spec_json)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 spec.json 失败：{e}")))?;
     fs::write(change_dir.join("spec.md"), &spec_markdown)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
-    fs::write(change_dir.join("spec.json"), &spec_json_text)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.json 失败：{e}")))?;
+    crate::state::runtime_store::write_change_field(cwd, &change_id, "spec", spec_json)?;
     crate::state::artifact_store::record_artifact(
         cwd,
         &format!("{change_id}:spec"),
         "spec",
         &format!(".sdd/changes/{change_id}/spec.md"),
         &spec_markdown,
-        json!({ "requirement": requirement }),
-    )?;
-    crate::state::artifact_store::record_artifact(
-        cwd,
-        &format!("{change_id}:spec-json"),
-        "spec",
-        &format!(".sdd/changes/{change_id}/spec.json"),
-        &spec_json_text,
         json!({ "requirement": requirement }),
     )?;
 
@@ -383,9 +393,47 @@ pub fn run_new(
     })
 }
 
-/// 生成 change id：change-<epoch 纳秒>
-pub fn make_change_id() -> String {
-    format!("change-{}", epoch_nanos())
+/// 根据需求生成可读的 change id；同名需求追加序号，不使用时间戳污染名称。
+pub fn make_change_id(requirement: &str, changes_dir: &std::path::Path) -> String {
+    let base = slugify(requirement);
+    let mut candidate = base.clone();
+    let mut suffix = 2;
+    while changes_dir.join(&candidate).exists() {
+        candidate = format!("{base}-{suffix}");
+        suffix += 1;
+    }
+    candidate
+}
+
+fn slugify(requirement: &str) -> String {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    for character in requirement.chars() {
+        if character.is_alphanumeric() {
+            word.push(if character.is_ascii_uppercase() {
+                character.to_ascii_lowercase()
+            } else {
+                character
+            });
+        } else if !word.is_empty() {
+            words.push(std::mem::take(&mut word));
+        }
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    let mut slug = words.join("-");
+    if slug.chars().count() > 64 {
+        let prefix = slug.chars().take(64).collect::<String>();
+        slug = prefix
+            .rsplit_once('-')
+            .map_or(prefix.clone(), |(head, _)| head.to_string());
+    }
+    if slug.is_empty() {
+        "change".to_string()
+    } else {
+        slug
+    }
 }
 
 /// 生成 run id：run-<epoch 纳秒>
@@ -400,27 +448,21 @@ fn epoch_nanos() -> u128 {
         .unwrap_or(0)
 }
 
-/// 读取当前 change 的 spec（供后续命令复用）
+/// 读取当前 change 的 spec model（机器数据位于 runtime.json）。
 pub fn read_spec_model(
     cwd: &str,
     change_id: &str,
 ) -> Result<crate::engines::openspec::model::SpecDocument, SddError> {
-    let path = PathBuf::from(cwd)
-        .join(".sdd/changes")
-        .join(change_id)
-        .join("spec.json");
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.json 失败：{e}")))?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec.json 解析失败：{e}")))?;
+    let value = crate::state::runtime_store::read_change_field(cwd, change_id, "spec")?
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
     let model = value
         .get("model")
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "spec.json 缺少 model 字段"))?;
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "spec 缺少 model 字段"))?;
     serde_json::from_value(model.clone())
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec model 解析失败：{e}")))
 }
 
-/// 获取当前活动 change id（无则报 E_MISSING_CHANGE）
+/// 获取当前活动 change id（无则报 E_MISSING_CHANGE）。
 pub fn current_change_id(state: &WorkflowState) -> Result<String, SddError> {
     let change_id = state.current_change_id.clone().ok_or_else(|| {
         SddError::new("E_MISSING_CHANGE", "当前没有活动变更").with_next("sdd new")
@@ -443,13 +485,19 @@ fn render_clarifying_spec(
         "## 待澄清问题".to_string(),
         String::new(),
     ];
+    if let Some(round) = questions.first().map(|question| question.round) {
+        lines.extend([format!("### 第 {round} 轮前沿"), String::new()]);
+    }
     for question in questions {
-        lines.push(format!("- [ ] {}：{}", question.id, question.question));
+        lines.push(format!(
+            "- [ ] {}｜{}：{}\n  - 建议：{}",
+            question.id, question.title, question.question, question.recommendation
+        ));
     }
     lines.join("\n") + "\n"
 }
 
-fn render_spec_document(
+pub(crate) fn render_spec_document(
     requirement: &str,
     answers: &HashMap<String, String>,
     structured_spec: &str,

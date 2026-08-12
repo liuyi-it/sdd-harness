@@ -14,6 +14,7 @@ fn all_public_sdd_commands_are_embedded() {
     let commands = [
         "sdd.md",
         "sdd.init.md",
+        "sdd.change.md",
         "sdd.status.md",
         "sdd.plan.md",
         "sdd.verify.md",

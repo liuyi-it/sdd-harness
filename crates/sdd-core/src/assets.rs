@@ -15,7 +15,7 @@ pub struct AssetFile {
 }
 
 /// OMP 原生资产（include_str! 编译期嵌入）。
-pub const ADAPTER_ASSETS: [AssetFile; 9] = [
+pub const ADAPTER_ASSETS: [AssetFile; 11] = [
     AssetFile {
         key: "omp/skills/sdd-harness/SKILL.md",
         target: ".omp/skills/sdd-harness/SKILL.md",
@@ -30,6 +30,16 @@ pub const ADAPTER_ASSETS: [AssetFile; 9] = [
         key: "omp/commands/sdd.init.md",
         target: ".omp/commands/sdd.init.md",
         content: include_str!("../../../assets/adapters/omp/commands/sdd.init.md"),
+    },
+    AssetFile {
+        key: "omp/commands/sdd.new.md",
+        target: ".omp/commands/sdd.new.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.new.md"),
+    },
+    AssetFile {
+        key: "omp/commands/sdd.change.md",
+        target: ".omp/commands/sdd.change.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.change.md"),
     },
     AssetFile {
         key: "omp/commands/sdd.status.md",

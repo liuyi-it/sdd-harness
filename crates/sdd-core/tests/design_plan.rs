@@ -7,7 +7,7 @@ use sdd_core::engines::tdd::TddEngine;
 use sdd_core::run;
 use serde_json::json;
 
-const FULL_REQUIREMENT: &str = "授权用户通过 API 请求取消待处理订单，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
 
 fn prepare(dir: &std::path::Path) -> String {
     // 准备：init + new（含 index 摘要与 impact 中的文件路径）
@@ -20,10 +20,10 @@ fn prepare(dir: &std::path::Path) -> String {
     })
     .unwrap();
     // 写入 index 摘要（含源码与测试文件路径，供 planner 推导范围）
-    std::fs::create_dir_all(dir.join(".sdd/index")).unwrap();
-    std::fs::write(
-        dir.join(".sdd/index/summary.md"),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
+    sdd_core::state::runtime_store::write_index(
+        &cwd,
+        json!([]),
+        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
     )
     .unwrap();
     let result = run_new(
@@ -77,12 +77,16 @@ fn design_then_plan_updates_phases() {
     .unwrap();
     assert!(design.ok, "design 应成功: {:?}", design.error);
     assert_eq!(design.state, "DESIGN_READY");
-    assert!(!find_change_dir(dir.path()).join("design.md").exists());
+    assert!(find_change_dir(dir.path()).join("design.md").exists());
     assert!(find_change_dir(dir.path()).join("spec.md").exists());
-    let spec_json: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(find_change_dir(dir.path()).join("spec.json")).unwrap(),
-    )
-    .unwrap();
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
+        .unwrap()
+        .unwrap();
     assert!(spec_json.get("design").and_then(|v| v.as_str()).is_some());
 
     let plan = run(&CommandRequest {
@@ -94,15 +98,15 @@ fn design_then_plan_updates_phases() {
     assert!(plan.ok, "plan 应成功: {:?}", plan.error);
     assert_eq!(plan.state, "PLAN_READY");
     let change_dir = find_change_dir(dir.path());
-    assert!(change_dir.join("plan.json").exists());
+    assert!(!change_dir.join("plan.json").exists());
     let plan_markdown = std::fs::read_to_string(change_dir.join("plan.md")).unwrap();
     assert!(plan_markdown.contains("## 技术方案与架构"));
     let tasks_markdown = std::fs::read_to_string(change_dir.join("tasks.md")).unwrap();
     assert!(tasks_markdown.contains("# 开发任务"));
     assert!(tasks_markdown.contains("## [ ] TASK-001-RED"));
-    let plan_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(change_dir.join("plan.json")).unwrap())
-            .unwrap();
+    let plan_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "plan")
+        .unwrap()
+        .unwrap();
     let tasks = plan_json.get("tasks").and_then(|t| t.as_array());
     assert!(tasks.is_some() && !tasks.unwrap().is_empty());
 }
@@ -159,9 +163,17 @@ fn plan_persists_valid_dependency_decisions() {
         })),
     })
     .unwrap();
-    let plan: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(find_change_dir(dir.path()).join("plan.json")).unwrap(),
+    let change_id = sdd_core::state::StateStore::new(dir.path().to_string_lossy().to_string())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    let plan = sdd_core::state::runtime_store::read_change_field(
+        &dir.path().to_string_lossy(),
+        &change_id,
+        "plan",
     )
+    .unwrap()
     .unwrap();
     assert_eq!(plan["dependencies"][0]["name"], "serde");
 }

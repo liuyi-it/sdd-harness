@@ -6,8 +6,8 @@
 
 use crate::error::SddError;
 
-/// 已注册的 5 个 schema（内嵌编译期内容）
-pub const SCHEMAS: [(&str, &str); 5] = [
+/// 已注册的 6 个 schema（内嵌编译期内容）
+pub const SCHEMAS: [(&str, &str); 6] = [
     (
         "state",
         include_str!("../../../../schemas/state.schema.json"),
@@ -25,8 +25,11 @@ pub const SCHEMAS: [(&str, &str); 5] = [
         "artifact",
         include_str!("../../../../schemas/artifact.schema.json"),
     ),
+    (
+        "runtime",
+        include_str!("../../../../schemas/runtime.schema.json"),
+    ),
 ];
-
 /// 校验文档；失败返回 E_STATE_CORRUPTED（含首个问题描述）
 pub fn validate_json(name: &str, doc: &serde_json::Value) -> Result<(), SddError> {
     let (_, raw) = SCHEMAS

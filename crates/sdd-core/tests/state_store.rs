@@ -77,7 +77,7 @@ fn update_modifies_and_bumps_version() {
 fn corrupted_state_file_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".sdd")).unwrap();
-    std::fs::write(dir.path().join(".sdd/state.json"), "{not json").unwrap();
+    std::fs::write(dir.path().join(".sdd/runtime.json"), "{not json").unwrap();
     let store = StateStore::new(dir.path().to_string_lossy().to_string());
     let err = store.read().unwrap_err();
     assert_eq!(err.code, "E_STATE_CORRUPTED");

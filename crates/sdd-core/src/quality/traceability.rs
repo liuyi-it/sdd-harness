@@ -32,7 +32,7 @@ pub fn coverage_gaps(
     gaps
 }
 
-/// 从 spec.json 提取需求与场景 id
+/// 从 runtime 中的规格模型提取需求与场景 id
 pub fn extract_spec_ids(spec_json: &serde_json::Value) -> (Vec<String>, Vec<String>) {
     let mut requirements = Vec::new();
     let mut scenarios = Vec::new();

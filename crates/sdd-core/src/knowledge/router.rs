@@ -33,7 +33,7 @@ impl KnowledgeRouter {
         }
     }
 
-    /// 初始化：对 PATH 中可用的引擎执行索引，写入 .sdd/index/knowledge.json 诊断。
+    /// 初始化：对 PATH 中可用的引擎执行索引，写入 runtime.json 的 index 节点。
     /// 引擎不可用时只记录诊断，不阻断初始化。
     /// `timeout_ms` 控制单次索引超时（init 用短超时避免阻塞初始化）。
     pub fn initialize(
@@ -112,25 +112,13 @@ impl KnowledgeRouter {
         root: &str,
         diags: &[serde_json::Value],
     ) -> Result<(), SddError> {
-        let dir = std::path::Path::new(root).join(".sdd/index");
-        std::fs::create_dir_all(&dir).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("创建索引诊断目录失败：{e}"))
-        })?;
-        let content = serde_json::to_string_pretty(diags)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化索引诊断失败：{e}")))?;
-        std::fs::write(dir.join("knowledge.json"), content)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入索引诊断失败：{e}")))?;
-
         let fallback = fallback_scan(root, KnowledgeIntent::Architecture, "");
         let summary = ["codebaseSummary", "packageStructure", "architecture"]
             .iter()
             .filter_map(|key| fallback.payload.get(*key).and_then(|value| value.as_str()))
             .collect::<Vec<_>>()
             .join("\n\n");
-        std::fs::write(dir.join("summary.md"), summary).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("写入 summary.md 失败：{e}"))
-        })?;
-        Ok(())
+        crate::state::runtime_store::write_index(root, json!(diags), summary)
     }
 
     /// 按 intent 路由查询；两级引擎都不可用或失败时降级受限文件扫描

@@ -6,13 +6,10 @@
 //!   返回当前状态与原因，不绕过交互边界
 //! - 失败预算：单步失败即暂停（stopOnFailure）
 
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::path::PathBuf;
-
 use serde_json::json;
 
 use crate::contracts::CommandResult;
+
 use crate::engines::spec::spec_engine::SpecEngine;
 use crate::engines::tdd::TddEngine;
 use crate::error::SddError;
@@ -72,7 +69,7 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         ));
     }
 
-    let context = prepare_loop(cwd, &store, &state, resume, restart, args)?;
+    let context = prepare_loop(&store, &state, resume, restart, args)?;
     append_event(
         cwd,
         &context,
@@ -93,20 +90,25 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
 
     let spec_engine = SpecEngine::new();
 
-    // 第一步：new（无需求且未初始化变更 → 暂停）
+    // 第一步：new。INDEX_READY 必须提供需求，其它可恢复阶段从 runtime 读取原始需求。
     let mut phase = state.current_phase.clone();
-    if phase == "INDEX_READY" || phase == "CLARIFYING" || phase == "FAILED" || phase == "PAUSED" {
-        let Some(requirement) = requirement.clone() else {
+    if matches!(
+        phase.as_str(),
+        "INDEX_READY" | "CLARIFYING" | "FAILED" | "PAUSED" | "NEW_STARTED"
+    ) {
+        if phase == "INDEX_READY" && requirement.is_none() {
             update_loop(&store, &context, "PAUSED", Some("CLARIFICATION"))?;
             append_event(cwd, &context, "LOOP_PAUSED", &phase, None)?;
             return Ok(paused_result_with_reason(
                 &phase,
                 "auto 需要需求文本（sdd auto \"<需求>\"）",
             ));
-        };
-        let mut new_args =
-            serde_json::Map::from_iter([("requirement".to_string(), json!(requirement))]);
-        for key in ["changeId", "nonInteractive", "timeout"] {
+        }
+        let mut new_args = serde_json::Map::new();
+        if let Some(requirement) = requirement.clone() {
+            new_args.insert("requirement".to_string(), json!(requirement));
+        }
+        for key in ["changeId", "nonInteractive", "timeout", "answers"] {
             if let Some(value) = args.get(key) {
                 new_args.insert(key.to_string(), value.clone());
             }
@@ -121,7 +123,7 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
             append_event(cwd, &context, "LOOP_PAUSED", "CLARIFYING", Some("new"))?;
             return Ok(paused_result_with_reason(
                 "CLARIFYING",
-                "需求存在未回答的阻塞问题，请用 sdd new --answers '<JSON>' 继续",
+                "需求存在未回答的阻塞问题，请用 sdd auto --resume --answers '<JSON>' 继续",
             ));
         }
         phase = new_result.state.clone();
@@ -264,7 +266,6 @@ struct LoopContext {
 }
 
 fn prepare_loop(
-    cwd: &str,
     store: &StateStore,
     state: &crate::state::WorkflowState,
     resume: bool,
@@ -285,34 +286,16 @@ fn prepare_loop(
         update_loop(store, &context, "RUNNING", None)?;
         return Ok(context);
     }
-
     if !restart {
         if let Ok(context) = active_loop(state) {
             update_loop(store, &context, "RUNNING", None)?;
             return Ok(context);
         }
     }
-
     let context = LoopContext {
         loop_id: unique_id("loop"),
         run_id: unique_id("run"),
     };
-    let loop_dir = PathBuf::from(cwd).join(".sdd/loop");
-    fs::create_dir_all(loop_dir.join("runs"))
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 loop 目录失败：{e}")))?;
-    fs::write(
-        loop_dir.join("loop.json"),
-        serde_json::to_string_pretty(&json!({
-            "schemaVersion": "1.3.0",
-            "loopId": context.loop_id,
-            "mode": "auto",
-            "maxSteps": 20,
-            "maxRetriesPerStep": 1,
-            "createdAt": crate::state::state_store::now_iso(),
-        }))
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 loop 失败：{e}")))?,
-    )
-    .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 loop 失败：{e}")))?;
     update_loop(store, &context, "RUNNING", None)?;
     Ok(context)
 }
@@ -343,8 +326,8 @@ fn update_loop(
     status: &str,
     waiting: Option<&str>,
 ) -> Result<(), SddError> {
-    let sdd_dir = store.sdd_dir();
-    let cwd = sdd_dir
+    let cwd = store
+        .sdd_dir()
         .parent()
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "无法解析项目根目录"))?
         .to_string_lossy()
@@ -358,27 +341,17 @@ fn update_loop(
         "waiting": waiting.map(|reason| json!({ "reason": reason, "since": now })),
     });
     store.update(|state| state.active_loop = Some(active.clone()))?;
-    let run_path = store
-        .sdd_dir()
-        .join("loop/runs")
-        .join(format!("{}.json", context.run_id));
-    if let Some(parent) = run_path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("创建 loop run 目录失败：{e}"))
-        })?;
-    }
-    fs::write(
-        run_path,
-        serde_json::to_string_pretty(&json!({
+    crate::state::runtime_store::write_loop_run(
+        &cwd,
+        &context.run_id,
+        json!({
             "schemaVersion": "1.3.0",
             "loopId": context.loop_id,
             "runId": context.run_id,
             "status": status,
             "updatedAt": now,
-        }))
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 loop run 失败：{e}")))?,
+        }),
     )
-    .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 loop run 失败：{e}")))
 }
 
 fn append_event(
@@ -388,27 +361,20 @@ fn append_event(
     phase: &str,
     command: Option<&str>,
 ) -> Result<(), SddError> {
-    let dir = PathBuf::from(cwd).join(".sdd/loop/events");
-    fs::create_dir_all(&dir)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 loop 事件目录失败：{e}")))?;
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(dir.join(format!("{}.jsonl", context.run_id)))
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("打开 loop 事件失败：{e}")))?;
-    let event = json!({
-        "schemaVersion": "1.0.0",
-        "eventId": unique_id("event"),
-        "loopId": context.loop_id,
-        "runId": context.run_id,
-        "type": event_type,
-        "phase": phase,
-        "command": command,
-        "createdAt": crate::state::state_store::now_iso(),
-    });
-    writeln!(file, "{event}")
-        .and_then(|_| file.sync_all())
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 loop 事件失败：{e}")))
+    crate::state::runtime_store::append_loop_event(
+        cwd,
+        &context.run_id,
+        json!({
+            "schemaVersion": "1.0.0",
+            "eventId": unique_id("event"),
+            "loopId": context.loop_id,
+            "runId": context.run_id,
+            "type": event_type,
+            "phase": phase,
+            "command": command,
+            "createdAt": crate::state::state_store::now_iso(),
+        }),
+    )
 }
 
 fn read_events(
@@ -422,23 +388,7 @@ fn read_events(
         .and_then(|value| value.as_str())
         .unwrap_or(&context.run_id);
     crate::state::state_store::validate_run_id(run_id)?;
-    let path = PathBuf::from(cwd)
-        .join(".sdd/loop/events")
-        .join(format!("{run_id}.jsonl"));
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 loop 事件失败：{e}")))?;
-    let mut events: Vec<serde_json::Value> = raw
-        .lines()
-        .enumerate()
-        .map(|(index, line)| {
-            serde_json::from_str(line).map_err(|e| {
-                SddError::new(
-                    "E_STATE_CORRUPTED",
-                    &format!("loop 事件第 {} 行损坏：{e}", index + 1),
-                )
-            })
-        })
-        .collect::<Result<_, _>>()?;
+    let mut events = crate::state::runtime_store::read_loop_events(cwd, run_id)?;
     if let Some(tail) = args.get("tail").and_then(|value| value.as_u64()) {
         let keep = usize::try_from(tail).unwrap_or(usize::MAX);
         if keep < events.len() {

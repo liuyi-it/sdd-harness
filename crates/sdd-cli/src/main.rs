@@ -64,9 +64,19 @@ enum Command {
     New {
         /// 需求文本（可多个词）
         requirement: Vec<String>,
-        /// 澄清答案 JSON，如 {"Q-001":"答案"}
+        /// 澄清答案 JSON，如 {"Q-GOAL":"答案"}
         #[arg(long)]
         #[arg(value_parser = parse_answers)]
+        answers: Option<serde_json::Value>,
+    },
+    /// 修订已有变更并同步所有文档
+    Change {
+        /// 目标变更 ID
+        change_id: String,
+        /// 新需求文本（可多个词）
+        requirement: Vec<String>,
+        /// 澄清答案 JSON，如 {"Q-ACTOR":"授权用户"}
+        #[arg(long, value_parser = parse_answers)]
         answers: Option<serde_json::Value>,
     },
     /// 生成设计制品
@@ -84,7 +94,10 @@ enum Command {
         /// complete 时的任务 ID（如 TASK-001-RED）
         #[arg(long)]
         task: Option<String>,
-        /// complete 时的任务结果文件路径
+        /// complete 时内联提交的 TaskExecutionResult JSON
+        #[arg(long = "result-json")]
+        result_json: Option<String>,
+        /// complete 时从文件读取 TaskExecutionResult JSON
         #[arg(long)]
         result: Option<String>,
     },
@@ -98,6 +111,9 @@ enum Command {
     Auto {
         /// 需求文本（可多个词）
         requirement: Vec<String>,
+        /// 澄清答案 JSON，如 {"Q-ACTOR":"答案"}
+        #[arg(long, value_parser = parse_answers)]
+        answers: Option<serde_json::Value>,
         /// 恢复当前 auto run
         #[arg(long, default_value_t = false)]
         resume: bool,
@@ -214,7 +230,7 @@ fn render_text(result: &CommandResult) -> String {
     if let Some(action) = &result.action_required {
         lines.push(format!("任务：{}", action.task_id));
         lines.push(format!("Context Pack：{}", action.context_pack));
-        lines.push(format!("结果文件：{}", action.result_file));
+        lines.push(format!("结果传输：{}", action.result_transport));
         lines.push(format!("允许文件：{}", action.allowed_files.join("、")));
         if !action.verification.is_empty() {
             let commands: Vec<String> = action
@@ -328,6 +344,23 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
             }
             "new"
         }
+        Command::Change {
+            change_id,
+            requirement,
+            answers,
+        } => {
+            args.insert("changeId".into(), serde_json::json!(change_id));
+            if !requirement.is_empty() {
+                args.insert(
+                    "requirement".into(),
+                    serde_json::json!(requirement.join(" ")),
+                );
+            }
+            if let Some(answers) = answers {
+                args.insert("answers".into(), answers.clone());
+            }
+            "change"
+        }
         Command::Design => "design",
         Command::Plan { dependencies } => {
             if let Some(dependencies) = dependencies {
@@ -335,15 +368,23 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
             }
             "plan"
         }
-        Command::Build { sub, task, result } => {
+        Command::Build {
+            sub,
+            task,
+            result_json,
+            result,
+        } => {
             if let Some(sub) = sub {
                 args.insert("sub".into(), serde_json::json!(sub));
             }
             if let Some(task) = task {
                 args.insert("task".into(), serde_json::json!(task));
             }
+            if let Some(result_json) = result_json {
+                args.insert("resultJson".into(), serde_json::json!(result_json));
+            }
             if let Some(result) = result {
-                args.insert("result".into(), serde_json::json!(result));
+                args.insert("resultPath".into(), serde_json::json!(result));
             }
             "build"
         }
@@ -352,6 +393,7 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
         Command::Archive => "archive",
         Command::Auto {
             requirement,
+            answers,
             resume,
             restart,
             stop,
@@ -365,6 +407,9 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
                     "requirement".into(),
                     serde_json::json!(requirement.join(" ")),
                 );
+            }
+            if let Some(answers) = answers {
+                args.insert("answers".into(), answers.clone());
             }
             if *resume {
                 args.insert("resume".into(), serde_json::json!(true));

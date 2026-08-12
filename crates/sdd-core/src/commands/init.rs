@@ -1,7 +1,7 @@
 //! init 命令：创建 `.sdd/` 基础目录、写入默认配置并初始化状态。
 //!
+//! 所有机器数据写入 `.sdd/runtime.json`；项目接入文件仍写入 `.omp/`。
 //! 知识图谱索引由 knowledge 模块接入，不托管外部服务进程。
-//! 配置格式由 YAML 重构为 JSON（config.json，允许重构决策）。
 
 use std::fs;
 use std::path::PathBuf;
@@ -61,7 +61,7 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         ));
     }
 
-    // 写入默认配置（config.json）；重复 init 仅更新显式指定的结构策略。
+    // 写入默认配置到 runtime.json；重复 init 仅更新显式指定的结构策略。
     write_default_config(cwd, &sdd_root, structure_policy)?;
 
     // 项目只支持 OMP 原生接入。
@@ -152,10 +152,10 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     })
 }
 
-/// 写默认配置 config.json（对应 Node 版 defaultConfig，格式从 YAML 改为 JSON）
+/// 写默认配置到 runtime.json 的 config 节点。
 fn write_default_config(
     cwd: &str,
-    sdd_root: &std::path::Path,
+    _sdd_root: &std::path::Path,
     structure_policy: Option<&str>,
 ) -> Result<(), SddError> {
     let project_name = cwd
@@ -164,44 +164,37 @@ fn write_default_config(
         .next()
         .filter(|s| !s.is_empty())
         .unwrap_or("auto-detect");
-    let mut config = json!({
-        "schemaVersion": CONFIG_SCHEMA_VERSION,
-        "project": { "name": project_name },
-        "plugins": {
-            "omp": { "enabled": true }
-        },
-        "codebase": {
-            "providers": ["gitnexus", "codegraph"],
-            "fallbackProvider": "file-scan",
-            "autoIndexOnInit": true
-        },
-        "workflow": {
-            "maxClarifyingQuestionsPerRound": 5,
-            "requireBlockerAnswers": true,
-            "stopOnFailure": true,
-            "gitIsolation": false
-        },
-        "quality": {
-            "requireFileScopeCheck": true,
-            "requireDriftCheck": true
-        },
-        "contextPack": { "maxSizeKb": 30 },
-        "audit": { "maxSizeMb": 10, "maxFiles": 5 },
-        "git": { "createBranch": false, "createWorktree": false },
-        "security": {
-            "blockOutsideRepo": true,
-            "blockSymlinksOutsideRepo": true,
-            "redactSecretsInLogs": true
-        }
-    });
-    let path = sdd_root.join("config.json");
-    if path.exists() {
-        let raw = fs::read_to_string(&path).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("读取 config.json 失败：{e}"))
-        })?;
-        config = serde_json::from_str(&raw).map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("config.json 解析失败：{e}"))
-        })?;
+    let mut config = crate::state::runtime_store::read_config(cwd)?;
+    if config.is_null() || config == json!({}) {
+        config = json!({
+            "schemaVersion": CONFIG_SCHEMA_VERSION,
+            "project": { "name": project_name },
+            "plugins": { "omp": { "enabled": true } },
+            "codebase": {
+                "providers": ["gitnexus", "codegraph"],
+                "fallbackProvider": "file-scan",
+                "autoIndexOnInit": true
+            },
+            "workflow": {
+                "maxClarifyingQuestionsPerRound": 5,
+                "requireBlockerAnswers": true,
+                "stopOnFailure": true,
+                "gitIsolation": false
+            },
+            "quality": {
+                "requireFileScopeCheck": true,
+                "requireDriftCheck": true,
+                "ocr": { "mode": "auto", "command": "ocr" }
+            },
+            "contextPack": { "maxSizeKb": 30 },
+            "audit": { "maxSizeMb": 10, "maxFiles": 5 },
+            "git": { "createBranch": false, "createWorktree": false },
+            "security": {
+                "blockOutsideRepo": true,
+                "blockSymlinksOutsideRepo": true,
+                "redactSecretsInLogs": true
+            }
+        });
     }
     if !config.is_object()
         || !config
@@ -210,7 +203,7 @@ fn write_default_config(
     {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
-            "config.json 必须包含 workflow 对象",
+            "runtime.json 的 config 必须包含 workflow 对象",
         ));
     }
     let omp_plugin = config
@@ -222,14 +215,15 @@ fn write_default_config(
         config
             .get_mut("workflow")
             .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "config.json 缺少 workflow 对象"))?
+            .ok_or_else(|| {
+                SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "runtime.json 的 config 缺少 workflow 对象",
+                )
+            })?
             .insert("structurePolicy".to_string(), json!(policy));
     }
-    let content = serde_json::to_string_pretty(&config)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化配置失败：{e}")))?;
-    fs::write(&path, content)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 config.json 失败：{e}")))?;
-    Ok(())
+    crate::state::runtime_store::write_config(cwd, config)
 }
 
 /// 空项目检测：无 README/源文件/包清单时视为空项目

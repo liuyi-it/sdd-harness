@@ -1,7 +1,4 @@
-//! plan 命令：生成机器计划和供人工审核的 plan.md/tasks.md。
-//!
-//! 翻译自 早期 Node 实现：
-//! 读取 spec.md 与机器设计状态，经 TddEngine 生成原子任务链，状态推进 PLAN_READY。
+//! plan 命令：生成供人工审核的 plan.md/tasks.md，并把机器计划存入 runtime.json。
 
 use std::fs;
 use std::path::PathBuf;
@@ -10,6 +7,7 @@ use serde_json::json;
 
 use crate::commands::new::current_change_id;
 use crate::contracts::CommandResult;
+use crate::engines::superpowers::protocol::TaskDefinition;
 use crate::engines::tdd::tdd_engine::{PlanningInputRust, TddEngine};
 use crate::error::SddError;
 use crate::state::file_lock::lock_sdd;
@@ -35,33 +33,26 @@ pub fn run_plan(
     let state = store.read()?;
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
-    for key in [
-        format!("{change_id}:spec"),
-        format!("{change_id}:spec-json"),
-        format!("{change_id}:design"),
-    ] {
+    for key in [format!("{change_id}:spec"), format!("{change_id}:design")] {
         crate::state::artifact_store::verify_artifact(cwd, &key)?;
     }
 
-    let spec_json_raw = fs::read_to_string(change_dir.join("spec.json"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.json 失败：{e}")))?;
-    let spec_json: serde_json::Value = serde_json::from_str(&spec_json_raw)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec.json 解析失败：{e}")))?;
+    let spec_value = crate::state::runtime_store::read_change_field(cwd, &change_id, "spec")?
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
     let spec = fs::read_to_string(change_dir.join("spec.md"))
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
-    let design = spec_json
-        .get("design")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "spec.json 缺少 design 字段"))?
-        .to_string();
-    let impact = spec_json
+    let design = crate::state::runtime_store::read_change_field(cwd, &change_id, "design")?
+        .or_else(|| spec_value.get("design").cloned())
+        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 design 字段"))?;
+    let impact = spec_value
         .get("impact")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let index_dir = PathBuf::from(cwd).join(".sdd/index");
-    let codebase_summary = fs::read_to_string(index_dir.join("summary.md"))
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取代码库摘要失败：{e}")))?;
+    let codebase_summary = crate::state::runtime_store::read_index_field(cwd, "summary")?
+        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?;
     let spec_digest = crate::policies::digest::digest(&spec);
     let design_digest = crate::policies::digest::digest(&design);
 
@@ -74,30 +65,26 @@ pub fn run_plan(
 
     let plan_markdown = render_plan_document(&design, &artifacts.test_plan, &dependencies);
     let tasks_markdown = artifacts.tasks_markdown.clone();
-    let plan_json = json!({
+    let plan_value = json!({
         "schemaVersion": "2.0.0",
         "changeId": change_id,
         "tasks": artifacts.tasks,
         "dependencies": dependencies,
     });
-    let plan_text = serde_json::to_string_pretty(&plan_json)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化 plan.json 失败：{e}")))?;
-    fs::write(change_dir.join("plan.json"), &plan_text)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.json 失败：{e}")))?;
+    let plan_text = serde_json::to_string_pretty(&plan_value)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化机器计划失败：{e}")))?;
     fs::write(change_dir.join("plan.md"), &plan_markdown)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 plan.md 失败：{e}")))?;
     fs::write(change_dir.join("tasks.md"), &tasks_markdown)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 tasks.md 失败：{e}")))?;
+    crate::state::runtime_store::write_change_field(cwd, &change_id, "plan", plan_value)?;
     crate::state::artifact_store::record_artifact(
         cwd,
         &format!("{change_id}:plan"),
         "plan",
-        &format!(".sdd/changes/{change_id}/plan.json"),
+        &format!("runtime://changes/{change_id}/plan"),
         &plan_text,
-        json!({
-            "spec": spec_digest,
-            "design": design_digest,
-        }),
+        json!({ "spec": spec_digest, "design": design_digest }),
     )?;
     crate::state::artifact_store::record_artifact(
         cwd,
@@ -121,6 +108,8 @@ pub fn run_plan(
         s.suggested_command = Some("sdd build next".to_string());
         s.last_command = Some("sdd plan".to_string());
         s.last_error = None;
+        s.tasks.clear();
+        s.pending_agent_task = None;
     })?;
 
     Ok(CommandResult {
@@ -227,22 +216,13 @@ fn validate_dependencies(dependencies: &serde_json::Value) -> Result<(), SddErro
     Ok(())
 }
 
-/// 读取 plan.json 的任务列表（供 build 命令复用）
-pub fn read_plan_tasks(
-    cwd: &str,
-    change_id: &str,
-) -> Result<Vec<crate::engines::superpowers::protocol::TaskDefinition>, SddError> {
-    let path = PathBuf::from(cwd)
-        .join(".sdd/changes")
-        .join(change_id)
-        .join("plan.json");
-    let raw = fs::read_to_string(&path)
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 plan.json 失败：{e}")))?;
-    let value: serde_json::Value = serde_json::from_str(&raw)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("plan.json 解析失败：{e}")))?;
-    let tasks = value
-        .get("tasks")
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "plan.json 缺少 tasks 字段"))?;
+/// 读取 runtime 中的计划任务（供 build、verify 和 review 复用）。
+pub fn read_plan_tasks(cwd: &str, change_id: &str) -> Result<Vec<TaskDefinition>, SddError> {
+    let value = crate::state::runtime_store::read_change_field(cwd, change_id, "plan")?
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
+    let tasks = value.get("tasks").ok_or_else(|| {
+        SddError::new("E_MISSING_ARTIFACT", "runtime.json 的 plan 缺少 tasks 字段")
+    })?;
     serde_json::from_value(tasks.clone())
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("tasks 解析失败：{e}")))
 }

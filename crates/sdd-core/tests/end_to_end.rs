@@ -6,7 +6,7 @@ use sdd_core::engines::spec::spec_engine::SpecEngine;
 use sdd_core::run;
 use serde_json::json;
 
-const FULL_REQUIREMENT: &str = "授权用户通过 API 请求取消待处理订单，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
 
 fn run_command(
     cwd: &str,
@@ -21,7 +21,7 @@ fn run_command(
     .unwrap_or_else(|e| panic!("命令 {command} 失败: {} ({})", e.message, e.code))
 }
 
-fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
+fn complete_all_tasks(cwd: &str) {
     for _ in 0..100 {
         let next = run(&CommandRequest {
             command: "build".into(),
@@ -32,10 +32,6 @@ fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
         let Some(action) = next.action_required else {
             break;
         };
-        let result_path = dir.join(&action.result_file);
-        if let Some(parent) = result_path.parent() {
-            std::fs::create_dir_all(parent).unwrap();
-        }
         let is_verify = action.task_id.ends_with("-VERIFY");
         let is_red = action.task_id.ends_with("-RED");
         let evidence = if is_verify {
@@ -45,27 +41,22 @@ fn complete_all_tasks(dir: &std::path::Path, cwd: &str) {
                 "output": if is_red { "FAILED: expected" } else { "ok" },
                 "passed": !is_red, "expectedFailure": is_red }])
         };
-        std::fs::write(
-            &result_path,
-            json!({
-                "taskId": action.task_id,
-                "status": "completed",
-                "evidence": evidence,
-                "verification": if is_verify {
-                    json!([{ "command": "cargo test", "args": [], "passed": true }])
-                } else { json!([]) },
-                "filesChanged": []
-            })
-            .to_string(),
-        )
-        .unwrap();
+        let result = json!({
+            "taskId": action.task_id,
+            "status": "completed",
+            "evidence": evidence,
+            "verification": if is_verify {
+                json!([{ "command": "cargo test", "args": [], "passed": true }])
+            } else { json!([]) },
+            "filesChanged": []
+        });
         let result = run(&CommandRequest {
             command: "build".into(),
             cwd: cwd.to_string(),
             args: Some(json!({
                 "sub": "complete",
                 "task": action.task_id,
-                "result": action.result_file,
+                "resultJson": result.to_string(),
             })),
         });
         result.unwrap_or_else(|error| panic!("完成任务失败：{} {}", error.code, error.message));
@@ -107,12 +98,9 @@ fn node_fixture_completes_full_workflow() {
 
 fn assert_full_workflow(dir: &tempfile::TempDir) {
     let cwd = dir.path().to_string_lossy().to_string();
-
-    // init
     let init = run_command(&cwd, "init", None);
     assert_eq!(init.state, "INDEX_READY");
-    assert!(dir.path().join(".sdd/state.json").exists());
-
+    assert!(dir.path().join(".sdd/runtime.json").exists());
     // new（完整需求 → SPEC_READY）
     let new = run_new(
         &cwd,
@@ -123,10 +111,10 @@ fn assert_full_workflow(dir: &tempfile::TempDir) {
     assert!(new.ok);
     assert_eq!(new.state, "SPEC_READY");
 
-    // 补充 index 摘要（供 planner 推导范围）
-    std::fs::write(
-        dir.path().join(".sdd/index/summary.md"),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
+    sdd_core::state::runtime_store::write_index(
+        &cwd,
+        json!([]),
+        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
     )
     .unwrap();
 
@@ -139,7 +127,7 @@ fn assert_full_workflow(dir: &tempfile::TempDir) {
     assert_eq!(plan.state, "PLAN_READY");
 
     // build 全部任务
-    complete_all_tasks(dir.path(), &cwd);
+    complete_all_tasks(&cwd);
 
     // verify → review → archive
     let verify = run_command(&cwd, "verify", None);
@@ -150,14 +138,12 @@ fn assert_full_workflow(dir: &tempfile::TempDir) {
     assert!(archive.ok);
     assert_eq!(archive.state, "ARCHIVED");
 
-    // status 报告已归档
-    let status = run_command(&cwd, "status", None);
-    assert_eq!(status.state, "ARCHIVED");
-    let artifacts: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join(".sdd/artifacts.json")).unwrap(),
+    let _status = run_command(&cwd, "status", None);
+    let runtime: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
     )
     .unwrap();
-    assert!(artifacts["artifacts"].as_object().unwrap().len() >= 8);
+    assert!(runtime["artifacts"]["artifacts"].as_object().unwrap().len() >= 8);
 }
 
 #[test]

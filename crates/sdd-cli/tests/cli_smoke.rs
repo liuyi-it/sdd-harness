@@ -116,10 +116,41 @@ fn malformed_values_exit_with_code_2() {
         vec!["status", "--timeout", "nope"],
         vec!["new", "需求", "--answers", "{broken"],
         vec!["auto", "--events", "--tail", "nope"],
+        vec!["auto", "--answers", "{broken"],
         vec!["init", "--structurePolicy", "invalid"],
         vec!["plan", "--dependencies", "{}"],
     ] {
         let out = sdd().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(2));
     }
+}
+
+#[test]
+fn review_help_is_available() {
+    let out = sdd().args(["review", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("review"),
+        "帮助应包含 review 命令: {stdout}"
+    );
+}
+
+#[test]
+fn auto_help_includes_answers_option() {
+    let out = sdd().args(["auto", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("--answers"),
+        "帮助应包含 --answers: {stdout}"
+    );
+}
+
+#[test]
+fn change_help_includes_answers_option() {
+    let out = sdd().args(["change", "--help"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("--answers"));
 }
