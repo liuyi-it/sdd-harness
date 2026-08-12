@@ -34,4 +34,4 @@ sdd init
 
 小而独立的任务可以交给 `sdd-worker`；复杂、共享文件、架构、安全或外部副作用任务由主 Agent 执行。主 Agent 必须检查 subagent 的 diff、文件范围和验证结果，再提交 Core 的任务结果并执行最终 `verify` / `review`。
 
-OMP 自己负责模型注册、凭据和可用性解析，项目不硬编码具体模型名，也不安装 SDK、RPC 或 Superpowers 运行时。不要直接修改 `.sdd/state.json`，不要把 JSON、Context Pack 或 Policy Bundle 原样展示给用户。`vendor/superpowers/` 仅是审计快照；其原始运行时提示词不会被安装或注入。
+OMP 自己负责模型注册、凭据和可用性解析，项目不硬编码具体模型名，也不安装 SDK、RPC 或 Superpowers 运行时。不要直接修改 `.sdd/runtime.json`，不要把 JSON、Context Pack 或 Policy Bundle 原样展示给用户。`vendor/superpowers/` 仅是审计快照；其原始运行时提示词不会被安装或注入。

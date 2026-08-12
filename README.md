@@ -93,14 +93,19 @@ sdd archive
 # 获取下一个任务及其按需生成的 Context Pack
 sdd build next --json
 
-# Agent 完成编码并写出 TaskExecutionResult 后提交
+# Agent 完成编码并写出 TaskExecutionResult 后可提交结果文件或内联 JSON
 sdd build complete \
   --task TASK-001-RED \
-  --result .sdd/runs/<run-id>/tasks/TASK-001-RED.result.json \
+  --result /tmp/task-result.json \
+  --json
+
+sdd build complete \
+  --task TASK-001-RED \
+  --result-json '<TaskExecutionResult JSON>' \
   --json
 ```
 
-Core 会验证任务状态、允许/禁止文件、实际 Git delta、TDD evidence 和 verification。Agent 不应直接修改 `.sdd/state.json`。
+Core 会验证任务状态、允许/禁止文件、实际 Git delta、TDD evidence 和 verification。Agent 不应直接修改 `.sdd/runtime.json`。
 
 ## 工作流程
 
@@ -144,36 +149,21 @@ CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm
 
 ## 制品结构
 
-`.sdd/` 子目录按实际命令惰性创建。一个变更的主要制品为：
+`.sdd/` 只保留统一机器事实源和人工审核文档：
 
 ```text
 .sdd/
-├── state.json
-├── artifacts.json
-├── config.json
-├── changes/<change-id>/
-│   ├── spec.md
-│   ├── spec.json
-│   ├── plan.md
-│   ├── tasks.md
-│   ├── plan.json
-│   ├── verify-report.json
-│   └── review-report.json
-├── context-packs/<task-id>/context.md
-├── runs/<run-id>/tasks/<task-id>.result.json
-└── index/
-    ├── knowledge.json
-    └── summary.md
+├── runtime.json       # 状态、配置、制品、规格、计划、报告、结果、loop、索引和归档
+├── runtime.json.bak   # runtime 崩溃恢复备份（不是需求修订历史）
+└── changes/<change-id>/
+    ├── spec.md
+    ├── design.md
+    ├── plan.md
+    ├── tasks.md
+    └── archive.md     # archive 后仅保留
 ```
 
-执行 `sdd archive` 后，变更目录只保留：
-
-```text
-.sdd/changes/<change-id>/
-├── archive.md     # 合并后的需求、计划、任务与质量结果
-├── archive.json   # 完整机器归档
-└── .archived      # 完整性标记
-```
+首次 `sdd new` 会从需求文本生成可读的需求词组 change ID；同名变更在已有目录后追加序号。英文词组使用 kebab-case，中文词组保留原文可读性。`sdd change` 直接更新当前 `spec.md`/`proposal.md`，不生成需求级备份或修订目录，Git 是历史来源。`build next` 返回内联 Context Pack，`build complete --result-json` 以内联 JSON 提交任务结果；不会生成 Context Pack 或结果文件路径。
 
 ## 项目结构
 

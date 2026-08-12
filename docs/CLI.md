@@ -58,19 +58,30 @@ sdd status --loop --json
 
 ### `sdd new <需求>`
 
-创建变更并生成供人工审核的 `spec.md`，以及供 Core 使用的机器状态 `spec.json`。首次调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。
+创建变更并生成供人工审核的 `spec.md`，以及写入 `.sdd/runtime.json` 的机器规格模型。首次在 `INDEX_READY` 调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。若进程在 `NEW_STARTED` 中断，Core 会复用当前 `changeId`/`runId`，`sdd new --answers` 只恢复该变更，不会创建新变更。
 
 ```bash
 sdd new "实现订单取消功能"
 # 收到 CLARIFYING 的问题并向用户确认后继续
-sdd new --answers '{"Q-001":"仅订单创建人可取消待处理订单"}' --json
+sdd new --answers '{"Q-ACTOR":"仅订单创建人可取消待处理订单"}' --json
 # 仅无人值守且接受需求不完整时直接失败的场景使用
 sdd new "为待处理订单提供取消 API，包含权限、冲突响应、审计和测试" --non-interactive
 ```
 
+### `sdd change <change-id> <新需求>`
+
+修改当前活动且未归档的变更。命令直接重写 `spec.md` 和 `proposal.md`，删除旧需求派生的 `design.md`、`plan.md`、`tasks.md`，并把工作流退回 `SPEC_READY`，因此修改后必须重新执行 `design` 和 `plan`。不生成需求级备份或修订历史；runtime 的崩溃恢复备份不属于需求历史，Git 是唯一需求历史来源。
+
+```bash
+sdd change cancel-pending-order "授权用户通过 PATCH /orders/{id} 更新待处理订单，返回 status 和 error_code" --json
+sdd change cancel-pending-order "..." --answers '{"Q-ACTOR":"授权用户"}' --json
+```
+成功结果的 `data` 只包含当前文档和被删除的派生文档；不会返回 revision、diff 或 snapshot 路径。
+
+
 ### `sdd design`
 
-根据 `spec.md` 和代码库影响生成技术方案，写入 `spec.json.design`，供后续生成 `plan.md`；不单独生成 `design.md`。
+根据 `spec.md` 和代码库影响生成技术方案，写入 `.sdd/runtime.json` 的 `changes.<changeId>.design`，同时生成供人工审核的 `design.md`。
 
 ```bash
 sdd design --change add-order-cancel
@@ -78,7 +89,7 @@ sdd design --change add-order-cancel
 
 ### `sdd plan`
 
-生成机器计划 `plan.json`、人工审核计划 `plan.md` 和可勾选任务清单 `tasks.md`。此阶段不会批量创建 Context Pack。
+生成写入 `.sdd/runtime.json` 的机器计划、人工审核计划 `plan.md` 和可勾选任务清单 `tasks.md`。此阶段不会批量创建 Context Pack。
 
 ```bash
 sdd plan --change add-order-cancel
@@ -93,10 +104,15 @@ sdd plan --dependencies '[{"name":"serde","manifest":"Cargo.toml","action":"ADD"
 # 获取下一个任务，并为该任务按需生成 Context Pack
 sdd build next --json
 
-# 提交 Agent 写出的 TaskExecutionResult
+# 提交 Agent 写出的 TaskExecutionResult；支持结果文件或内联 JSON
 sdd build complete \
   --task TASK-001-RED \
-  --result .sdd/runs/<run-id>/tasks/TASK-001-RED.result.json \
+  --result /tmp/task-result.json \
+  --json
+
+sdd build complete \
+  --task TASK-001-RED \
+  --result-json '<TaskExecutionResult JSON>' \
   --json
 ```
 
@@ -112,13 +128,21 @@ sdd verify --json
 
 执行确定性代码审查、范围复核、敏感信息扫描和最小正确实现审查。新增 Cargo 依赖未在计划中以 `ADD` 声明时以 `E_UNPLANNED_DEPENDENCY` 阻断；改动规模和显式债务标记只记录为非阻断 finding。失败后保留报告并回到可重新验证或审查的阶段。
 
+确定性审查先执行：若被安全、范围或阶段门禁阻断，不会启动 OCR。确定性扫描通过且存在变更文件时，才按配置 `quality.ocr.mode` 决定是否调用可选的 Alibaba Open Code Review（`quality.ocr.command`，默认 `ocr`）：
+
+- `auto`（默认）：找不到 `ocr` 命令时仅返回 `W_OCR_NOT_FOUND` 警告并保留确定性审查结论，不阻断；
+- `off`：不启动 OCR；
+- `required`：找不到 `ocr` 命令时返回 `E_REVIEW_BACKEND_UNAVAILABLE` 硬失败。
+
+OCR 已启动后的超时、非零退出、失败状态或非法 JSON/finding 一律硬失败并持久化 `passed=false` 报告，使用稳定错误码：`E_REVIEW_BACKEND_TIMEOUT`（超时）、`E_REVIEW_BACKEND_FAILED`（非零退出或失败状态）、`E_REVIEW_BACKEND_INVALID_OUTPUT`（非法 JSON/finding）、`E_REVIEW_BACKEND_UNAVAILABLE`（启动失败）。OCR 子进程默认 120 秒超时，可用 `--timeout` 调整。OCR 的 prompt、thinking、API key 与完整 stderr 不会被持久化。
+
 ```bash
 sdd review --json
 ```
 
 ### `sdd archive`
 
-重新验证质量报告、任务结果、制品哈希和 Git 漂移，然后将 `spec.md`、`plan.md`、`tasks.md` 与验证/审查结果整合为完整 `archive.md`，删除三份活动文档，变更目录最终只保留 `archive.md`、`archive.json` 和 `.archived`。
+重新验证质量报告、任务结果、制品哈希和 Git 漂移，然后将 `spec.md`、`design.md`、`plan.md`、`tasks.md` 与验证/审查结果整合为完整 `archive.md`；机器归档、状态、配置、制品、任务结果、Context Pack、loop 和索引均保留在 `.sdd/runtime.json`。
 
 ```bash
 sdd archive --json
@@ -128,10 +152,13 @@ sdd archive --json
 
 ### `sdd auto <需求>`
 
-根据状态机连续执行可确定的阶段。首次调用必须传入非空需求；在需求澄清、Agent 编码、失败或归档完成时收敛。`--resume`、`--restart`、`--stop`、`--events` 和 `--loop-status` 则是控制已有 loop 的命令，不传需求。
+根据状态机连续执行可确定的阶段。仅首次处于 `INDEX_READY` 时必须传入非空需求；在 `CLARIFYING`、`NEW_STARTED`、Agent 编码、失败或归档完成时收敛。`--resume`、`--restart`、`--stop`、`--events` 和 `--loop-status` 控制已有 loop；`--answers` 将澄清答案透传给 `new`，不传需求文本。
 
 ```bash
 sdd auto "实现订单取消功能"
+# 收到 CLARIFYING 后
+sdd auto --resume --answers '{"Q-ACTOR":"授权用户","Q-ACTION":"取消待处理订单"}'
+# 若进程中断并停在 NEW_STARTED
 sdd auto --resume
 sdd auto --resume --run <run-id>
 sdd auto --restart

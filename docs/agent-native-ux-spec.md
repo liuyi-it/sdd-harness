@@ -67,7 +67,7 @@ Core
 职责边界：
 
 - **Adapter / Agent-native Executor**：将 Core 结果转换为用户语言；在内部读取 Context Pack、承接任务证据并调用下一阶段；合并可合并的本地操作。
-- **Core**：仍是唯一事实源，不能被 Adapter 绕过或直接修改 `.sdd/state.json`。
+- **Core**：仍是唯一事实源，不能被 Adapter 绕过或直接修改 `.sdd/runtime.json`。
 - **CLI**：保留为 CI、脚本、调试和严格审计接口；不再是日常对话中每一步都必须显式操作的主交互面。
 
 ## 4. 权限与工具调用原则
