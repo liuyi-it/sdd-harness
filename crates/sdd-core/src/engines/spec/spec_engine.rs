@@ -1,6 +1,6 @@
 //! SpecEngine：从需求文本生成 OpenSpec 规格制品。
 //!
-//! 翻译自 `packages/core/src/engines/spec/spec-engine.ts`：
+//! 翻译自 早期 Node 实现：
 //! - analyze：语义槽缺失检测（BLOCKER 澄清问题）
 //! - generate：生成 proposal/impact/questions/answers/assumptions/spec/delta/model
 //! - build_model：行为分割 → 需求/场景生成（GIVEN/WHEN/THEN）
@@ -20,8 +20,11 @@ use crate::engines::openspec::validator::validate_spec;
 #[derive(Debug, Clone)]
 pub struct ClarifyingQuestion {
     pub id: String,
+    pub round: u8,
+    pub title: String,
     pub severity: String,
     pub question: String,
+    pub recommendation: String,
 }
 
 #[derive(Debug, Clone)]
@@ -48,49 +51,146 @@ pub struct SpecArtifacts {
     pub model: SpecDocument,
 }
 
-/// 语义槽：缺失即产生 BLOCKER 问题（与 Node 版 SEMANTIC_SLOTS 一致）
-const SEMANTIC_SLOTS: [(&str, &str, &str); 8] = [
-    (
-        "Q-ACTOR",
-        r"\b(authenticated|authorized\s+(?:users?|administrators?|actors?)|users?|administrators?|creators?|owners?|actors?)\b|用户|管理员|创建者|所有者|操作者",
-        "请明确谁是执行该行为的业务角色。",
-    ),
-    (
-        "Q-AUTHORIZATION",
-        r"\b(authorization|authorized|permission|unauthorized|forbidden)\b|授权|鉴权|权限|未授权|无权限|仅允许",
-        "请明确授权规则以及未授权请求的处理方式。",
-    ),
-    (
-        "Q-ACTION",
-        r"\b(cancel|cancellation|create|update|delete|query|search|get|read|return|respond)\b|取消|创建|更新|删除|查询|搜索|获取|读取|返回",
-        "请明确要执行的业务动作。",
-    ),
-    (
-        "Q-INTERFACE",
-        r"\b(api|endpoint|request|GET|POST|PUT|PATCH|DELETE)\b|接口|API|请求",
-        "请明确承载该动作的 API 或接口行为。",
-    ),
-    (
-        "Q-PRECONDITION",
-        r"\b(pending|precondition|eligible|authenticated|unregistered)\b|待处理|未完成|未注册|前置|满足条件",
-        "请明确业务前置条件，例如允许操作的资源状态。",
-    ),
-    (
-        "Q-RESULT",
-        r"\b(result|success|successful|cancelled|canceled|cancellation)\b|结果|成功|已取消|取消成功|取消(?:未完成|待处理)订单",
-        "请明确成功后的业务结果。",
-    ),
-    (
-        "Q-FAILURE",
-        r"\b(fail|failure|error|conflict|reject|denied|unauthorized|forbidden|authorization)\b|失败|错误|异常|冲突|拒绝|未授权|无权限|仅允许",
-        "请明确失败、未授权或冲突时的可观察行为。",
-    ),
-    (
-        "Q-TEST",
-        r"\b(test|tests|testing|automated|automation)\b|测试|自动化|验收",
-        "请明确需要覆盖的自动化测试意图。",
-    ),
+struct QuestionRule {
+    id: &'static str,
+    round: u8,
+    title: &'static str,
+    question: &'static str,
+    recommendation: &'static str,
+    satisfied: fn(&str) -> bool,
+}
+
+const QUESTION_RULES: &[QuestionRule] = &[
+    QuestionRule {
+        id: "Q-GOAL",
+        round: 1,
+        title: "可验收目标",
+        question: "这次变更最终要让谁在什么场景下看到什么可观察结果？不要只描述“实现某功能”，请写出行为变化。",
+        recommendation: "推荐用 Given/When/Then 写一条成功路径，结果必须能通过接口、状态或记录验证。",
+        satisfied: goal_is_clear,
+    },
+    QuestionRule {
+        id: "Q-SCOPE",
+        round: 1,
+        title: "范围边界",
+        question: "本次涉及哪些端、服务、模块或数据？明确包含什么、明确不包含什么，避免实现时自行扩张范围。",
+        recommendation: "推荐先限定一个端到端切片，把未写进范围的重构、迁移和周边功能列为不包含。",
+        satisfied: scope_is_clear,
+    },
+    QuestionRule {
+        id: "Q-ACCEPTANCE",
+        round: 1,
+        title: "完成标准",
+        question: "什么条件算完成？请列出至少一条成功路径和一条实际相关的失败或边界路径，并说明每条路径的可观察断言。",
+        recommendation: "推荐把验收标准写成可自动执行的行为，而不是“功能正常”或“测试通过”。",
+        satisfied: acceptance_is_clear,
+    },
+    QuestionRule {
+        id: "Q-ACTOR",
+        round: 2,
+        title: "参与角色",
+        question: "谁发起这个动作，谁受到影响？如果有多个角色，分别能做什么，不能做什么？",
+        recommendation: "推荐写出具体角色和资源归属，不使用“用户”这种无法决定权限的泛称。",
+        satisfied: |context| matches(context, r"\b(authenticated|authorized\s+(?:users?|administrators?|actors?)|users?|administrators?|creators?|owners?|actors?)\b|用户|管理员|创建者|所有者|操作者|开发者|负责人"),
+    },
+    QuestionRule {
+        id: "Q-AUTHORIZATION",
+        round: 2,
+        title: "授权与拒绝",
+        question: "系统如何确认调用者有权执行？未认证、无权限和资源不存在时分别返回什么，是否会泄露资源信息？",
+        recommendation: "推荐明确认证来源、授权判定、稳定错误码/HTTP 状态以及敏感信息不泄露规则。",
+        satisfied: |context| matches(context, r"\b(authorization|authorized|permission|unauthorized|forbidden|authentication)\b|授权|鉴权|权限|未授权|无权限|仅允许|认证"),
+    },
+    QuestionRule {
+        id: "Q-ACTION",
+        round: 2,
+        title: "具体动作",
+        question: "要对什么资源执行什么动作？是单条还是批量，重复提交、重试和并发请求的语义是什么？",
+        recommendation: "推荐写出资源、动作、粒度和幂等性；不要让实现者从“做一个功能”自行推断业务语义。",
+        satisfied: |context| matches(context, r"\b(cancel|cancellation|create|update|delete|query|search|get|read|return|respond)\b|取消|创建|更新|删除|查询|搜索|获取|读取|返回"),
+    },
+    QuestionRule {
+        id: "Q-INTERFACE",
+        round: 2,
+        title: "接口契约",
+        question: "具体入口和契约是什么：HTTP method/path 或命令、请求字段、响应字段、错误码，以及是否需要保持既有调用方行为？",
+        recommendation: "推荐给出一个真实路径或命令示例，并列出最小请求/响应 JSON；只写“通过 API”不够。",
+        satisfied: interface_is_clear,
+    },
+    QuestionRule {
+        id: "Q-PRECONDITION",
+        round: 3,
+        title: "前置条件",
+        question: "动作开始前资源必须处于什么状态？资源缺失、状态不符合、并发竞争和重复操作分别怎么处理？",
+        recommendation: "推荐把状态迁移和拒绝条件写成明确的状态机，而不是只写“满足条件”。",
+        satisfied: |context| matches(context, r"\b(pending|precondition|eligible|authenticated|unregistered|state|duplicate|retry|idempotent|concurrent)\b|待处理|未完成|未注册|前置|满足条件|状态|重复|重试|幂等|并发|存在且未归档|未归档|非空"),
+    },
+    QuestionRule {
+        id: "Q-RESULT",
+        round: 3,
+        title: "成功结果",
+        question: "成功后具体改变什么？请说明响应、持久化状态、事件/副作用和事务边界，避免只写“返回成功”。",
+        recommendation: "推荐同时写出外部可见响应和内部状态变化，并说明哪些副作用必须与主变更同事务完成。",
+        satisfied: |context| matches(context, r"\b(result|success|successful|cancelled|canceled|becomes?|returns?)\b|结果|成功|已取消|取消成功|返回|变为|状态变为"),
+    },
+    QuestionRule {
+        id: "Q-FAILURE",
+        round: 3,
+        title: "失败与边界",
+        question: "请逐项列出失败、未授权、资源不存在、重复提交、冲突和下游失败时的可观察行为；哪些情况允许重试？",
+        recommendation: "推荐每个相关失败分支都给出稳定错误码、状态、是否写审计以及客户端下一步。",
+        satisfied: |context| matches(context, r"\b(fail|failure|error|conflict|reject|denied|unauthorized|forbidden|not found|duplicate|retry)\b|失败|错误|异常|冲突|拒绝|未授权|无权限|不存在|重复|重试|下游"),
+    },
+    QuestionRule {
+        id: "Q-TEST",
+        round: 4,
+        title: "验证证据",
+        question: "哪些自动化测试证明每条成功和失败路径都成立？测试入口、测试数据、关键断言和回归范围是什么？",
+        recommendation: "推荐至少覆盖成功、权限、无效状态、重复/并发中实际相关的路径，并给出可执行命令。",
+        satisfied: |context| matches(context, r"\b(test|tests|testing|automated|automation|assert|acceptance)\b|测试|自动化|验收|断言|回归"),
+    },
 ];
+
+fn matches(context: &str, pattern: &str) -> bool {
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .expect("question rule regex must be valid")
+        .is_match(context)
+}
+
+fn goal_is_clear(context: &str) -> bool {
+    matches(
+        context,
+        r"目标|为了|使得|结果|成功|返回|变为|支持|outcome|goal|success|returns?|becomes?|so that",
+    )
+}
+
+fn scope_is_clear(context: &str) -> bool {
+    let boundary = matches(
+        context,
+        r"API|接口|endpoint|模块|服务|前端|后端|数据库|命令|client|server|module|service|(?:GET|POST|PUT|PATCH|DELETE)\s+/|/[A-Za-z]",
+    );
+    let subject = matches(
+        context,
+        r"订单|资源|用户|记录|任务|数据|order|resource|record|task|data",
+    );
+    boundary && subject
+}
+
+fn acceptance_is_clear(context: &str) -> bool {
+    matches(
+        context,
+        r"测试|自动化|验收|断言|回归|成功.*失败|success.*failure|acceptance|assert",
+    )
+}
+
+fn interface_is_clear(context: &str) -> bool {
+    matches(
+        context,
+        r"(?:GET|POST|PUT|PATCH|DELETE)\s+[/A-Za-z]|/[A-Za-z][\w/{}:-]*|路径|方法|字段|参数|响应字段|错误码|command\s+\w+",
+    )
+}
 
 pub struct SpecEngine;
 
@@ -99,7 +199,7 @@ impl SpecEngine {
         Self
     }
 
-    /// 语义分析：返回缺失槽位的澄清问题（均为 BLOCKER）
+    /// 语义分析：按设计树只返回当前 frontier 的 BLOCKER 问题。
     pub fn analyze(
         &self,
         requirement: &str,
@@ -115,22 +215,33 @@ impl SpecEngine {
             }
             ctx
         };
-        let mut questions: Vec<ClarifyingQuestion> = Vec::new();
-        for (id, pattern, question) in SEMANTIC_SLOTS {
-            let re = RegexBuilder::new(pattern)
-                .case_insensitive(true)
-                .build()
-                .unwrap();
-            if !re.is_match(&context) {
-                questions.push(ClarifyingQuestion {
-                    id: id.to_string(),
+        let mut questions = Vec::new();
+        for round in 1..=4 {
+            questions = QUESTION_RULES
+                .iter()
+                .filter(|rule| rule.round == round)
+                .filter(|rule| {
+                    !answers
+                        .get(rule.id)
+                        .is_some_and(|answer| !answer.trim().is_empty())
+                })
+                .filter(|rule| !(rule.satisfied)(&context))
+                .map(|rule| ClarifyingQuestion {
+                    id: rule.id.to_string(),
+                    round: rule.round,
+                    title: rule.title.to_string(),
                     severity: "BLOCKER".to_string(),
-                    question: question.to_string(),
-                });
+                    question: rule.question.to_string(),
+                    recommendation: rule.recommendation.to_string(),
+                })
+                .collect();
+            if !questions.is_empty() {
+                break;
             }
         }
         // 结构性问题：无分隔符且含多行为关键词
-        if !Regex::new(r"[；;。\n，,]").unwrap().is_match(&context)
+        if questions.is_empty()
+            && !Regex::new(r"[；;。\n，,]").unwrap().is_match(&context)
             && RegexBuilder::new(
                 r"(?:同时|并且|以及).*(?:重复|未授权|失败|冲突|每次|审计|需要|测试)",
             )
@@ -141,8 +252,15 @@ impl SpecEngine {
         {
             questions.push(ClarifyingQuestion {
                 id: "Q-STRUCTURE".to_string(),
+                round: 4,
+                title: "行为分隔".to_string(),
                 severity: "BLOCKER".to_string(),
-                question: "请用分号、句号或换行明确分隔成功、失败、审计和测试行为。".to_string(),
+                question:
+                    "成功、失败、审计和测试行为混在同一句中，哪些是独立验收行为？请分别写清楚。"
+                        .to_string(),
+                recommendation:
+                    "推荐每条行为单独写成一组 Given/When/Then，避免一个 Scenario 同时承担多个结果。"
+                        .to_string(),
             });
         }
         if questions.is_empty() {
@@ -150,8 +268,12 @@ impl SpecEngine {
                 Ok(_) => {}
                 Err(e) => questions.push(ClarifyingQuestion {
                     id: "Q-STRUCTURE".to_string(),
+                    round: 4,
+                    title: "结构化行为".to_string(),
                     severity: "BLOCKER".to_string(),
                     question: format!("需求行为无法生成具体 Scenario：{e}，请补充结构化信息。"),
+                    recommendation: "推荐补充明确的 actor、前置条件、动作和可观察结果。"
+                        .to_string(),
                 }),
             }
         }
@@ -180,7 +302,10 @@ impl SpecEngine {
         } else {
             let mut lines = vec!["# Questions".to_string(), String::new()];
             for q in &analysis.questions {
-                lines.push(format!("## {} [{}]\n\n{}", q.id, q.severity, q.question));
+                lines.push(format!(
+                    "## {}｜{} [{}]\n\n{}\n\n建议：{}",
+                    q.id, q.title, q.severity, q.question, q.recommendation
+                ));
             }
             lines.join("\n")
         };
@@ -385,8 +510,9 @@ fn split_behaviors(requirement: &str) -> Vec<String> {
         i += 1;
     }
     push_behavior(&mut behaviors, &mut current);
-    // 去前缀（and/以及/并且/同时）
-    behaviors
+    // 只在主行为缺少结果时合并后续片段，避免“动作；前置条件；结果”
+    // 被误当成三个独立 Scenario，同时保留审计和测试等独立行为。
+    let normalized: Vec<String> = behaviors
         .into_iter()
         .map(|b| {
             let re = RegexBuilder::new(r"^(?:and|以及|并且|同时)\s+")
@@ -396,7 +522,30 @@ fn split_behaviors(requirement: &str) -> Vec<String> {
             re.replace(&b, "").to_string().trim().to_string()
         })
         .filter(|b| !b.is_empty())
-        .collect()
+        .collect();
+    let interface_re = RegexBuilder::new(r"\b(?:api|endpoint|POST|PUT|PATCH|DELETE)\b|接口")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    let result_re = RegexBuilder::new(r"返回|变为|\bbecomes?\b|\breturns?\b")
+        .case_insensitive(true)
+        .build()
+        .unwrap();
+    let detector = action_detector();
+    let mut merged: Vec<String> = Vec::new();
+    for behavior in normalized {
+        let needs_result = merged.last().is_some_and(|last| {
+            interface_re.is_match(last) && detector.is_match(last) && !result_re.is_match(last)
+        });
+        if needs_result {
+            let last = merged.last_mut().expect("上一行为已存在");
+            last.push('，');
+            last.push_str(&behavior);
+        } else {
+            merged.push(behavior);
+        }
+    }
+    merged
 }
 
 fn replace_zh_behaviors(requirement: &str) -> String {
@@ -658,7 +807,7 @@ fn audit_scenario(behavior: &str, context: &str, chinese: bool) -> Result<Scenar
 
 fn extract_actor(context: &str, chinese: bool) -> Result<String, String> {
     let re = if chinese {
-        Regex::new(r"(授权(?:用户|管理员|创建者|所有者)|(?:用户|管理员|创建者|所有者))").unwrap()
+        Regex::new(r"(授权(?:用户|管理员|创建者|所有者|开发者)|(?:用户|管理员|创建者|所有者|开发者)|产品经理|产品负责人|需求负责人|项目负责人)").unwrap()
     } else {
         RegexBuilder::new(
             r"\b((?:an?\s+)?(?:authenticated|authorized)(?:\s+and\s+(?:authenticated|authorized))?\s+(?:users?|administrators?|actors?|creators?|owners?)|(?:an?\s+)?(?:users?|administrators?|actors?|creators?|owners?))\b",
@@ -687,7 +836,7 @@ fn extract_actor(context: &str, chinese: bool) -> Result<String, String> {
 fn extract_precondition(context: &str, chinese: bool) -> Result<String, String> {
     let re = if chinese {
         Regex::new(
-            r"((?:邮箱)?未注册|待处理订单|未完成订单|订单必须处于待处理状态|[^，；,;]{1,20}满足条件)",
+            r"((?:邮箱)?未注册|待处理订单|未完成订单|订单必须处于待处理状态|[^，；,;]{1,20}(?:满足条件|存在且未归档|未归档|非空))",
         )
         .unwrap()
     } else {

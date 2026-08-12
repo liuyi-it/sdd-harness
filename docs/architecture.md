@@ -3,7 +3,7 @@
 ## 分层与依赖
 
 ```text
-Agent Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
+OMP Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
                                       ├── commands / state / quality / security
                                       ├── git / engines / protocol / policies
                                       └── knowledge（GitNexus / CodeGraph）
@@ -14,7 +14,7 @@ Agent Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
 - `crates/sdd-core/src/protocol`：定义 Agent 行动要求、结果和约束结构。
 - `crates/sdd-core/src/policies`：按阶段解析 Policy，并生成可校验摘要。
 - `crates/sdd-core/src/knowledge`：GitNexus / CodeGraph 双引擎探测、索引、路由与降级。
-- `assets/adapters/*`：把宿主指令翻译为 CLI 调用，不直接修改状态（编译期嵌入二进制）。
+- `assets/adapters/omp/*`：把 OMP Skill、精简 slash 命令集和 subagent 翻译为 CLI 调用，不直接修改状态（编译期嵌入二进制）。
 
 Core 是唯一推进状态机的入口，外部 Agent 或工具不能绕过 Core 推进阶段。
 
@@ -33,17 +33,17 @@ init → new → design → plan → build → verify → review → archive
 ```text
 requirement + codebase
   → SpecEngine
-  → spec.md + spec.json
-  → design.md
-  → TddEngine / Superpowers planner
-  → plan.json
+  → spec.md + runtime.changes.<changeId>.spec
+  → runtime.changes.<changeId>.design + design.md
+  → TddEngine / 受控任务规划器（只复用设计理念）
+  → plan.md + tasks.md + runtime.changes.<changeId>.plan
   → build next
-  → 单任务 Context Pack
+  → 内联 Context Pack
 ```
 
-`spec.json` 是规格事实源，包含 proposal、impact、澄清结果、delta 和 Requirement/Scenario 模型。`plan.json` 是计划事实源，包含任务定义、可读计划、测试计划和上下文摘要。
+`spec.md`、`design.md`、`plan.md`、`tasks.md` 是需求生命周期内供人审核的文档，分别回答做什么、怎么设计、怎么实施和做哪些事。机器规格、设计、计划、任务状态和依赖决策统一写入 `.sdd/runtime.json`。
 
-Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务创建 `.sdd/context-packs/<task-id>/context.md`，并根据规格、计划、源码和 Policy 摘要自动刷新。
+Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务生成内联 Context Pack，并根据规格、计划、源码和 Policy 摘要自动刷新。
 
 ## 构建与质量门禁
 
@@ -54,21 +54,15 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务�
 3. 校验 TDD evidence（RED 失败证据 / GREEN 通过证据 / VERIFY 完整验证）。
 4. 写入运行级结果并更新任务状态。
 
-`verify` 检查 Requirement/Scenario、任务和证据覆盖；`review` 追加确定性审查、范围检查与敏感信息扫描。`archive` 在同一写锁内重新验证报告摘要，归档收敛为三个文件。
+`verify` 检查 Requirement/Scenario、任务和证据覆盖；`review` 追加确定性审查、范围检查与敏感信息扫描。`archive` 在同一写锁内重新验证报告摘要，归档收敛为 `archive.md` 与 runtime 中的归档模型。
 
 ## 制品与原子写入
 
-所有运行事实写入 `.sdd/`，子目录按需创建：
+所有运行事实写入 `.sdd/runtime.json`；`changes/<change-id>/` 只保留供人审核的 Markdown 文档，使用临时文件、同步、重命名及 `runtime.json.bak` 备份恢复。
 
-- `.sdd/state.json`：工作流事实源。
-- `.sdd/artifacts.json`：制品输入摘要和内容哈希的集中清单。
-- `.sdd/config.json`：项目配置（Rust 版格式，由 YAML 重构为 JSON）。
-- `.sdd/changes/<change-id>/`：当前变更制品。
-- `.sdd/context-packs/`：按任务生成的上下文。
-- `.sdd/runs/`：运行级任务结果。
-- `.sdd/index/`：代码库摘要和知识图谱诊断。
-
-状态和成组制品使用临时文件、同步、重命名及备份恢复。
+- `.sdd/runtime.json`：工作流状态、配置、制品清单、规格/设计/计划/任务、报告、任务结果、Context Pack、auto loop、知识索引和归档模型。
+- `.sdd/runtime.json.bak`：runtime 原子替换前的可恢复备份。
+- `.sdd/changes/<change-id>/`：当前变更的 `spec.md`、`design.md`、`plan.md`、`tasks.md` 或归档后的 `archive.md`。
 
 ## 归档
 
@@ -77,12 +71,11 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务�
   + verify/review 报告
   + Git 基线与快照
   + 追踪矩阵
-  → archive.json
+  → runtime.changes.<changeId>.archive
   → archive.md
-  → .archived
 ```
 
-`archive` 在同一写锁内重新验证报告摘要，归档收敛为三个文件。`.archived` 保存组合哈希；状态更新中断时，再次执行 `archive` 会根据有效标记收敛到 `ARCHIVED`。
+`archive` 在同一写锁内重新验证报告摘要，将审核文档合并为完整 `archive.md`，机器归档模型保留在 `.sdd/runtime.json`。状态更新中断时，再次执行 `archive` 会根据 runtime 制品哈希校验结果收敛到 `ARCHIVED`。
 
 ## 代码库理解与降级
 

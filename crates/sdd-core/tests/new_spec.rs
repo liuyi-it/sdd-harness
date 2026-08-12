@@ -7,7 +7,7 @@ use sdd_core::engines::spec::spec_engine::SpecEngine;
 use sdd_core::run;
 use serde_json::json;
 
-const FULL_REQUIREMENT: &str = "授权用户通过 API 请求取消待处理订单，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
 
 fn init(dir: &std::path::Path) {
     std::fs::write(dir.join("README.md"), "# demo").unwrap();
@@ -54,17 +54,52 @@ fn new_with_incomplete_requirement_enters_clarifying() {
         .and_then(|c| c.get("questions"))
         .and_then(|q| q.as_array());
     assert!(questions.is_some() && !questions.unwrap().is_empty());
-    // spec.json 落盘为 CLARIFYING 状态
+    // 规格模型写入 runtime.json，人工文档同步存在
+    let cwd = dir.path().to_string_lossy().to_string();
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
+        .unwrap()
+        .unwrap();
+    assert_eq!(spec_json.get("status").unwrap(), "CLARIFYING");
     let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
         .unwrap()
         .next()
         .unwrap()
         .unwrap()
         .path();
-    let spec_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(change_dir.join("spec.json")).unwrap())
-            .unwrap();
-    assert_eq!(spec_json.get("status").unwrap(), "CLARIFYING");
+    assert!(change_dir.join("spec.md").exists());
+}
+
+#[test]
+fn clarifying_resume_merges_answers_and_original_requirement() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let first = new_request(dir.path(), "实现订单取消功能");
+    assert_eq!(first.state, "CLARIFYING");
+    let cwd = dir.path().to_string_lossy().to_string();
+    let second = run_new(
+        &cwd,
+        Some(&json!({ "answers": { "Q-ACTOR": "授权用户" } })),
+        &SpecEngine::new(),
+    )
+    .unwrap();
+    assert_eq!(second.state, "CLARIFYING");
+    let state = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap();
+    let run_id = state.current_run_id.unwrap();
+    let input = sdd_core::state::runtime_store::read_run_field(&cwd, &run_id, "input")
+        .unwrap()
+        .unwrap();
+    let answers = sdd_core::state::runtime_store::read_run_field(&cwd, &run_id, "answers")
+        .unwrap()
+        .unwrap();
+    assert_eq!(input, "实现订单取消功能");
+    assert_eq!(answers["Q-ACTOR"], "授权用户");
 }
 
 #[test]
@@ -80,11 +115,20 @@ fn new_with_full_requirement_writes_spec() {
         .unwrap()
         .unwrap()
         .path();
-    assert!(change_dir.join("spec.md").exists());
-    let spec_json: serde_json::Value =
-        serde_json::from_str(&std::fs::read_to_string(change_dir.join("spec.json")).unwrap())
-            .unwrap();
+    let spec_markdown = std::fs::read_to_string(change_dir.join("spec.md")).unwrap();
+    assert!(spec_markdown.contains("## 目标与价值"));
+    assert!(spec_markdown.contains("## 验收标准"));
+    let cwd = dir.path().to_string_lossy().to_string();
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
+        .unwrap()
+        .unwrap();
     assert_eq!(spec_json.get("status").unwrap(), "READY");
+    assert!(spec_json.get("spec").is_none());
     let model: SpecDocument =
         serde_json::from_value(spec_json.get("model").unwrap().clone()).unwrap();
     assert!(!model.requirements.is_empty());
@@ -151,4 +195,124 @@ fn new_rejects_non_string_answers() {
     )
     .unwrap_err();
     assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
+}
+
+#[test]
+fn clarification_uses_frontier_rounds_and_recommendations() {
+    let engine = SpecEngine::new();
+    let first = engine.analyze("实现订单取消功能", &Default::default());
+    assert!(!first.questions.is_empty());
+    assert!(first.questions.iter().all(|question| question.round == 1));
+    assert!(first
+        .questions
+        .iter()
+        .any(|question| question.id == "Q-GOAL"));
+    assert!(first
+        .questions
+        .iter()
+        .all(|question| !question.recommendation.is_empty()));
+
+    let answers = serde_json::from_value::<std::collections::HashMap<String, String>>(json!({
+        "Q-GOAL": "取消待处理订单后，订单状态变为已取消",
+        "Q-SCOPE": "只改订单服务 POST /orders/{id}/cancel 接口，请求字段 order_id，响应字段 status 和 error_code，不改前端和支付服务",
+        "Q-ACCEPTANCE": "覆盖成功取消和重复取消，断言状态与错误码",
+    }))
+    .unwrap();
+    let second = engine.analyze("实现订单取消功能", &answers);
+    assert!(second.questions.iter().all(|question| question.round == 2));
+    assert!(second
+        .questions
+        .iter()
+        .any(|question| question.id == "Q-ACTOR"));
+}
+
+#[test]
+fn generated_change_id_uses_requirement_words_and_resolves_collisions() {
+    let dir = tempfile::tempdir().unwrap();
+    let changes = dir.path().join("changes");
+    let first = sdd_core::commands::new::make_change_id("实现订单取消功能", &changes);
+    assert_eq!(first, "实现订单取消功能");
+    std::fs::create_dir_all(changes.join(&first)).unwrap();
+    let second = sdd_core::commands::new::make_change_id("实现订单取消功能", &changes);
+    assert_eq!(second, "实现订单取消功能-2");
+}
+
+#[test]
+fn new_answers_resume_interrupted_new_started_change() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let first = new_request(
+        dir.path(),
+        "授权用户通过 API 请求取消待处理订单，返回取消成功",
+    );
+    assert_eq!(first.state, "CLARIFYING");
+
+    let cwd = dir.path().to_string_lossy().to_string();
+    sdd_core::state::StateStore::new(cwd.clone())
+        .update(|state| {
+            state.current_phase = "NEW_STARTED".into();
+            state.in_progress_phase = Some("NEW_STARTED".into());
+        })
+        .unwrap();
+
+    let result = run_new(
+        &cwd,
+        Some(&json!({
+            "answers": {
+                "Q-ACTOR": "授权用户",
+                "Q-AUTHORIZATION": "授权用户有权限",
+                "Q-ACTION": "取消待处理订单",
+                "Q-INTERFACE": "POST /orders/{id}/cancel，入参 order_id，返回 status 和 error_code",
+                "Q-PRECONDITION": "订单处于待处理状态",
+                "Q-RESULT": "返回取消成功",
+                "Q-FAILURE": "取消待处理订单返回未授权错误",
+                "Q-TEST": "需要自动化测试覆盖成功与未授权"
+            }
+        })),
+        &SpecEngine::new(),
+    )
+    .unwrap();
+    assert_eq!(result.state, "SPEC_READY");
+}
+
+#[test]
+fn new_started_without_current_run_is_not_resumed() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let cwd = dir.path().to_string_lossy().to_string();
+    sdd_core::state::StateStore::new(cwd.clone())
+        .update(|state| {
+            state.current_phase = "NEW_STARTED".into();
+            state.current_change_id = None;
+            state.current_run_id = None;
+        })
+        .unwrap();
+
+    let err = run_new(&cwd, Some(&json!({})), &SpecEngine::new()).unwrap_err();
+    assert_eq!(err.code, "E_STATE_CORRUPTED");
+    assert_eq!(err.next.as_deref(), Some("sdd status"));
+}
+
+#[test]
+fn new_started_without_runtime_requirement_stays_recoverable() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let cwd = dir.path().to_string_lossy().to_string();
+    sdd_core::state::StateStore::new(cwd.clone())
+        .update(|state| {
+            state.current_phase = "NEW_STARTED".into();
+            state.current_change_id = Some("change-test".into());
+            state.current_run_id = Some("run-test".into());
+        })
+        .unwrap();
+
+    let err = run_new(&cwd, Some(&json!({})), &SpecEngine::new()).unwrap_err();
+    assert_eq!(err.code, "E_MISSING_ARTIFACT");
+    assert_eq!(
+        sdd_core::state::StateStore::new(cwd)
+            .read()
+            .unwrap()
+            .current_phase,
+        "NEW_STARTED"
+    );
 }

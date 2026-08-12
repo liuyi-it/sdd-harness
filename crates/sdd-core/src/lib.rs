@@ -1,6 +1,6 @@
 //! sdd-core：SDD 状态机与质量门禁执行层。
 //!
-//! 翻译自 Node 版 `packages/core/src/core.ts` 的调度语义：
+//! 翻译自 早期 Node 实现 的调度语义：
 //! Core 是整个工作流的统一调度入口，所有平台适配器最终都只通过这里
 //! 推进状态机、写入制品和返回结果。
 
@@ -29,6 +29,14 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
         // status 是纯只读命令，不依赖完整分发流程
         "status" => commands::status::run_status(cwd, request.args.as_ref()),
         "codebase" => commands::codebase::run_codebase(cwd, request.args.as_ref()),
+        "change" => {
+            ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
+            commands::change::run_change(
+                cwd,
+                request.args.as_ref(),
+                &engines::spec::spec_engine::SpecEngine::new(),
+            )
+        }
         "init" => commands::init::run_init(cwd, request.args.as_ref()),
         // 写命令统一先检查初始化状态
         "new" => {
@@ -104,6 +112,17 @@ fn ensure_phase(
             "已归档的变更为只读状态",
         ));
     }
+
+    if phase == "NEW_STARTED"
+        && command != "new"
+        && (state.current_change_id.is_none() || state.current_run_id.is_none())
+    {
+        return Err(SddError::new(
+            "E_STATE_CORRUPTED",
+            "NEW_STARTED 状态缺少可恢复的当前 change/run",
+        )
+        .with_next("sdd status"));
+    }
     if let Some(requested) = args
         .and_then(|value| value.get("changeId"))
         .and_then(|value| value.as_str())
@@ -121,8 +140,18 @@ fn ensure_phase(
     }
     // 阶段门禁：命令在特定阶段才可用（与 Node 版状态机语义一致）
     let allowed = match command {
-        "design" => phase == "SPEC_READY",
-        "plan" => phase == "DESIGN_READY",
+        "change" => matches!(
+            phase.as_str(),
+            "SPEC_READY"
+                | "DESIGN_READY"
+                | "PLAN_READY"
+                | "BUILD_WAITING_AGENT"
+                | "BUILD_READY"
+                | "VERIFY_READY"
+                | "REVIEW_READY"
+        ),
+        "design" => phase == "SPEC_READY" || phase == "DESIGN_READY",
+        "plan" => phase == "DESIGN_READY" || phase == "PLAN_READY",
         "build" => {
             phase == "PLAN_READY" || phase == "BUILD_WAITING_AGENT" || phase == "BUILD_READY"
         }

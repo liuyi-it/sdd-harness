@@ -1,4 +1,4 @@
-//! 任务协议类型（翻译自 `packages/core/src/engines/superpowers/protocol.ts`）。
+//! 任务协议类型（翻译自 早期 Node 实现）。
 
 use serde::{Deserialize, Serialize};
 

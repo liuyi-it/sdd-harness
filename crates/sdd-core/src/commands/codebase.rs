@@ -1,6 +1,6 @@
 //! codebase 命令：代码库上下文管理（status/doctor/index/query/rebuild）。
 //!
-//! 翻译自 Node 版 `packages/cli/src/commands/codebase.ts` 的分发与校验语义；
+//! 翻译自 早期 Node 实现 的分发与校验语义；
 //! 底层由 knowledge 模块（GitNexus/CodeGraph）提供能力。
 
 use crate::contracts::CommandResult;
@@ -128,28 +128,28 @@ pub fn run_codebase(
 }
 
 pub(crate) fn record_index_artifacts(cwd: &str) -> Result<(), SddError> {
-    for name in [
-        "knowledge.json",
-        "codebase-summary.md",
-        "package-structure.md",
-        "architecture.md",
-    ] {
-        let content =
-            std::fs::read_to_string(std::path::Path::new(cwd).join(".sdd/index").join(name))
-                .map_err(|e| {
-                    SddError::new(
-                        "E_MISSING_ARTIFACT",
-                        &format!("读取索引制品 {name} 失败：{e}"),
-                    )
-                })?;
-        crate::state::artifact_store::record_artifact(
-            cwd,
-            &format!("index:{name}"),
-            "summary",
-            &format!(".sdd/index/{name}"),
-            &content,
-            serde_json::json!({ "providers": ["gitnexus", "codegraph"] }),
-        )?;
-    }
-    Ok(())
+    let diagnostics = crate::state::runtime_store::read_index_field(cwd, "diagnostics")?
+        .unwrap_or_else(|| serde_json::json!([]));
+    let diagnostics_text = serde_json::to_string_pretty(&diagnostics).map_err(|error| {
+        SddError::new("E_STATE_CORRUPTED", &format!("序列化索引诊断失败：{error}"))
+    })?;
+    let summary = crate::state::runtime_store::read_index_field(cwd, "summary")?
+        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少索引摘要"))?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        "index:knowledge",
+        "summary",
+        "runtime://index/diagnostics",
+        &diagnostics_text,
+        serde_json::json!({ "providers": ["gitnexus", "codegraph"] }),
+    )?;
+    crate::state::artifact_store::record_artifact(
+        cwd,
+        "index:summary",
+        "summary",
+        "runtime://index/summary",
+        &summary,
+        serde_json::json!({ "providers": ["gitnexus", "codegraph"] }),
+    )
 }

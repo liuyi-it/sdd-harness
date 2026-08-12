@@ -1,6 +1,6 @@
 //! 可追溯性矩阵：Requirement/Scenario → 任务 → 证据覆盖。
 //!
-//! 翻译自 `packages/core/src/quality/traceability.ts`：
+//! 翻译自 早期 Node 实现：
 //! verify 检查规格中的每个 Requirement/Scenario 都有对应任务与完成证据。
 
 use crate::engines::superpowers::protocol::TaskDefinition;
@@ -32,7 +32,7 @@ pub fn coverage_gaps(
     gaps
 }
 
-/// 从 spec.json 提取需求与场景 id
+/// 从 runtime 中的规格模型提取需求与场景 id
 pub fn extract_spec_ids(spec_json: &serde_json::Value) -> (Vec<String>, Vec<String>) {
     let mut requirements = Vec::new();
     let mut scenarios = Vec::new();

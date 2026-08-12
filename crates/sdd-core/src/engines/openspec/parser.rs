@@ -1,4 +1,4 @@
-//! OpenSpec markdown 解析器（翻译自 `packages/core/src/engines/openspec/parser.ts`）。
+//! OpenSpec markdown 解析器（翻译自早期 Node 实现）。
 
 use regex::Regex;
 
@@ -54,6 +54,11 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             }
             in_scenario = false;
             operation = Some(caps.get(1).unwrap().as_str().to_string());
+            continue;
+        }
+
+        // spec.md 在结构化规格前允许保留目标、范围和约束等人工审核内容。
+        if operation.is_none() {
             continue;
         }
 
@@ -132,7 +137,6 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
         }
         statement_lines.push(line.to_string());
     }
-
     if let Some(req) = requirement.take() {
         requirements.push(finish_requirement(req, &mut statement_lines));
     }

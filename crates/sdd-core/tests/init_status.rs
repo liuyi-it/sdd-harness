@@ -21,9 +21,32 @@ fn init_creates_sdd_and_index_ready() {
     let result = run(&req(dir.path(), "init")).unwrap();
     assert!(result.ok);
     assert_eq!(result.state, "INDEX_READY");
-    assert!(dir.path().join(".sdd/state.json").exists());
-    assert!(dir.path().join(".sdd/config.json").exists());
-    assert!(dir.path().join(".sdd/index/knowledge.json").exists());
+    assert!(dir.path().join(".sdd/runtime.json").exists());
+    let runtime: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
+    )
+    .unwrap();
+    let config = &runtime["config"];
+    let plugins = config
+        .get("plugins")
+        .and_then(|plugins| plugins.as_object());
+    assert_eq!(plugins.map(|plugins| plugins.len()), Some(1));
+    assert!(plugins.is_some_and(|plugins| plugins.contains_key("omp")));
+    assert_eq!(runtime["config"]["quality"]["ocr"]["mode"], "auto");
+    assert_eq!(runtime["config"]["quality"]["ocr"]["command"], "ocr");
+    assert!(runtime["index"]["summary"].is_string());
+    assert!(runtime["index"]["diagnostics"].is_array());
+    assert!(!dir.path().join(".sdd/index").exists());
+    assert!(dir.path().join(".omp/skills/sdd-harness/SKILL.md").exists());
+    assert!(dir.path().join(".omp/commands/sdd.md").exists());
+    assert!(dir.path().join(".omp/agents/sdd-worker.md").exists());
+    for legacy in [
+        "codebase-summary.md",
+        "package-structure.md",
+        "architecture.md",
+    ] {
+        assert!(!dir.path().join(".sdd/index").join(legacy).exists());
+    }
 }
 
 #[test]
@@ -150,11 +173,14 @@ fn empty_project_structure_policy_is_persisted_without_warning() {
         .unwrap_or_default()
         .iter()
         .any(|warning| warning["code"] == "W_EMPTY_PROJECT"));
-    let config: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.path().join(".sdd/config.json")).unwrap(),
+    let runtime: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(config["workflow"]["structurePolicy"], "free-design");
+    assert_eq!(
+        runtime["config"]["workflow"]["structurePolicy"],
+        "free-design"
+    );
 }
 
 #[test]
@@ -162,7 +188,8 @@ fn init_rejects_structurally_invalid_existing_config() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
     run(&req(dir.path(), "init")).unwrap();
-    std::fs::write(dir.path().join(".sdd/config.json"), "{}").unwrap();
+    std::fs::write(dir.path().join(".sdd/runtime.json"), "{}").unwrap();
+    std::fs::write(dir.path().join(".sdd/runtime.json.bak"), "{}").unwrap();
     let error = run(&req(dir.path(), "init")).unwrap_err();
     assert_eq!(error.code, "E_STATE_CORRUPTED");
 }

@@ -7,7 +7,7 @@ use sdd_core::run;
 use serde_json::json;
 use std::process::Command;
 
-const FULL_REQUIREMENT: &str = "授权用户通过 API 请求取消待处理订单，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
 
 fn prepare(dir: &std::path::Path) -> String {
     std::fs::write(dir.join("README.md"), "# demo").unwrap();
@@ -18,10 +18,10 @@ fn prepare(dir: &std::path::Path) -> String {
         args: None,
     })
     .unwrap();
-    std::fs::create_dir_all(dir.join(".sdd/index")).unwrap();
-    std::fs::write(
-        dir.join(".sdd/index/codebase-summary.md"),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
+    sdd_core::state::runtime_store::write_index(
+        &cwd,
+        json!([]),
+        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
     )
     .unwrap();
     run_new(
@@ -61,7 +61,7 @@ fn build_next_returns_action_required_with_known_provider() {
     let action = result.action_required.expect("应有 actionRequired");
     assert_eq!(action.action_type, "AGENT_TASK_EXECUTION");
     assert!(action.task_id.starts_with("TASK-"));
-    assert!(action.result_file.ends_with(".result.json"));
+    assert_eq!(action.result_transport, "inline-json");
     assert!(action.policy_bundle.is_some());
     // 契约变更：provider 必须是三个合法值之一
     assert!(
@@ -80,12 +80,12 @@ fn build_rejects_tampered_plan() {
         .read()
         .unwrap();
     let change_id = state.current_change_id.unwrap();
-    let plan = dir
-        .path()
-        .join(".sdd/changes")
-        .join(change_id)
-        .join("plan.json");
-    std::fs::write(plan, "{\"tasks\":[]}").unwrap();
+    let plan = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "plan")
+        .unwrap()
+        .unwrap();
+    let mut tampered = plan;
+    tampered["tasks"] = json!([]);
+    sdd_core::state::runtime_store::write_change_field(&cwd, &change_id, "plan", tampered).unwrap();
 
     let err = run(&CommandRequest {
         command: "build".into(),
@@ -107,21 +107,15 @@ fn build_complete_with_invalid_result_rejected() {
     })
     .unwrap();
     let action = next.action_required.unwrap();
-    // 伪造结果：缺少 evidence
-    let result_path = dir.path().join(&action.result_file);
-    std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &result_path,
-        json!({ "taskId": action.task_id, "status": "completed", "evidence": [] }).to_string(),
-    )
-    .unwrap();
+    let result_json =
+        json!({ "taskId": action.task_id, "status": "completed", "evidence": [] }).to_string();
     let err = run(&CommandRequest {
         command: "build".into(),
         cwd: cwd.clone(),
         args: Some(json!({
             "sub": "complete",
             "task": action.task_id,
-            "result": action.result_file,
+            "resultJson": result_json,
         })),
     })
     .unwrap_err();
@@ -145,7 +139,7 @@ fn build_complete_wrong_task_id_rejected() {
         args: Some(json!({
             "sub": "complete",
             "task": "TASK-999-RED",
-            "result": ".sdd/runs/run-x/tasks/TASK-999-RED.result.json",
+            "resultJson": "{}",
         })),
     })
     .unwrap_err();
@@ -164,30 +158,24 @@ fn build_complete_with_valid_result_passes_red() {
     .unwrap();
     let action = next.action_required.unwrap();
     assert!(action.task_id.ends_with("-RED"));
-    let result_path = dir.path().join(&action.result_file);
-    std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &result_path,
-        json!({
-            "taskId": action.task_id,
-            "status": "completed",
-            "evidence": [
-                { "type": "command-run", "command": "cargo test", "output": "FAILED: expected",
-                  "passed": false, "expectedFailure": true }
-            ],
-            "verification": [],
-            "filesChanged": []
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let result_json = json!({
+        "taskId": action.task_id,
+        "status": "completed",
+        "evidence": [
+            { "type": "command-run", "command": "cargo test", "output": "FAILED: expected",
+              "passed": false, "expectedFailure": true }
+        ],
+        "verification": [],
+        "filesChanged": []
+    })
+    .to_string();
     let result = run(&CommandRequest {
         command: "build".into(),
         cwd: cwd.clone(),
         args: Some(json!({
             "sub": "complete",
             "task": action.task_id,
-            "result": action.result_file,
+            "resultJson": result_json,
         })),
     })
     .unwrap();
@@ -208,28 +196,22 @@ fn build_complete_rejects_unexpected_failure_as_red_evidence() {
     })
     .unwrap();
     let action = next.action_required.unwrap();
-    let result_path = dir.path().join(&action.result_file);
-    std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        &result_path,
-        json!({
-            "taskId": action.task_id,
-            "status": "completed",
-            "evidence": [{
-                "type": "command-run", "command": "cargo test", "output": "编译器崩溃",
-                "passed": false, "expectedFailure": false
-            }],
-            "verification": [],
-            "filesChanged": []
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let result_json = json!({
+        "taskId": action.task_id,
+        "status": "completed",
+        "evidence": [{
+            "type": "command-run", "command": "cargo test", "output": "编译器崩溃",
+            "passed": false, "expectedFailure": false
+        }],
+        "verification": [],
+        "filesChanged": []
+    })
+    .to_string();
     let err = run(&CommandRequest {
         command: "build".into(),
         cwd,
         args: Some(json!({
-            "sub": "complete", "task": action.task_id, "result": action.result_file
+            "sub": "complete", "task": action.task_id, "resultJson": result_json
         })),
     })
     .unwrap_err();
@@ -255,9 +237,8 @@ fn build_complete_rejects_result_path_override() {
         })),
     })
     .unwrap_err();
-    assert_eq!(err.code, "E_PATH_OUTSIDE_REPO");
+    assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
 }
-
 #[test]
 fn build_complete_rejects_files_changed_that_disagree_with_git() {
     let dir = tempfile::tempdir().unwrap();
@@ -296,28 +277,22 @@ fn build_complete_rejects_files_changed_that_disagree_with_git() {
     let changed_path = dir.path().join(changed);
     std::fs::create_dir_all(changed_path.parent().unwrap()).unwrap();
     std::fs::write(changed_path, "task change").unwrap();
-    let result_path = dir.path().join(&action.result_file);
-    std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        result_path,
-        json!({
-            "taskId": action.task_id,
-            "status": "completed",
-            "evidence": [{
-                "type": "command-run", "command": "cargo test", "output": "expected failure",
-                "passed": false, "expectedFailure": true
-            }],
-            "verification": [],
-            "filesChanged": []
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let result_json = json!({
+        "taskId": action.task_id,
+        "status": "completed",
+        "evidence": [{
+            "type": "command-run", "command": "cargo test", "output": "expected failure",
+            "passed": false, "expectedFailure": true
+        }],
+        "verification": [],
+        "filesChanged": []
+    })
+    .to_string();
     let err = run(&CommandRequest {
         command: "build".into(),
         cwd,
         args: Some(json!({
-            "sub": "complete", "task": action.task_id, "result": action.result_file
+            "sub": "complete", "task": action.task_id, "resultJson": result_json
         })),
     })
     .unwrap_err();
@@ -369,28 +344,22 @@ fn build_next_accepts_existing_changes_from_completed_task() {
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         std::fs::write(target, "red test").unwrap();
     }
-    let result_path = dir.path().join(&first.result_file);
-    std::fs::create_dir_all(result_path.parent().unwrap()).unwrap();
-    std::fs::write(
-        result_path,
-        json!({
-            "taskId": first.task_id,
-            "status": "completed",
-            "evidence": [{
-                "type": "command-run", "command": "cargo test", "output": "expected failure",
-                "passed": false, "expectedFailure": true
-            }],
-            "verification": [],
-            "filesChanged": changed
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let result_json = json!({
+        "taskId": first.task_id,
+        "status": "completed",
+        "evidence": [{
+            "type": "command-run", "command": "cargo test", "output": "expected failure",
+            "passed": false, "expectedFailure": true
+        }],
+        "verification": [],
+        "filesChanged": changed
+    })
+    .to_string();
     run(&CommandRequest {
         command: "build".into(),
         cwd: cwd.clone(),
         args: Some(json!({
-            "sub": "complete", "task": first.task_id, "result": first.result_file
+            "sub": "complete", "task": first.task_id, "resultJson": result_json
         })),
     })
     .unwrap();

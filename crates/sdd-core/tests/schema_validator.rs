@@ -40,9 +40,9 @@ fn invalid_codebase_provider_rejected() {
 }
 
 #[test]
-fn all_five_schemas_registered() {
-    assert_eq!(SCHEMAS.len(), 5);
-    assert_eq!(sdd_core::schema::schema_names().len(), 5);
+fn all_six_schemas_registered() {
+    assert_eq!(SCHEMAS.len(), 6);
+    assert_eq!(sdd_core::schema::schema_names().len(), 6);
 }
 
 #[test]
@@ -100,6 +100,28 @@ fn valid_report_passes() {
         "summary": "全部通过",
         "passed": true,
         "issues": []
+    });
+    assert!(validate_json("report", &doc).is_ok());
+}
+
+#[test]
+fn report_schema_accepts_ocr_optional_fields() {
+    let doc = json!({
+        "kind": "review",
+        "summary": "ok",
+        "passed": true,
+        "changeId": "demo",
+        "issues": [{
+            "code": "OCR_FINDING",
+            "severity": "medium",
+            "message": "建议处理错误",
+            "file": "src/a.rs",
+            "category": "bug",
+            "startLine": 1,
+            "endLine": 1,
+            "suggestionCode": "return Err(err);",
+            "origin": "ocr"
+        }]
     });
     assert!(validate_json("report", &doc).is_ok());
 }

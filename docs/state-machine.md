@@ -7,6 +7,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 → BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
 ```
 
+
 ## 过程状态
 
 - 初始化与索引：`INITIALIZING`、`INDEXING`。
@@ -17,11 +18,11 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 这些值属于稳定枚举；当前实现会持久化 `INITIALIZING`、`NEW_STARTED`、`CLARIFYING`、`BUILDING`、`BUILD_WAITING_AGENT`、`FAILED` 和 `PAUSED`。其余过程值为兼容保留值，调用方不能假设每个命令都会短暂写入对应过程值。
 
-信息不足时 `new` 进入 `CLARIFYING`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；用户中断或需要扩大修复范围时进入 `PAUSED`。
+信息不足时 `new` 进入 `CLARIFYING`；`NEW_STARTED` 表示 `new` 已记录当前 `changeId`/`runId` 但尚未完成规格生成，恢复建议为 `sdd auto --resume`。用户可用 `sdd new --answers '<JSON>'` 或 `sdd auto --resume --answers '<JSON>'` 继续，不得新建第二个变更或直接编辑 `.sdd/`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；用户中断或需要扩大修复范围时进入 `PAUSED`。
 
 ## 恢复信息
 
-`.sdd/state.json` 提供以下恢复字段；命令只在对应失败或中断信息存在时写入：
+`.sdd/runtime.json` 的 `state` 节点提供以下恢复字段；命令只在对应失败或中断信息存在时写入：
 
 - `previousPhase`：最近一次稳定阶段。
 - `inProgressPhase`：被中断或失败的执行阶段。
@@ -29,11 +30,12 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 - `suggestedCommand`：`sdd status` 返回的下一步建议。
 - `tasks` / `artifacts`：任务和关键制品状态。
 
-命令重试必须通过相同的状态校验，不能直接编辑状态文件绕过前置条件。
+命令重试必须通过相同的状态校验，不能直接编辑 runtime 文件绕过前置条件。`NEW_STARTED` 缺少当前 `changeId` 或 `runId` 时返回 `E_STATE_CORRUPTED`，建议先执行 `sdd status`，不会猜测恢复对象。
+
 
 ## Loop 状态
 
-`activeLoop` 记录当前 auto 的 loopId、runId、状态和恢复标记；`.sdd/loop/runs/` 与事件文件记录每个步骤、决策和时间戳。
+`activeLoop` 与 loop 事件统一记录在 `.sdd/runtime.json` 的 `loop` 节点；任务运行结果记录在 `runs` 节点。
 
 `auto` 在以下边界停止：
 

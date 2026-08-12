@@ -24,7 +24,13 @@
             "enum": ["critical", "high", "medium", "low"]
           },
           "message": { "type": "string" },
-          "file": { "type": ["string", "null"] }
+          "file": { "type": ["string", "null"] },
+          "category": { "type": ["string", "null"] },
+          "startLine": { "type": ["integer", "null"], "minimum": 0 },
+          "endLine": { "type": ["integer", "null"], "minimum": 0 },
+          "existingCode": { "type": ["string", "null"] },
+          "suggestionCode": { "type": ["string", "null"] },
+          "origin": { "type": ["string", "null"] }
         }
       }
     }

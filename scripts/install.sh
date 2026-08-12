@@ -26,6 +26,7 @@ case "$(uname -s)" in
   *) EXE_SUFFIX="" ;;
 esac
 COMMANDS=("sdd${EXE_SUFFIX}" "sdd-harness${EXE_SUFFIX}")
+LEGACY_NPM_PACKAGES=("@sdd-harness/cli" "sdd-harness")
 
 # 加载 cargo 环境（rustup 默认安装位置）
 if [ -f "$HOME/.cargo/env" ]; then
@@ -86,15 +87,21 @@ if [ "$(command -v sdd || true)" != "$PREFIX/sdd${EXE_SUFFIX}" ]; then
   echo "警告: $PREFIX 不在 PATH 中，请将以下行加入 shell 配置（~/.zshrc / ~/.bashrc）："
   echo "  export PATH=\"$PREFIX:\$PATH\""
 fi
-"$PREFIX/sdd${EXE_SUFFIX}" --version >/dev/null 2>&1 || {
-  echo "错误: 安装验证失败，sdd 无法运行" >&2
-  exit 1
-}
+for command_name in "${COMMANDS[@]}"; do
+  "$PREFIX/$command_name" --version >/dev/null 2>&1 || {
+    echo "错误: 安装验证失败，$command_name 无法运行" >&2
+    exit 1
+  }
+done
 
 # 新二进制验证成功后再清理 npm 全局 link，避免失败回滚时丢失旧版 CLI。
 if [ "$CUSTOM_PREFIX" = false ] && command -v npm >/dev/null 2>&1; then
-  npm unlink -g sdd-harness >/dev/null 2>&1 || true
+  for package_name in "${LEGACY_NPM_PACKAGES[@]}"; do
+    npm uninstall -g "$package_name" >/dev/null 2>&1 || true
+  done
   NPM_PREFIX="$(npm prefix -g)"
+  NPM_ROOT="$(npm root -g)"
+  rmdir "$NPM_ROOT/@sdd-harness" 2>/dev/null || true
   if [ -n "$EXE_SUFFIX" ]; then
     NPM_BIN="$NPM_PREFIX"
   else

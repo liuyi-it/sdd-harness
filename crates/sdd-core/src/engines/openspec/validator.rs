@@ -1,4 +1,4 @@
-//! OpenSpec 规格校验器（翻译自 `packages/core/src/engines/openspec/validator.ts`）。
+//! OpenSpec 规格校验器（翻译自 早期 Node 实现）。
 
 use super::model::{SpecDocument, SpecValidationFailure};
 

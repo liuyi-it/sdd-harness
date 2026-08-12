@@ -1,6 +1,6 @@
 //! 受限文件扫描降级：GitNexus 与 CodeGraph 均不可用时使用。
 //!
-//! 翻译自 Node 版 `packages/core/src/codebase/codebase-adapter.ts` 的
+//! 翻译自 早期 Node 实现 的
 //! fallback()：目录遍历 + 排除目录 + 密钥文件跳过 + 关键字扫描 + 候选文件摘要。
 //! 结果显式标记 degraded=true，不被静默隐藏。
 

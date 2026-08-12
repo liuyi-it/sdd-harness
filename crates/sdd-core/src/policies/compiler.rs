@@ -1,6 +1,6 @@
 //! 策略编译：把策略 markdown 编译为规则列表。
 //!
-//! 翻译自 `packages/agent-policies/src/compiler.ts` 的规则提取语义：
+//! 翻译自 早期 Node 实现 的规则提取语义：
 //! 从 `## 规则` 或 `## Rules` 节提取 `- xxx` 列表项为规则。
 
 #[derive(Debug, Clone, PartialEq)]

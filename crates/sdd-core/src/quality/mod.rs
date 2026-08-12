@@ -1,5 +1,6 @@
 //! 质量层：可追溯性、报告与门禁检查。
 
+pub mod ocr;
 pub mod report;
 pub mod traceability;
 

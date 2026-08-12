@@ -1,9 +1,6 @@
-//! archive 命令：归档收敛为三个文件。
+//! archive 命令：将审核文档整合为 archive.md，并把归档模型写入 runtime.json。
 //!
-//! 翻译自 Node 版 `packages/core/src/commands/archive.ts`：
-//! - 重新验证报告摘要与文件范围
-//! - 收敛 .sdd/changes/<id>/ 为 archive.json + archive.md + .archived
-//! - 状态 ARCHIVED；中断后可再次执行收敛
+//! 归档后 `.sdd/changes/<id>/` 只保留 archive.md；所有机器归档数据留在 runtime.changes。
 
 use std::fs;
 use std::path::PathBuf;
@@ -16,8 +13,6 @@ use crate::error::SddError;
 use crate::quality::report::Report;
 use crate::state::file_lock::lock_sdd;
 use crate::state::StateStore;
-
-const ARCHIVE_MARKER: &str = ".archived";
 
 pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
     let timeout_ms = args
@@ -36,38 +31,34 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
     let change_id = current_change_id(&state)?;
     let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
 
-    // 已有归档标记 → 仅在组合哈希有效时幂等收敛到 ARCHIVED
-    if change_dir.join(ARCHIVE_MARKER).exists() {
-        validate_archive_marker(&change_dir)?;
-        let archive_json = require_file(&change_dir, "archive.json")?;
-        record_archive(cwd, &change_id, &archive_json)?;
+    if change_dir.join("archive.md").exists()
+        && crate::state::runtime_store::read_change_field(cwd, &change_id, "archive")?.is_some()
+    {
+        crate::state::artifact_store::verify_artifact(cwd, &format!("{change_id}:archive"))?;
         cleanup_change_dir(&change_dir)?;
         store.update(|s| {
             s.current_phase = "ARCHIVED".to_string();
             s.suggested_command = Some("sdd new <需求>".to_string());
             s.last_command = Some("sdd archive".to_string());
         })?;
-        return Ok(CommandResult {
-            ok: true,
-            state: "ARCHIVED".to_string(),
-            exit_code: 0,
-            change_id: Some(change_id),
-            next: Some("sdd new <需求>".to_string()),
-            data: None,
-            rendered: None,
-            warnings: None,
-            action_required: None,
-            error: None,
-        });
+        return archived_result(change_id);
     }
 
     let spec = require_file(&change_dir, "spec.md")?;
-    let design = require_file(&change_dir, "design.md")?;
-    let plan_raw = require_file(&change_dir, "plan.json")?;
-    let plan: serde_json::Value = serde_json::from_str(&plan_raw)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("plan.json 解析失败：{e}")))?;
-    let verify_report = require_report(&change_dir, "verify-report.json", "verify")?;
-    let review_report = require_report(&change_dir, "review-report.json", "review")?;
+    let plan_md = require_file(&change_dir, "plan.md")?;
+    let tasks_md = require_file(&change_dir, "tasks.md")?;
+    let spec_value = crate::state::runtime_store::read_change_field(cwd, &change_id, "spec")?
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
+    let design = crate::state::runtime_store::read_change_field(cwd, &change_id, "design")?
+        .or_else(|| spec_value.get("design").cloned())
+        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 design"))?;
+    let plan = crate::state::runtime_store::read_change_field(cwd, &change_id, "plan")?
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
+    let reports = crate::state::runtime_store::read_change_field(cwd, &change_id, "reports")?
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 reports"))?;
+    let verify_report = parse_report(&reports, "verify")?;
+    let review_report = parse_report(&reports, "review")?;
     if !verify_report.passed {
         return Err(
             SddError::new("E_VERIFY_REQUIRED", "验证报告未通过，禁止归档").with_next("sdd verify"),
@@ -129,25 +120,16 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
     }
     for key in [
         format!("{change_id}:spec"),
-        format!("{change_id}:spec-md"),
         format!("{change_id}:design"),
         format!("{change_id}:plan"),
+        format!("{change_id}:plan-md"),
+        format!("{change_id}:tasks-md"),
         format!("{change_id}:verify-report"),
         format!("{change_id}:review-report"),
     ] {
         crate::state::artifact_store::verify_artifact(cwd, &key)?;
     }
-    let run_id = state
-        .current_run_id
-        .as_deref()
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "状态缺少 currentRunId"))?;
-    for result in &task_results {
-        let task_id = result
-            .get("taskId")
-            .and_then(|value| value.as_str())
-            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "任务结果缺少 taskId"))?;
-        crate::state::artifact_store::verify_artifact(cwd, &format!("{run_id}:{task_id}:result"))?;
-    }
+
     let git = if let Some(workspace) = &state.workspace {
         let current = crate::git::GitInspector::snapshot(&business_cwd)?;
         Some(json!({
@@ -163,70 +145,70 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
         None
     };
 
-    // 归档内容
+    let archived_at = crate::state::state_store::now_iso();
     let archive_md = [
-        "# 归档".to_string(),
+        "# 需求归档".to_string(),
         String::new(),
-        format!("## Change: {change_id}"),
-        String::new(),
-        "## 规格".to_string(),
-        String::new(),
-        spec.clone(),
-        String::new(),
-        "## 设计".to_string(),
-        String::new(),
-        design.clone(),
-        String::new(),
-        "## 计划".to_string(),
-        String::new(),
-        plan.get("tasksMarkdown")
-            .and_then(|value| value.as_str())
-            .unwrap_or("（plan.json 未包含 tasksMarkdown）")
-            .to_string(),
-        String::new(),
-        "## 验证报告".to_string(),
-        String::new(),
+        format!("- 变更：{change_id}"),
         format!(
-            "- passed: {}\n- summary: {}",
-            verify_report.passed, verify_report.summary
+            "- 目标：{}",
+            spec_value
+                .get("requirement")
+                .and_then(|value| value.as_str())
+                .unwrap_or("未记录")
         ),
+        format!("- 任务：{} 个", tasks.len()),
         String::new(),
-        "## 审查报告".to_string(),
+        "## 需求规格".to_string(),
         String::new(),
-        format!(
-            "- passed: {}\n- summary: {}",
-            review_report.passed, review_report.summary
-        ),
+        spec.trim().to_string(),
+        String::new(),
+        "## 实施设计".to_string(),
+        String::new(),
+        design.trim().to_string(),
+        String::new(),
+        "## 实施计划".to_string(),
+        String::new(),
+        plan_md.trim().to_string(),
+        String::new(),
+        "## 开发任务".to_string(),
+        String::new(),
+        tasks_md.trim().to_string(),
+        String::new(),
+        "## 验证结果".to_string(),
+        String::new(),
+        format!("- 结果：{}", verify_report.summary),
+        String::new(),
+        "## 审查结果".to_string(),
+        String::new(),
+        format!("- 结果：{}", review_report.summary),
+        String::new(),
+        "## 归档时间".to_string(),
+        String::new(),
+        archived_at.clone(),
     ]
-    .join("\n");
-
-    let archive_json = json!({
+    .join("\n")
+        + "\n";
+    let archive_value = json!({
         "schemaVersion": "2.0.0",
         "changeId": change_id,
-        "spec": spec,
+        "spec": spec_value,
         "design": design,
         "plan": plan,
+        "planDocument": plan_md,
+        "tasksDocument": tasks_md,
         "taskResults": task_results,
         "verifyReport": verify_report,
         "reviewReport": review_report,
         "git": git,
-        "archivedAt": crate::state::state_store::now_iso(),
+        "archivedAt": archived_at,
     });
-
+    let archive_text = serde_json::to_string_pretty(&archive_value)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化归档模型失败：{e}")))?;
     fs::write(change_dir.join("archive.md"), &archive_md)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 archive.md 失败：{e}")))?;
-    let archive_json_text = serde_json::to_string_pretty(&archive_json)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化失败：{e}")))?;
-    fs::write(change_dir.join("archive.json"), &archive_json_text)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 archive.json 失败：{e}")))?;
-
-    // 写组合哈希标记
-    let combined = format!("{archive_md}{archive_json_text}");
-    let marker = crate::policies::digest::digest(&combined);
-    fs::write(change_dir.join(ARCHIVE_MARKER), marker)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入归档标记失败：{e}")))?;
-    record_archive(cwd, &change_id, &archive_json_text)?;
-
+    crate::state::runtime_store::write_change_field(cwd, &change_id, "archive", archive_value)?;
+    record_archive(cwd, &change_id, &archive_text)?;
     cleanup_change_dir(&change_dir)?;
 
     store.update(|s| {
@@ -237,6 +219,10 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
         s.last_error = None;
     })?;
 
+    archived_result(change_id)
+}
+
+fn archived_result(change_id: String) -> Result<CommandResult, SddError> {
     Ok(CommandResult {
         ok: true,
         state: "ARCHIVED".to_string(),
@@ -256,7 +242,7 @@ fn record_archive(cwd: &str, change_id: &str, content: &str) -> Result<(), SddEr
         cwd,
         &format!("{change_id}:archive"),
         "summary",
-        &format!(".sdd/changes/{change_id}/archive.json"),
+        &format!("runtime://changes/{change_id}/archive"),
         content,
         json!({ "verifyPassed": true, "reviewPassed": true }),
     )
@@ -267,18 +253,19 @@ fn require_file(change_dir: &std::path::Path, name: &str) -> Result<String, SddE
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 {name} 失败：{e}")))
 }
 
-fn require_report(
-    change_dir: &std::path::Path,
-    name: &str,
-    kind: &str,
-) -> Result<Report, SddError> {
-    let raw = require_file(change_dir, name)?;
-    let report: Report = serde_json::from_str(&raw)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("{name} 解析失败：{e}")))?;
+fn parse_report(reports: &serde_json::Value, kind: &str) -> Result<Report, SddError> {
+    let value = reports.get(kind).cloned().ok_or_else(|| {
+        SddError::new(
+            "E_MISSING_ARTIFACT",
+            &format!("runtime.json 缺少 {kind} 报告"),
+        )
+    })?;
+    let report: Report = serde_json::from_value(value)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("{kind} 报告解析失败：{e}")))?;
     if report.kind != kind {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
-            &format!("{name} 的 kind 应为 {kind}"),
+            &format!("{kind} 报告 kind 不匹配"),
         ));
     }
     Ok(report)
@@ -290,26 +277,12 @@ fn collect_task_results(
 ) -> Result<Vec<serde_json::Value>, SddError> {
     let run_id =
         run_id.ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "状态缺少 currentRunId"))?;
-    let dir = PathBuf::from(cwd)
-        .join(".sdd/runs")
-        .join(run_id)
-        .join("tasks");
-    let mut results = Vec::new();
-    for entry in fs::read_dir(&dir)
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取任务结果失败：{e}")))?
-    {
-        let entry = entry.map_err(|e| {
-            SddError::new("E_STATE_CORRUPTED", &format!("读取任务结果条目失败：{e}"))
-        })?;
-        if entry.path().extension().and_then(|ext| ext.to_str()) != Some("json") {
-            continue;
-        }
-        let raw = fs::read_to_string(entry.path())
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("读取任务结果失败：{e}")))?;
-        let value: serde_json::Value = serde_json::from_str(&raw)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("任务结果解析失败：{e}")))?;
-        results.push(value);
-    }
+    let tasks = crate::state::runtime_store::read_run_field(cwd, run_id, "tasks")?
+        .unwrap_or_else(|| json!({}));
+    let mut results: Vec<serde_json::Value> = tasks
+        .as_object()
+        .map(|entries| entries.values().cloned().collect())
+        .unwrap_or_default();
     results.sort_by_key(|value| {
         value
             .get("taskId")
@@ -320,20 +293,6 @@ fn collect_task_results(
     Ok(results)
 }
 
-fn validate_archive_marker(change_dir: &std::path::Path) -> Result<(), SddError> {
-    let archive_md = require_file(change_dir, "archive.md")?;
-    let archive_json = require_file(change_dir, "archive.json")?;
-    let marker = require_file(change_dir, ARCHIVE_MARKER)?;
-    let expected = crate::policies::digest::digest(&format!("{archive_md}{archive_json}"));
-    if marker.trim() != expected {
-        return Err(SddError::new(
-            "E_COMPONENT_INTEGRITY_FAILED",
-            "归档标记与 archive.json/archive.md 内容不一致",
-        ));
-    }
-    Ok(())
-}
-
 fn cleanup_change_dir(change_dir: &std::path::Path) -> Result<(), SddError> {
     for entry in fs::read_dir(change_dir)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("读取 change 目录失败：{e}")))?
@@ -342,7 +301,7 @@ fn cleanup_change_dir(change_dir: &std::path::Path) -> Result<(), SddError> {
             SddError::new("E_STATE_CORRUPTED", &format!("读取 change 条目失败：{e}"))
         })?;
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == "archive.json" || name == "archive.md" || name == ARCHIVE_MARKER {
+        if name == "archive.md" {
             continue;
         }
         let result = if entry.path().is_dir() {

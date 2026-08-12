@@ -3,6 +3,7 @@
 pub mod archive;
 pub mod auto;
 pub mod build;
+pub mod change;
 pub mod codebase;
 pub mod design;
 pub mod init;

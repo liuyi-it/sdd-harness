@@ -1,6 +1,6 @@
 //! 策略解析：从策略目录读取并编译受控 Policy。
 //!
-//! 翻译自 `packages/agent-policies/src/resolver.ts`：
+//! 翻译自 早期 Node 实现：
 //! 按阶段返回适用的策略包（含摘要）。
 
 use std::path::PathBuf;

@@ -2,7 +2,7 @@
 //!
 //! Rust 版不托管外部服务进程，而是通过 `std::process::Command`
 //! 子进程调用 gitnexus/codegraph CLI。
-//! 语义对齐 Node 版 `packages/core/src/codebase/mcp-query.ts` 的
+//! 语义对齐 早期 Node 实现 的
 //! intent 枚举与结果结构（provider/degraded/confidence/reason/payload）。
 
 use std::path::PathBuf;
