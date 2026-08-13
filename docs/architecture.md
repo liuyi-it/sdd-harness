@@ -3,18 +3,18 @@
 ## 分层与依赖
 
 ```text
-OMP Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
+OMP / OpenCode Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
                                       ├── commands / state / quality / security
                                       ├── git / engines / protocol / policies
-                                      └── knowledge（GitNexus / CodeGraph）
+                                      └── knowledge（CodeGraph）
 ```
 
 - `crates/sdd-cli`：clap 解析参数、路由命令并渲染 `CommandResult`。
 - `crates/sdd-core`：唯一状态机与质量门禁执行层。
 - `crates/sdd-core/src/protocol`：定义 Agent 行动要求、结果和约束结构。
 - `crates/sdd-core/src/policies`：按阶段解析 Policy，并生成可校验摘要。
-- `crates/sdd-core/src/knowledge`：GitNexus / CodeGraph 双引擎探测、索引、路由与降级。
-- `assets/adapters/omp/*`：把 OMP Skill、精简 slash 命令集和 subagent 翻译为 CLI 调用，不直接修改状态（编译期嵌入二进制）。
+- `crates/sdd-core/src/knowledge`：CodeGraph 探测、索引、查询与降级。
+- `assets/adapters/omp/*`、`assets/adapters/opencode/*`：把各 Agent 的 Skill、命令和 subagent 翻译为 CLI 调用，不直接修改状态（编译期嵌入二进制）。
 
 Core 是唯一推进状态机的入口，外部 Agent 或工具不能绕过 Core 推进阶段。
 
@@ -79,7 +79,7 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务�
 
 ## 代码库理解与降级
 
-初始化时自动探测 PATH 中的 `gitnexus` 与 `codegraph` 命令，对可用引擎各自索引（`.gitnexus/`、`.codegraph/` 落在业务项目根）。查询按 intent 路由（impact/context/related-files 等走 GitNexus 优先；explore/callers/callees 走 CodeGraph 优先），两级引擎均不可用或失败时使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。
+初始化时自动探测 PATH 中的 `codegraph` 命令并索引 `.codegraph/`。所有 intent 都交给 CodeGraph 查询；CodeGraph 不可用或失败时使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。
 
 仓库内容和引擎输出都按不可信数据处理，进入 Prompt 前必须包裹边界，不能覆盖系统约束或扩大任务权限。
 

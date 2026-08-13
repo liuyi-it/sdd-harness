@@ -1,6 +1,6 @@
 # CLI 命令参考
 
-`sdd` 是 sdd-harness 的命令行入口，`sdd-harness` 是等价别名。支持 macOS、Windows（Git Bash）和 Linux。预编译二进制从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载，运行时不需要 Rust；从源码构建才需要 Rust 工具链。可选的 CodeGraph 独立 CLI 不要求 Node.js；通过 npm 使用 GitNexus 时还需 Node.js 22 或更高版本。
+`sdd` 是 sdd-harness 的命令行入口，`sdd-harness` 是等价别名。支持 macOS、Windows（Git Bash）和 Linux。预编译二进制从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载，运行时不需要 Rust；从源码构建才需要 Rust 工具链。可选的 CodeGraph 独立 CLI 不要求 Node.js。
 
 ## 安装
 
@@ -16,7 +16,7 @@ bash scripts/install.sh
 
 重复安装会先备份并清除旧版全局 CLI，再通过 `cargo build --release` 构建并注册命令；安装后会验证命令可运行。失败安装会恢复原版本。可用 `PREFIX=/path bash scripts/install.sh` 指定安装目录。`bash scripts/uninstall.sh` 执行完整卸载，但不会删除业务项目中的 `.sdd/` 用户数据。
 
-在业务项目中重新执行 `sdd init` 会刷新 OMP 接入文件和代码库索引；工作流状态、变更、运行、归档与有效用户配置会保留。
+在业务项目中重新执行 `sdd init` 会先让终端用户选择 OMP 或 OpenCode，再刷新对应接入文件和代码库索引；工作流状态、变更、运行、归档与有效用户配置会保留。Agent 内部初始化不显示选择，使用宿主自己的初始化命令。
 
 所有工作流状态和制品都写入目标项目的 `.sdd/`。
 
@@ -39,7 +39,7 @@ bash scripts/install.sh
 
 ### `sdd init`
 
-初始化 `.sdd/`、配置、代码库索引和唯一的 OMP 原生接入文件。
+初始化 `.sdd/`、配置、代码库索引和所选 Agent 原生接入文件；终端交互选择 Agent，不能通过 `--agent` 参数选择。
 空项目可用 `--structurePolicy free-design|user-defined` 固化目录结构策略；未指定时初始化继续完成并返回 `W_EMPTY_PROJECT`。
 
 ```bash
@@ -172,7 +172,7 @@ sdd auto --loop-status --json
 | 命令                        | 作用                        |
 | --------------------------- | --------------------------- |
 | `sdd codebase status`       | 显示提供者、模式和索引状态  |
-| `sdd codebase doctor`       | 诊断双引擎安装、索引状态和降级原因 |
+| `sdd codebase doctor`       | 诊断 CodeGraph 安装、索引状态和降级原因 |
 | `sdd codebase index`        | 触发代码库索引              |
 | `sdd codebase query <查询>` | 执行结构化代码库查询        |
 | `sdd codebase rebuild`      | 重建索引                    |
@@ -181,4 +181,4 @@ sdd auto --loop-status --json
 sdd codebase query "order cancellation" --intent impact --json
 ```
 
-GitNexus / CodeGraph 均不可用时，命令会返回显式 warning 并降级到 `fallback-file-scan`；使用 `sdd codebase doctor` 查看原因。
+CodeGraph 不可用时，命令会返回显式 warning 并降级到 `fallback-file-scan`；使用 `sdd codebase doctor` 查看原因。

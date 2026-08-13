@@ -79,7 +79,7 @@ fn action_required_serializes_camel_case() {
         }],
         result_transport: "inline-json".to_string(),
         codebase: CodebaseProviderInfo {
-            provider: "gitnexus".to_string(),
+            provider: "codegraph".to_string(),
             degraded: false,
         },
         policy_bundle: None,
@@ -94,11 +94,11 @@ fn action_required_serializes_camel_case() {
     assert!(json.get("resultFile").is_none());
     let codebase = json.get("codebase").unwrap();
     assert!(codebase.get("provider").is_some());
-    // provider 契约：gitnexus | codegraph | fallback-file-scan
+    // provider 契约：codegraph | fallback-file-scan
     assert!(codebase
         .get("provider")
         .and_then(|v| v.as_str())
-        .map(|p| ["gitnexus", "codegraph", "fallback-file-scan"].contains(&p))
+        .map(|p| ["codegraph", "fallback-file-scan"].contains(&p))
         .unwrap_or(false));
 }
 

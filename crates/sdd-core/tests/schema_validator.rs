@@ -14,7 +14,7 @@ fn valid_state_passes() {
         "currentRunId": null,
         "currentPhase": "INDEX_READY",
         "indexStatus": "INDEX_READY",
-        "codebaseProvider": "gitnexus",
+        "codebaseProvider": "codegraph",
         "degraded": false,
         "degradedReason": null,
         "tasks": {},

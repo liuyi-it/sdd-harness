@@ -1,7 +1,7 @@
 //! codebase 命令：代码库上下文管理（status/doctor/index/query/rebuild）。
 //!
 //! 翻译自 早期 Node 实现 的分发与校验语义；
-//! 底层由 knowledge 模块（GitNexus/CodeGraph）提供能力。
+//! 底层由 knowledge 模块（CodeGraph）提供能力。
 
 use crate::contracts::CommandResult;
 use crate::error::SddError;
@@ -46,7 +46,7 @@ pub fn run_codebase(
         "status" => serde_json::json!({ "providers": router.status(cwd) }),
         "doctor" => serde_json::json!({
             "providers": router.status(cwd),
-            "note": "探测 PATH 中的 gitnexus 与 codegraph 命令；均不可用时降级受限文件扫描",
+            "note": "探测 PATH 中的 codegraph 命令；不可用时降级受限文件扫描",
         }),
         "index" => {
             let providers = router.initialize(cwd, timeout_ms)?;
@@ -118,7 +118,7 @@ pub fn run_codebase(
         warnings: degraded.then(|| {
             vec![serde_json::json!({
                 "code": "W_KNOWLEDGE_UNAVAILABLE",
-                "message": "GitNexus 与 CodeGraph 均未提供可用索引，已降级为受限文件扫描",
+                "message": "CodeGraph 未提供可用索引，已降级为受限文件扫描",
                 "next": "sdd codebase doctor",
             })]
         }),
@@ -142,7 +142,7 @@ pub(crate) fn record_index_artifacts(cwd: &str) -> Result<(), SddError> {
         "summary",
         "runtime://index/diagnostics",
         &diagnostics_text,
-        serde_json::json!({ "providers": ["gitnexus", "codegraph"] }),
+        serde_json::json!({ "providers": ["codegraph"] }),
     )?;
     crate::state::artifact_store::record_artifact(
         cwd,
@@ -150,6 +150,6 @@ pub(crate) fn record_index_artifacts(cwd: &str) -> Result<(), SddError> {
         "summary",
         "runtime://index/summary",
         &summary,
-        serde_json::json!({ "providers": ["gitnexus", "codegraph"] }),
+        serde_json::json!({ "providers": ["codegraph"] }),
     )
 }

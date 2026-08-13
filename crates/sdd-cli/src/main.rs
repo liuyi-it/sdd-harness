@@ -5,6 +5,7 @@
 //! - 命令：init/status/new/design/plan/build/verify/review/archive/auto/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
 
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
@@ -53,6 +54,9 @@ enum Command {
         /// 空项目目录结构策略
         #[arg(long = "structurePolicy", alias = "structure-policy", value_parser = ["free-design", "user-defined"])]
         structure_policy: Option<String>,
+        /// 宿主适配器（仅供宿主 Agent 内部传入，终端隐藏）
+        #[arg(long = "host-adapter", hide = true)]
+        host_adapter: Option<String>,
     },
     /// 显示当前 SDD 状态
     Status {
@@ -168,7 +172,10 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (command, args) = build_request(&cli);
+    let init_agent = match resolve_init_agent(&cli) {
+        Ok(agent) => agent,
+        Err(error) => return render_error_and_exit(&error, cli.global.json, "FAILED"),
+    };
     let cwd = match &cli.global.cwd {
         Some(cwd) => cwd.clone(),
         None => match std::env::current_dir() {
@@ -180,6 +187,7 @@ fn main() -> ExitCode {
             }
         },
     };
+    let (command, args) = build_request(&cli, init_agent.as_deref());
     let args = if args.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         None
     } else {
@@ -197,6 +205,69 @@ fn main() -> ExitCode {
                 .unwrap_or_else(|_| "FAILED".to_string());
             render_error_and_exit(&error, cli.global.json, &state)
         }
+    }
+}
+
+/// 终端初始化必须让用户选择宿主；宿主 Agent 通过隐藏选项传入自己的适配器。
+fn resolve_init_agent(cli: &Cli) -> Result<Option<String>, SddError> {
+    let Command::Init { host_adapter, .. } = &cli.command else {
+        return Ok(None);
+    };
+    if let Some(agent) = host_adapter {
+        return validate_agent(agent).map(Some);
+    }
+    if cli.global.non_interactive {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "非交互初始化必须由宿主 Agent 注入当前适配器",
+        ));
+    }
+    select_agent_interactively().map(Some)
+}
+
+fn validate_agent(agent: &str) -> Result<String, SddError> {
+    match agent.trim().to_ascii_lowercase().as_str() {
+        "omp" => Ok("omp".to_string()),
+        "opencode" => Ok("opencode".to_string()),
+        _ => Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "宿主 Agent 仅支持 OMP 或 OpenCode",
+        )),
+    }
+}
+
+fn select_agent_interactively() -> Result<String, SddError> {
+    eprintln!("请选择要接入的 Agent：");
+    eprintln!("  1) OMP (Oh My Pi)");
+    eprintln!("  2) OpenCode");
+    eprint!("请输入编号 [1/2]: ");
+    io::stderr().flush().map_err(|error| {
+        SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            &format!("显示选择提示失败：{error}"),
+        )
+    })?;
+
+    let mut choice = String::new();
+    let read = io::stdin().read_line(&mut choice).map_err(|error| {
+        SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            &format!("读取 Agent 选择失败：{error}"),
+        )
+    })?;
+    if read == 0 {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "未读取到 Agent 选择；请输入 1 选择 OMP，或 2 选择 OpenCode",
+        ));
+    }
+    match choice.trim().to_ascii_lowercase().as_str() {
+        "1" | "omp" => Ok("omp".to_string()),
+        "2" | "opencode" => Ok("opencode".to_string()),
+        _ => Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "Agent 选择无效；请输入 1 选择 OMP，或 2 选择 OpenCode",
+        )),
     }
 }
 
@@ -300,7 +371,7 @@ fn render_text_error(error: &SddError) -> String {
 }
 
 /// 把 CLI 参数结构转换为 Core 的 args JSON（对齐 Node 版 extraArgs 键名）
-fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
+fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_json::Value) {
     let mut args = serde_json::Map::new();
     let g = &cli.global;
     if let Some(change) = &g.change {
@@ -317,9 +388,15 @@ fn build_request(cli: &Cli) -> (&'static str, serde_json::Value) {
     }
 
     let command: &'static str = match &cli.command {
-        Command::Init { structure_policy } => {
+        Command::Init {
+            structure_policy,
+            host_adapter: _,
+        } => {
             if let Some(policy) = structure_policy {
                 args.insert("structurePolicy".into(), serde_json::json!(policy));
+            }
+            if let Some(agent) = init_agent {
+                args.insert("hostAdapter".into(), serde_json::json!(agent));
             }
             "init"
         }

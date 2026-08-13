@@ -38,8 +38,14 @@ fn init_creates_sdd_and_index_ready() {
     assert!(runtime["index"]["diagnostics"].is_array());
     assert!(!dir.path().join(".sdd/index").exists());
     assert!(dir.path().join(".omp/skills/sdd-harness/SKILL.md").exists());
+    assert!(dir.path().join(".omp/config.yml").exists());
     assert!(dir.path().join(".omp/commands/sdd.md").exists());
+    assert!(dir.path().join(".omp/agents/sdd-worker-simple.md").exists());
     assert!(dir.path().join(".omp/agents/sdd-worker.md").exists());
+    assert!(dir
+        .path()
+        .join(".omp/agents/sdd-worker-complex.md")
+        .exists());
     for legacy in [
         "codebase-summary.md",
         "package-structure.md",
@@ -87,7 +93,7 @@ fn build_on_uninitialized_returns_not_initialized() {
 }
 
 #[test]
-fn codebase_status_returns_two_providers() {
+fn codebase_status_returns_codegraph_provider() {
     let dir = tempfile::tempdir().unwrap();
     let result = sdd_core::commands::codebase::run_codebase(
         dir.path().to_string_lossy().as_ref(),
@@ -100,7 +106,7 @@ fn codebase_status_returns_two_providers() {
         data.get("providers")
             .and_then(|v| v.as_array())
             .map(|a| a.len()),
-        Some(2)
+        Some(1)
     );
 }
 

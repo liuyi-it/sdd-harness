@@ -1,7 +1,7 @@
 //! 对外稳定契约：命令集合、阶段枚举、错误码到退出码映射、请求/响应结构。
 //!
 //! 翻译自 早期 Node 实现，字段名与枚举值保持一致。
-//! `codebase.provider` 使用 `gitnexus | codegraph | fallback-file-scan`。
+//! `codebase.provider` 使用 `codegraph | fallback-file-scan`。
 
 use serde::{Deserialize, Serialize};
 
@@ -100,7 +100,7 @@ pub struct VerificationCommand {
     pub args: Vec<String>,
 }
 
-/// 知识图谱提供方信息（契约变更：provider 为 gitnexus/codegraph/fallback-file-scan）
+/// 知识图谱提供方信息（provider 为 codegraph/fallback-file-scan）
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodebaseProviderInfo {

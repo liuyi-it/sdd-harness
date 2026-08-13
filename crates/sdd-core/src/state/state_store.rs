@@ -100,7 +100,7 @@ impl WorkflowState {
             pending_agent_task: None,
             current_phase: "NOT_INITIALIZED".to_string(),
             index_status: INDEX_STATUS_MISSING.to_string(),
-            codebase_provider: "gitnexus".to_string(),
+            codebase_provider: "codegraph".to_string(),
             degraded: false,
             degraded_reason: None,
             last_command: None,

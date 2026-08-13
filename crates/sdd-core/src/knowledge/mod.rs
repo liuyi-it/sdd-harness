@@ -1,8 +1,7 @@
-//! 知识图谱适配层：GitNexus + CodeGraph 双引擎。
+//! 知识图谱适配层：CodeGraph 与受限文件扫描降级。
 
 pub mod codegraph;
 pub mod fallback_scan;
-pub mod gitnexus;
 pub mod provider;
 pub mod router;
 

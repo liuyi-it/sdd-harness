@@ -5,7 +5,7 @@
 //! - complete：校验结果结构/任务身份/TDD evidence，写运行级结果并推进任务状态
 //!
 //! 契约变更点：actionRequired.codebase.provider 为
-//! gitnexus | codegraph | fallback-file-scan。
+//! codegraph | fallback-file-scan。
 
 use std::fs;
 use std::path::PathBuf;

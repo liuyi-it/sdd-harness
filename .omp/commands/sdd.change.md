@@ -2,6 +2,6 @@
 description: 修订已有 SDD 需求并同步变更文档
 ---
 
-使用 `sdd change <change-id> <新需求>` 修订当前活动且未归档的变更。先向用户确认完整的新需求；不要直接编辑 `.sdd/`。成功后检查返回的修订标识、同步文档和差异快照，然后按 `next: sdd design` 重新生成设计与计划。若返回需求澄清问题，只询问必要问题；若返回冲突，要求重新读取当前修订基线后重试。
+使用 `sdd change <change-id> <新需求>` 修改当前活动且未归档的变更。先确认完整的新需求；不要直接编辑 `.sdd/`。成功后确认当前规格和提案已更新、旧的 design/plan/tasks 已清除，再按 `next: sdd design` 重新生成设计与计划。不要查找或生成需求级 revision、backup、diff、snapshot 文件；runtime 的崩溃恢复文件不属于需求历史，Git 负责需求历史。
 
 $ARGUMENTS

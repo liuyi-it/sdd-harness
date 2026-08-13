@@ -1,6 +1,6 @@
 //! init 命令：创建 `.sdd/` 基础目录、写入默认配置并初始化状态。
 //!
-//! 所有机器数据写入 `.sdd/runtime.json`；项目接入文件仍写入 `.omp/`。
+//! 所有机器数据写入 `.sdd/runtime.json`；项目接入文件写入所选 Agent 目录。
 //! 知识图谱索引由 knowledge 模块接入，不托管外部服务进程。
 
 use std::fs;
@@ -26,12 +26,7 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         .map(|s| (s * 1000.0) as u64);
     let _guard = lock_sdd(cwd, "sdd init", None, timeout_ms)?;
 
-    if args.and_then(|value| value.get("agent")).is_some() {
-        return Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            "项目只支持 OMP 原生接入，sdd init 不接受 Agent 选择",
-        ));
-    }
+    let adapter = requested_adapter(args)?;
 
     let sdd_root = PathBuf::from(cwd).join(".sdd");
     fs::create_dir_all(&sdd_root)
@@ -62,10 +57,9 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     }
 
     // 写入默认配置到 runtime.json；重复 init 仅更新显式指定的结构策略。
-    write_default_config(cwd, &sdd_root, structure_policy)?;
+    write_default_config(cwd, &sdd_root, structure_policy, &adapter)?;
 
-    // 项目只支持 OMP 原生接入。
-    let adapter_files = crate::assets::write_adapter_files(cwd)?;
+    let adapter_files = crate::assets::write_adapter_files_for(cwd, &adapter)?;
 
     // 空项目检测：无源文件时附加 warning（一期不做 CLARIFYING 暂停）
     let empty_project = is_empty_project(cwd);
@@ -127,8 +121,7 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
             .unwrap_or("fallback-file-scan")
             .to_string();
         s.degraded = degraded;
-        s.degraded_reason =
-            degraded.then(|| "GitNexus 与 CodeGraph 均未成功索引，使用受限文件扫描".to_string());
+        s.degraded_reason = degraded.then(|| "CodeGraph 未成功索引，使用受限文件扫描".to_string());
         s.last_command = Some("sdd init".to_string());
         s.last_error = None;
     })?;
@@ -157,6 +150,7 @@ fn write_default_config(
     cwd: &str,
     _sdd_root: &std::path::Path,
     structure_policy: Option<&str>,
+    adapter: &str,
 ) -> Result<(), SddError> {
     let project_name = cwd
         .trim_end_matches(['/', '\\'])
@@ -169,9 +163,9 @@ fn write_default_config(
         config = json!({
             "schemaVersion": CONFIG_SCHEMA_VERSION,
             "project": { "name": project_name },
-            "plugins": { "omp": { "enabled": true } },
+            "plugins": {},
             "codebase": {
-                "providers": ["gitnexus", "codegraph"],
+                "providers": ["codegraph"],
                 "fallbackProvider": "file-scan",
                 "autoIndexOnInit": true
             },
@@ -206,11 +200,18 @@ fn write_default_config(
             "runtime.json 的 config 必须包含 workflow 对象",
         ));
     }
-    let omp_plugin = config
-        .pointer("/plugins/omp")
-        .cloned()
-        .unwrap_or_else(|| json!({ "enabled": true }));
-    config["plugins"] = json!({ "omp": omp_plugin });
+    let plugins = config
+        .get_mut("plugins")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                "runtime.json 的 config 缺少 plugins 对象",
+            )
+        })?;
+    plugins
+        .entry(adapter.to_string())
+        .or_insert_with(|| json!({ "enabled": true }));
     if let Some(policy) = structure_policy {
         config
             .get_mut("workflow")
@@ -224,6 +225,33 @@ fn write_default_config(
             .insert("structurePolicy".to_string(), json!(policy));
     }
     crate::state::runtime_store::write_config(cwd, config)
+}
+
+/// 解析并校验宿主注入的 Agent 适配器。
+fn requested_adapter(args: Option<&serde_json::Value>) -> Result<String, SddError> {
+    if args.and_then(|value| value.get("agent")).is_some() {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "不再接受 Agent 参数；终端请交互选择，宿主 Agent 请注入当前适配器",
+        ));
+    }
+    let raw = match args.and_then(|value| value.get("hostAdapter")) {
+        None => "omp",
+        Some(value) => value.as_str().ok_or_else(|| {
+            SddError::new(
+                "E_INVALID_PHASE_COMMAND",
+                "Agent 必须是字符串；仅支持 omp 或 opencode",
+            )
+        })?,
+    };
+    let adapter = raw.trim();
+    if !matches!(adapter, "omp" | "opencode") {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "Agent 仅支持 omp 或 opencode",
+        ));
+    }
+    Ok(adapter.to_string())
 }
 
 /// 空项目检测：无 README/源文件/包清单时视为空项目

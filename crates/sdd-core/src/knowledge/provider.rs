@@ -1,7 +1,7 @@
-//! 知识图谱 Provider 抽象：GitNexus / CodeGraph / 受限文件扫描。
+//! 知识图谱 Provider 抽象：CodeGraph / 受限文件扫描。
 //!
 //! Rust 版不托管外部服务进程，而是通过 `std::process::Command`
-//! 子进程调用 gitnexus/codegraph CLI。
+//! 子进程调用 CodeGraph CLI。
 //! 语义对齐 早期 Node 实现 的
 //! intent 枚举与结果结构（provider/degraded/confidence/reason/payload）。
 

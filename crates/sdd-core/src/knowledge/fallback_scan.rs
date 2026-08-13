@@ -1,4 +1,4 @@
-//! 受限文件扫描降级：GitNexus 与 CodeGraph 均不可用时使用。
+//! 受限文件扫描降级：CodeGraph 不可用时使用。
 //!
 //! 翻译自 早期 Node 实现 的
 //! fallback()：目录遍历 + 排除目录 + 密钥文件跳过 + 关键字扫描 + 候选文件摘要。
@@ -67,7 +67,7 @@ pub fn fallback_scan(root: &str, intent: KnowledgeIntent, _query: &str) -> Query
         provider: "fallback-file-scan",
         degraded: true,
         confidence: 0.3,
-        reason: Some("GitNexus 与 CodeGraph 均不可用".to_string()),
+        reason: Some("CodeGraph 不可用".to_string()),
         payload,
     }
 }

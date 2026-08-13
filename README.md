@@ -5,9 +5,9 @@
 ## 核心能力
 
 - CLI-first：`sdd` 是唯一确定性入口，Core 是唯一状态与门禁执行层。
-- OMP 原生：只内置 Oh My Pi 项目级 Skill、`/sdd` 与 6 个精简阶段命令和低成本 subagent 接入。
+- Agent 原生接入：当前内置 OMP 与 OpenCode 的项目级 Skill、命令和按复杂度选择的 subagent profiles，暂不支持其他 AI Agent。
 - 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
-- 代码库理解：自动探测并索引 GitNexus / CodeGraph 知识图谱，按 intent 路由查询；不可用时显式降级到受限文件扫描。
+- 代码库理解：自动探测并索引 CodeGraph 知识图谱，按 intent 查询；不可用时显式降级到受限文件扫描。
 - 安全可追溯：校验路径、命令、文件范围、Git delta、TDD 证据和敏感信息。
 - 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
 - 精简制品：活动需求只保留人工审核的 `spec.md`、`plan.md`、`tasks.md`，机器状态写入 JSON；归档后整合为一个 `archive.md`。
@@ -16,10 +16,10 @@
 
 - 预编译二进制运行不需要 Rust；从源码构建才需要 Rust 工具链（cargo，edition 2021）
 - Git
-- GitNexus / CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
+- CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
   - CodeGraph 可使用独立安装包，无需 Node.js。
-  - GitNexus 作为外部 npm CLI 使用时，当前要求 Node.js 22 或更高版本；sdd-harness 自身运行时不依赖 Node.js。
-- Oh My Pi（OMP；`sdd init` 写入项目级 Skill、精简 slash 命令集和低成本 subagent）
+- Oh My Pi（OMP；终端选择 OMP 后写入项目级 Skill、精简 slash 命令集、subagent profiles 和角色模型配置）
+- OpenCode（终端 `sdd init` 交互选择，或在 OpenCode 中使用 `/sdd-init` 自动写入 `.opencode/skills`、`.opencode/commands` 和 `.opencode/agents`）
 - macOS、Windows（Git Bash）或 Linux
 
 ## 安装
@@ -69,7 +69,7 @@ sdd init
 sdd auto "实现订单取消功能"
 ```
 
-在 OMP 中可以直接描述需求静默触发，也可以使用 `/sdd 需求` 显式调用。需要控制具体阶段时使用 `/sdd.status`、`/sdd.plan`、`/sdd.verify` 等已注册命令。简单、独立的任务会优先交给 OMP 当前可用的低成本模型，主 Agent 负责检查和最终审查。
+在 OMP 中可以直接描述需求静默触发，也可以使用 `/sdd 需求` 显式调用；OpenCode 项目使用 `/sdd-init` 自动识别宿主并初始化，再使用 `/sdd` 或 `/sdd-new` 等连字符命令。主 Agent 会根据任务边界、风险和验收难度选择 `sdd-worker-simple`、`sdd-worker` 或 `sdd-worker-complex`，主 Agent 负责检查和最终审查。
 
 也可以逐阶段推进：
 
@@ -120,7 +120,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 | 命令                      | 作用                                        |
 | ------------------------- | ------------------------------------------- |
-| `sdd init`                | 初始化 `.sdd/`、代码库索引和 OMP 接入文件 |
+| `sdd init`                | 交互选择 Agent，初始化 `.sdd`、代码库索引和接入文件 |
 | `sdd status`              | 查看当前阶段、错误和下一步建议              |
 | `sdd new <需求>`          | 澄清需求并生成规格                          |
 | `sdd design`              | 生成技术设计                                |
@@ -136,16 +136,15 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 ## 代码库理解与降级
 
-`sdd init` 时自动探测 PATH 中的 `gitnexus` 与 `codegraph` 命令，对可用引擎各自索引（`.gitnexus/`、`.codegraph/` 落在业务项目根）。查询按 intent 路由：
+`sdd init` 时自动探测 PATH 中的 `codegraph` 命令并索引 `.codegraph/`。所有 intent 都通过 CodeGraph 查询：
 
 | intent | 主路由 | 兜底 |
 | ------ | ------ | ---- |
-| impact / context / related-files / tests / routes / architecture | GitNexus | CodeGraph → 文件扫描 |
-| explore / callers / callees | CodeGraph | GitNexus → 文件扫描 |
+| 全部 intent | CodeGraph | 文件扫描 |
 
-两引擎均不可用时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
+CodeGraph 不可用时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
 
-CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm Noncommercial 许可证。商业场景启用 GitNexus 前需单独完成许可证评估，也可以只安装 CodeGraph，未覆盖的 intent 会按既定降级链处理。
+CodeGraph 当前以 MIT 许可证发布。
 
 ## 制品结构
 
@@ -171,8 +170,8 @@ CodeGraph 当前以 MIT 许可证发布；GitNexus 当前 npm 包使用 PolyForm
 | ----------------------------- | --------------------------------- |
 | `crates/sdd-cli`              | 参数解析和命令路由（bin: sdd）    |
 | `crates/sdd-core`             | 状态机、制品、Git、安全与质量门禁 |
-| `crates/sdd-core/src/knowledge` | GitNexus/CodeGraph 探测、路由与降级 |
-| `assets/adapters/omp`         | OMP 的 Skill、精简 slash 命令集和 subagent 模板（编译期嵌入） |
+| `crates/sdd-core/src/knowledge` | CodeGraph 探测、路由与降级 |
+| `assets/adapters/omp` / `opencode` | OMP / OpenCode 的 Skill、命令和 subagent 模板（编译期嵌入） |
 | `vendor`                      | 上游快照（openspec/superpowers）  |
 | `fixtures`                    | 测试样例项目                       |
 

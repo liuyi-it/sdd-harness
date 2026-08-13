@@ -21,7 +21,7 @@
     },
     "codebaseProvider": {
       "type": "string",
-      "enum": ["gitnexus", "codegraph", "fallback-file-scan"]
+      "enum": ["codegraph", "fallback-file-scan"]
     },
     "degraded": { "type": "boolean" },
     "degradedReason": { "type": ["string", "null"] },

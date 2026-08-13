@@ -1,7 +1,6 @@
 //! 知识图谱 Provider 与路由测试。
 
 use sdd_core::knowledge::codegraph::CodeGraphProvider;
-use sdd_core::knowledge::gitnexus::GitNexusProvider;
 use sdd_core::knowledge::provider::{find_on_path, KnowledgeIntent, KnowledgeProvider};
 use sdd_core::knowledge::router::KnowledgeRouter;
 
@@ -13,15 +12,7 @@ fn find_on_path_locates_git() {
 
 #[test]
 #[ignore = "可选真实 CLI 探测；确定性行为由 fake provider 测试覆盖"]
-fn gitnexus_probe_reports_shape_without_panic() {
-    let provider = GitNexusProvider::default();
-    let result = provider.probe();
-    assert!(result.available || result.message.is_some());
-}
-
-#[test]
-#[ignore = "可选真实 CLI 探测；确定性行为由 fake provider 测试覆盖"]
-fn codegraph_probe_same_shape() {
+fn codegraph_probe_reports_shape_without_panic() {
     let provider = CodeGraphProvider::default();
     let result = provider.probe();
     assert!(result.available || result.message.is_some());
@@ -29,7 +20,7 @@ fn codegraph_probe_same_shape() {
 
 #[test]
 fn query_when_unavailable_is_degraded() {
-    let provider = GitNexusProvider::default();
+    let provider = CodeGraphProvider::default();
     if !provider.probe().available {
         let result = provider.query(".", KnowledgeIntent::Impact, "foo");
         assert!(result.degraded);
@@ -63,7 +54,7 @@ fn initialize_writes_diagnostics_without_failing() {
     let cwd = dir.path().to_string_lossy().to_string();
     let router = KnowledgeRouter::new();
     let diags = router.initialize(&cwd, 600_000).unwrap();
-    assert_eq!(diags.len(), 2); // gitnexus + codegraph 各一条
+    assert_eq!(diags.len(), 1); // CodeGraph 一条诊断
                                 // 诊断摘要已写入 runtime.json
     let runtime: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
@@ -81,9 +72,9 @@ fn query_returns_known_shape() {
     let result = router.query(&cwd, KnowledgeIntent::Impact, "main");
     assert!(result.confidence <= 0.99);
     assert!(result.confidence >= 0.0);
-    // provider 必须是三个合法值之一
+    // provider 必须是 CodeGraph 或受限文件扫描
     assert!(
-        ["gitnexus", "codegraph", "fallback-file-scan"].contains(&result.provider),
+        ["codegraph", "fallback-file-scan"].contains(&result.provider),
         "未知 provider: {}",
         result.provider
     );
@@ -132,13 +123,12 @@ fn fake_cli() -> tempfile::TempDir {
 
 #[cfg(unix)]
 #[test]
-fn fake_providers_use_documented_query_commands() {
+fn fake_codegraph_uses_documented_query_commands() {
     let fake = fake_cli();
     let bin = fake.path().join("fake-cli");
     let codegraph = CodeGraphProvider {
         bin: Some(bin.clone()),
     };
-    let gitnexus = GitNexusProvider { bin: Some(bin) };
     let root = fake.path().to_string_lossy();
 
     let codegraph_result = codegraph.query(&root, KnowledgeIntent::Context, "OrderService");
@@ -146,9 +136,27 @@ fn fake_providers_use_documented_query_commands() {
         codegraph_result.payload["output"],
         format!("explore OrderService --path {root}")
     );
-    let gitnexus_result = gitnexus.query(&root, KnowledgeIntent::Impact, "cancel_order");
+    let impact_result = codegraph.query(&root, KnowledgeIntent::Impact, "cancel_order");
     assert_eq!(
-        gitnexus_result.payload["output"],
-        "impact --summary-only cancel_order"
+        impact_result.payload["output"],
+        format!("impact cancel_order --path {root}")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn router_uses_codegraph_for_every_intent() {
+    let fake = fake_cli();
+    let bin = fake.path().join("fake-cli");
+    let root = fake.path().to_string_lossy();
+    let router = KnowledgeRouter {
+        codegraph: CodeGraphProvider { bin: Some(bin) },
+    };
+
+    let result = router.query(&root, KnowledgeIntent::Impact, "cancel_order");
+    assert!(!result.degraded);
+    assert_eq!(
+        result.payload["output"],
+        format!("impact cancel_order --path {root}")
     );
 }

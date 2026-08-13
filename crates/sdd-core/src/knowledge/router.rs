@@ -1,9 +1,8 @@
-//! 知识图谱路由：双引擎按 intent 路由 + 降级链。
+//! 知识图谱路由：CodeGraph 查询 + 降级链。
 //!
-//! 路由策略（用户已确认）：
-//! - impact / context / related-files / tests / routes / architecture → GitNexus 优先
-//! - explore / callers / callees → CodeGraph 优先
-//! - 主路由不可用或失败 → 次路由 → 受限文件扫描（degraded=true 显式暴露）
+//! 路由策略：
+//! - 所有 intent 统一交给 CodeGraph。
+//! - CodeGraph 不可用或失败时使用受限文件扫描（degraded=true）。
 
 use serde_json::json;
 
@@ -11,11 +10,9 @@ use crate::error::SddError;
 
 use super::codegraph::CodeGraphProvider;
 use super::fallback_scan::fallback_scan;
-use super::gitnexus::GitNexusProvider;
 use super::provider::{KnowledgeIntent, KnowledgeProvider, QueryResult};
 
 pub struct KnowledgeRouter {
-    pub gitnexus: GitNexusProvider,
     pub codegraph: CodeGraphProvider,
 }
 
@@ -28,14 +25,13 @@ impl Default for KnowledgeRouter {
 impl KnowledgeRouter {
     pub fn new() -> Self {
         Self {
-            gitnexus: GitNexusProvider::default(),
             codegraph: CodeGraphProvider::default(),
         }
     }
 
-    /// 初始化：对 PATH 中可用的引擎执行索引，写入 runtime.json 的 index 节点。
-    /// 引擎不可用时只记录诊断，不阻断初始化。
-    /// `timeout_ms` 控制单次索引超时（init 用短超时避免阻塞初始化）。
+    /// 初始化：对 PATH 中可用的 CodeGraph 执行索引，写入 runtime.json 的 index 节点。
+    /// CodeGraph 不可用时只记录诊断，不阻断初始化。
+    /// `timeout_ms` 控制索引超时（init 用短超时避免阻塞初始化）。
     pub fn initialize(
         &self,
         root: &str,
@@ -52,23 +48,23 @@ impl KnowledgeRouter {
         Ok(diags)
     }
 
-    /// 引擎索引诊断（不写盘，供 codebase status/doctor 使用）
+    /// CodeGraph 索引诊断（不写盘，供 codebase status/doctor 使用）。
     pub fn index_diagnostics(
         &self,
         root: &str,
         timeout_ms: u64,
         rebuild: bool,
     ) -> Vec<serde_json::Value> {
-        let providers: [&dyn KnowledgeProvider; 2] = [&self.gitnexus, &self.codegraph];
+        let providers: [&dyn KnowledgeProvider; 1] = [&self.codegraph];
         providers
             .iter()
-            .map(|p| {
-                let probe = p.probe();
+            .map(|provider| {
+                let probe = provider.probe();
                 let index = if probe.available {
                     if rebuild {
-                        p.rebuild(root, timeout_ms)
+                        provider.rebuild(root, timeout_ms)
                     } else {
-                        p.index(root, timeout_ms)
+                        provider.index(root, timeout_ms)
                     }
                 } else {
                     super::provider::IndexResult {
@@ -78,7 +74,7 @@ impl KnowledgeRouter {
                     }
                 };
                 json!({
-                    "provider": p.name(),
+                    "provider": provider.name(),
                     "installed": probe.available,
                     "version": probe.version,
                     "indexed": index.ok,
@@ -89,17 +85,17 @@ impl KnowledgeRouter {
             .collect()
     }
 
-    /// 状态诊断（只探测，不索引）
+    /// 状态诊断（只探测，不索引）。
     pub fn status(&self, root: &str) -> Vec<serde_json::Value> {
-        let providers: [&dyn KnowledgeProvider; 2] = [&self.gitnexus, &self.codegraph];
+        let providers: [&dyn KnowledgeProvider; 1] = [&self.codegraph];
         providers
             .iter()
-            .map(|p| {
-                let probe = p.probe();
+            .map(|provider| {
+                let probe = provider.probe();
                 json!({
-                    "provider": p.name(),
+                    "provider": provider.name(),
                     "installed": probe.available,
-                    "indexed": probe.available && p.indexed(root),
+                    "indexed": probe.available && provider.indexed(root),
                     "version": probe.version,
                     "message": probe.message,
                 })
@@ -121,28 +117,10 @@ impl KnowledgeRouter {
         crate::state::runtime_store::write_index(root, json!(diags), summary)
     }
 
-    /// 按 intent 路由查询；两级引擎都不可用或失败时降级受限文件扫描
+    /// 按 intent 统一使用 CodeGraph；失败时降级受限文件扫描。
     pub fn query(&self, root: &str, intent: KnowledgeIntent, query: &str) -> QueryResult {
-        let primary: &dyn KnowledgeProvider = match intent {
-            KnowledgeIntent::Explore | KnowledgeIntent::Callers | KnowledgeIntent::Callees => {
-                &self.codegraph
-            }
-            _ => &self.gitnexus,
-        };
-        let secondary: &dyn KnowledgeProvider = if std::ptr::eq(primary, &self.gitnexus) {
-            &self.codegraph
-        } else {
-            &self.gitnexus
-        };
-
-        if primary.probe().available {
-            let result = primary.query(root, intent, query);
-            if !result.degraded {
-                return result;
-            }
-        }
-        if secondary.probe().available {
-            let result = secondary.query(root, intent, query);
+        if self.codegraph.probe().available {
+            let result = self.codegraph.query(root, intent, query);
             if !result.degraded {
                 return result;
             }
@@ -150,7 +128,7 @@ impl KnowledgeRouter {
         fallback_scan(root, intent, query)
     }
 
-    /// 直接执行受限文件扫描（供 codebase query 显式降级）
+    /// 直接执行受限文件扫描（供 codebase query 显式降级）。
     pub fn fallback_scan(root: &str, intent: KnowledgeIntent, query: &str) -> QueryResult {
         fallback_scan(root, intent, query)
     }

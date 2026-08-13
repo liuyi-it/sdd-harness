@@ -63,10 +63,9 @@ fn build_next_returns_action_required_with_known_provider() {
     assert!(action.task_id.starts_with("TASK-"));
     assert_eq!(action.result_transport, "inline-json");
     assert!(action.policy_bundle.is_some());
-    // 契约变更：provider 必须是三个合法值之一
+    // 契约变更：provider 必须是 CodeGraph 或受限文件扫描
     assert!(
-        ["gitnexus", "codegraph", "fallback-file-scan"]
-            .contains(&action.codebase.provider.as_str()),
+        ["codegraph", "fallback-file-scan"].contains(&action.codebase.provider.as_str()),
         "未知 provider: {}",
         action.codebase.provider
     );
