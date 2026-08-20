@@ -164,6 +164,10 @@ fn error_exit_codes_match_contract() {
     assert_eq!(error_exit_codes("E_REVIEW_BACKEND_TIMEOUT"), 124);
     assert_eq!(error_exit_codes("E_REVIEW_BACKEND_FAILED"), 8);
     assert_eq!(error_exit_codes("E_REVIEW_BACKEND_INVALID_OUTPUT"), 8);
+    assert_eq!(error_exit_codes("E_GENERATION_FAILED"), 5);
+    assert!(sdd_core::contracts::is_known_error_code(
+        "E_GENERATION_FAILED"
+    ));
     // 未知错误码兜底 1
     assert_eq!(error_exit_codes("E_UNKNOWN"), 1);
 }

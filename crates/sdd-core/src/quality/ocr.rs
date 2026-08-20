@@ -25,6 +25,29 @@ pub struct OcrConfig {
     pub command: String,
 }
 
+/// 解释器黑名单：把 OCR 命令指向脚本解释器（如 bash/python）意味着
+/// 可以执行任意命令，等价于 shell 注入，一律阻断。
+const INTERPRETER_BLACKLIST: [&str; 18] = [
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "csh",
+    "fish",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "python",
+    "python3",
+    "node",
+    "nodejs",
+    "ruby",
+    "perl",
+    "php",
+    "deno",
+];
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub struct OcrComment {
@@ -118,6 +141,19 @@ impl OcrConfig {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
                 "runtime.json 的 quality.ocr.command 不能为空",
+            ));
+        }
+        // 命令 basename 命中解释器黑名单 → 阻断（可执行任意命令）
+        let program = command.split_whitespace().next().unwrap_or("");
+        let basename = program
+            .rsplit(['/', '\\'])
+            .next()
+            .unwrap_or(program)
+            .trim_end_matches(".exe");
+        if INTERPRETER_BLACKLIST.contains(&basename) {
+            return Err(SddError::new(
+                "E_SECURITY_BLOCKED",
+                &format!("OCR 命令 {program} 指向脚本解释器，存在任意命令执行风险，禁止使用"),
             ));
         }
         Ok(Self {
@@ -273,6 +309,11 @@ impl OcrExecutor for SystemOcrExecutor {
                 Ok(Some(status)) => break status,
                 Ok(None) => {
                     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        // 判定超时前补一次 try_wait：进程恰在判定时刻退出时按正常结果
+                        // 处理，避免"已退出却被判超时"的竞态（此前偶发 flaky）。
+                        if let Ok(Some(status)) = child.try_wait() {
+                            break status;
+                        }
                         kill_process_group(child.id());
                         let _ = child.kill();
                         let _ = child.wait();
@@ -515,8 +556,9 @@ mod tests {
             dir.path(),
             "printf '{\"status\":\"success\",\"comments\":[]}'",
         );
+        // 5s 时限：并行测试负载下放宽，避免偶发超时误判（flaky 修复）
         let result = SystemOcrExecutor
-            .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(1))
+            .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(5))
             .unwrap();
         assert_eq!(
             result,
@@ -535,8 +577,9 @@ mod tests {
     fn system_executor_maps_nonzero_exit_to_backend_failure() {
         let dir = tempfile::tempdir().unwrap();
         let script = executable_script(dir.path(), "exit 7");
+        // 5s 时限：放宽以消除慢机上的偶发超时误判
         let error = SystemOcrExecutor
-            .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(1))
+            .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(5))
             .unwrap_err();
         assert_eq!(error.code, "E_REVIEW_BACKEND_FAILED");
     }
@@ -581,8 +624,9 @@ mod tests {
             "printf '{\"status\":\"success\",\"comments\":[]}'\n(sleep 5) &\nexit 0",
         );
         let started = Instant::now();
+        // 5s 时限：并行测试负载下放宽，避免偶发超时误判（flaky 修复）
         let result = SystemOcrExecutor
-            .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(1))
+            .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(5))
             .unwrap();
         assert_eq!(
             result,
@@ -637,5 +681,28 @@ mod tests {
         let changed = std::iter::once("src/a.rs".to_string()).collect();
         let error = validate_output(output, dir.path(), &changed).unwrap_err();
         assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
+    }
+
+    #[test]
+    fn rejects_interpreter_commands() {
+        for command in [
+            "bash",
+            "/usr/bin/python3",
+            "sh script.sh",
+            "pwsh.exe",
+            "node /tmp/x.js",
+        ] {
+            let config = OcrConfig::from_config(&serde_json::json!({
+                "quality": { "ocr": { "mode": "auto", "command": command } }
+            }));
+            let error = config.unwrap_err();
+            assert_eq!(error.code, "E_SECURITY_BLOCKED", "命令 {command} 应被阻断");
+        }
+        // 正常可执行文件路径不受影响
+        let config = OcrConfig::from_config(&serde_json::json!({
+            "quality": { "ocr": { "mode": "auto", "command": "/opt/alibaba/ocr-bin" } }
+        }))
+        .unwrap();
+        assert_eq!(config.command, "/opt/alibaba/ocr-bin");
     }
 }

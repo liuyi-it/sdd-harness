@@ -21,7 +21,6 @@ use crate::engines::superpowers::protocol::TaskDefinition;
 use crate::error::SddError;
 use crate::git::GitInspector;
 use crate::protocol::{validate_task_result, TaskExecutionResult};
-use crate::schema::validate_json;
 use crate::security::task_scope::validate_file_change;
 use crate::state::file_lock::lock_sdd;
 use crate::state::state_store::{
@@ -86,6 +85,7 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
                 .and_then(|v| v.as_str())
                 .unwrap_or("inline-json");
             let task = find_task(cwd, &change_id, task_id)?;
+            validate_task_verification(&task)?;
             let context_pack = render_context_pack(cwd, &task)?;
             return Ok(action_required_result(
                 task,
@@ -98,11 +98,14 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
         }
     }
     if state.current_phase != "PLAN_READY" && state.current_phase != "BUILD_WAITING_AGENT" {
+        // 错误建议改用阶段表：全部任务完成后（BUILD_READY）应提示 sdd verify
+        let next = crate::commands::status::next_command(&state.current_phase)
+            .unwrap_or_else(|| "sdd plan".to_string());
         return Err(SddError::new(
             "E_INVALID_PHASE_COMMAND",
             &format!("无法在 {} 状态下获取任务", state.current_phase),
         )
-        .with_next("sdd plan"));
+        .with_next(&next));
     }
 
     let tasks = read_plan_tasks(cwd, &change_id)?;
@@ -133,6 +136,8 @@ fn run_build_next(cwd: &str, timeout_ms: Option<u64>) -> Result<CommandResult, S
                 "没有可执行的 PENDING 任务（任务可能全部完成或存在循环依赖）",
             )
         })?;
+    // 派发前校验每条验证命令（防计划被篡改为任意命令）
+    validate_task_verification(next_task)?;
     let result_transport = "inline-json";
     // 写 pendingAgentTask + 状态推进
     let git_baseline = match GitInspector::snapshot(&business_cwd) {
@@ -284,7 +289,7 @@ fn run_build_complete(
             &format!("任务 {task_id} 的执行结果结构无效：{e}"),
         )
     })?;
-    validate_json("task-result", &result)?;
+    let mut warnings: Vec<serde_json::Value> = Vec::new();
     let parsed = validate_task_result(&result)?;
     if parsed.task_id != task_id {
         return Err(SddError::new(
@@ -303,7 +308,7 @@ fn run_build_complete(
     })?;
 
     // TDD evidence 校验（RED 需要失败证据、GREEN 需要通过证据）
-    validate_task_evidence(task, &parsed, &result)?;
+    validate_task_evidence(task, &parsed)?;
 
     for path in &parsed.files_changed {
         GitInspector::resolve_repo_path(&business_cwd, path)?;
@@ -328,6 +333,13 @@ fn run_build_complete(
         }
         actual
     } else {
+        // 非 git 仓库：沿用声明 filesChanged，但明确提示缺少 Git 事实核对
+        if !parsed.files_changed.is_empty() {
+            warnings.push(json!({
+                "code": "W_NO_GIT_FACTS",
+                "message": "当前目录不是 git 仓库，无法用 Git 事实核对 filesChanged 声明",
+            }));
+        }
         parsed.files_changed.clone()
     };
     validate_file_change(
@@ -416,39 +428,49 @@ fn run_build_complete(
         next: Some(next.to_string()),
         data: Some(json!({ "taskId": task_id, "status": task_status })),
         rendered: None,
-        warnings: None,
+        warnings: if warnings.is_empty() {
+            None
+        } else {
+            Some(warnings)
+        },
         action_required: None,
         error: None,
     })
 }
 
+/// 校验任务声明中的每条验证命令都在允许范围内（防计划被篡改后派发任意命令）。
+fn validate_task_verification(task: &TaskDefinition) -> Result<(), SddError> {
+    for verification in &task.verification {
+        crate::security::verification_command::validate_verification_command(verification)?;
+    }
+    Ok(())
+}
+
 /// TDD evidence 校验（翻译自 tdd-evidence.ts 的裁决矩阵）
+///
+/// 全阶段强制：
+/// - verification 必须非空，且每条 command+args ∈ task.verification；
+/// - evidence ≤ 64 条、evidence.command ∈ task.verification、output ≤ 8192 字符；
+/// - 顶层 message ≤ 2048 字符；filesChanged ≤ 500 条、每条 ≤ 512 字符；
+/// - RED 额外要求：至少一条 verification.passed == false；
+/// - 阶段矩阵：RED 需要预期失败证据，GREEN/REFACTOR 需要通过证据，VERIFY 需要全部通过。
 pub(crate) fn validate_task_evidence(
     task: &TaskDefinition,
     parsed: &TaskExecutionResult,
-    result: &serde_json::Value,
 ) -> Result<(), SddError> {
-    let verification = result
-        .get("verification")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    for item in &verification {
-        let command = item
-            .get("command")
-            .and_then(|value| value.as_str())
-            .unwrap_or("");
-        let args = item
-            .get("args")
-            .and_then(|value| value.as_array())
-            .map(|args| {
-                args.iter()
-                    .filter_map(|value| value.as_str())
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let rendered = std::iter::once(command)
-            .chain(args)
+    let verification = &parsed.verification;
+    if verification.is_empty() {
+        return Err(SddError::new(
+            "E_TDD_EVIDENCE_REQUIRED",
+            &format!(
+                "任务 {} 缺少验证命令结果，请提供 verification 中各命令的执行结果",
+                task.id
+            ),
+        ));
+    }
+    for item in verification {
+        let rendered = std::iter::once(item.command.as_str())
+            .chain(item.args.iter().map(String::as_str))
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
             .join(" ");
@@ -459,12 +481,64 @@ pub(crate) fn validate_task_evidence(
             ));
         }
     }
-    let verification_passed = !verification.is_empty()
-        && verification.iter().all(|item| {
-            item.get("passed")
-                .and_then(|passed| passed.as_bool())
-                .unwrap_or(false)
-        });
+    // RED 阶段额外要求：至少一条验证命令结果 passed=false（证明先看到失败）
+    if task.phase == "RED" && !verification.iter().any(|item| item.passed == Some(false)) {
+        return Err(SddError::new(
+            "E_TDD_EVIDENCE_REQUIRED",
+            &format!(
+                "任务 {}（RED）的验证结果必须包含 passed=false 的失败验证",
+                task.id
+            ),
+        ));
+    }
+    // evidence 数组上限与字段约束
+    if parsed.evidence.len() > 64 {
+        return Err(SddError::new(
+            "E_TDD_EVIDENCE_REQUIRED",
+            &format!("任务 {} 的 evidence 超过 64 条上限", task.id),
+        ));
+    }
+    for item in &parsed.evidence {
+        if !task
+            .verification
+            .iter()
+            .any(|allowed| allowed == &item.command)
+        {
+            return Err(SddError::new(
+                "E_SECURITY_BLOCKED",
+                &format!("任务结果包含未授权的证据命令：{}", item.command),
+            ));
+        }
+        if item.output.chars().count() > 8192 {
+            return Err(SddError::new(
+                "E_TDD_EVIDENCE_REQUIRED",
+                &format!("任务 {} 的 evidence.output 超过 8192 字符", task.id),
+            ));
+        }
+    }
+    if let Some(message) = &parsed.message {
+        if message.chars().count() > 2048 {
+            return Err(SddError::new(
+                "E_TDD_EVIDENCE_REQUIRED",
+                &format!("任务 {} 的 message 超过 2048 字符", task.id),
+            ));
+        }
+    }
+    if parsed.files_changed.len() > 500 {
+        return Err(SddError::new(
+            "E_TDD_EVIDENCE_REQUIRED",
+            &format!("任务 {} 的 filesChanged 超过 500 条上限", task.id),
+        ));
+    }
+    for path in &parsed.files_changed {
+        if path.chars().count() > 512 {
+            return Err(SddError::new(
+                "E_TDD_EVIDENCE_REQUIRED",
+                &format!("任务 {} 的 filesChanged 路径超过 512 字符：{path}", task.id),
+            ));
+        }
+    }
+    let verification_passed = verification.iter().all(|item| item.passed.unwrap_or(false));
     match task.phase.as_str() {
         "RED" => {
             if !parsed
@@ -545,10 +619,16 @@ fn render_context_pack(cwd: &str, task: &TaskDefinition) -> Result<String, SddEr
         .replace(
             "END_UNTRUSTED_CODEBASE_CONTEXT",
             "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
-        )
-        .chars()
-        .take(8_192)
-        .collect::<String>();
+        );
+    // 代码库上下文截断上限：config 的 contextPack.maxSizeKb（默认 30，单位 KB）
+    let config = crate::state::runtime_store::read_config(cwd)?;
+    let max_chars = config
+        .pointer("/contextPack/maxSizeKb")
+        .and_then(|value| value.as_u64())
+        .filter(|kb| *kb > 0)
+        .map(|kb| (kb * 1024) as usize)
+        .unwrap_or(30 * 1024);
+    let codebase = codebase.chars().take(max_chars).collect::<String>();
     Ok(format!(
         "{}\n\n## References\n\n{}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n## Policy Bundle\n\n{}",
         crate::engines::superpowers::planner::render_context_pack(task),

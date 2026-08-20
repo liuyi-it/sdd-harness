@@ -49,15 +49,16 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
     let spec = crate::state::runtime_store::read_change_field(cwd, &change_id, "spec")?
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
     let tasks = read_plan_tasks(cwd, &change_id)?;
+    // DONE 判定只信 state.tasks（运行权威）：plan 里的 status 只是初始 PENDING 声明，
+    // 任务是否完成以运行时状态为准
     let done_ids: HashSet<String> = tasks
         .iter()
         .filter(|task| {
-            task.status == TASK_STATUS_DONE
-                || state
-                    .tasks
-                    .get(&task.id)
-                    .map(|status| status == TASK_STATUS_DONE)
-                    .unwrap_or(false)
+            state
+                .tasks
+                .get(&task.id)
+                .map(|status| status == TASK_STATUS_DONE)
+                .unwrap_or(false)
         })
         .map(|task| task.id.clone())
         .collect();
@@ -102,7 +103,7 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
                 Some(result) => {
                     let valid = crate::protocol::validate_task_result(&result)
                         .and_then(|parsed| {
-                            crate::commands::build::validate_task_evidence(task, &parsed, &result)
+                            crate::commands::build::validate_task_evidence(task, &parsed)
                         })
                         .is_ok()
                         && result.get("status").and_then(|value| value.as_str())

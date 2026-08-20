@@ -116,7 +116,7 @@ pub fn run_archive(cwd: &str, args: Option<&serde_json::Value>) -> Result<Comman
                 &format!("任务 {} 未完成", task.id),
             ));
         }
-        crate::commands::build::validate_task_evidence(task, &parsed, result)?;
+        crate::commands::build::validate_task_evidence(task, &parsed)?;
     }
     for key in [
         format!("{change_id}:spec"),

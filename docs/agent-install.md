@@ -52,6 +52,21 @@ sdd --version
 ## 验证与升级
 
 - 验证安装：`sdd --version`。
+- 校验下载完整性（macOS/Linux）：
+
+```bash
+asset="sdd-macos-arm64" # 按平台替换
+curl -fL -o "/tmp/$asset.sha256" "https://github.com/liuyi-it/sdd-harness/releases/latest/download/$asset.sha256"
+echo "$(cat "/tmp/$asset.sha256")  ${install_dir}/sdd" | shasum -a 256 -c -
+```
+
+Windows（PowerShell）：
+
+```powershell
+(Get-FileHash "$installDir\sdd.exe" -Algorithm SHA256).Hash.ToLower()
+# 与 release 资产 sdd-windows-x64.exe.sha256 中的值比对
+```
+
 - 升级：重新执行对应平台的下载命令即可覆盖旧版本；Windows 升级前先结束运行中的 `sdd.exe`。
 
 ## 从源码安装（备选）

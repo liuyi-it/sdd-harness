@@ -12,8 +12,6 @@ use crate::error::SddError;
 use crate::state::runtime_store::{RuntimeStore, RUNTIME_FILE};
 
 pub const SDD_DIR: &str = ".sdd";
-/// 保留常量名供 CLI 路径辅助函数使用；实际文件已统一为 runtime.json。
-pub const STATE_FILE: &str = RUNTIME_FILE;
 
 /// 当前状态节点 schema 版本。
 pub const CURRENT_SCHEMA_VERSION: u32 = 3;
@@ -156,14 +154,25 @@ impl StateStore {
     }
 
     pub fn state_path(&self) -> PathBuf {
-        self.sdd_dir().join(STATE_FILE)
+        self.sdd_dir().join(RUNTIME_FILE)
     }
 
     /// runtime 文件不存在时返回初始状态（未初始化）。
     pub fn read(&self) -> Result<WorkflowState, SddError> {
-        Ok(RuntimeStore::new(self.root.to_string_lossy().to_string())
+        let state = RuntimeStore::new(self.root.to_string_lossy().to_string())
             .read()?
-            .state)
+            .state;
+        // 版本不符视为状态损坏：旧状态缺迁移路径，新状态需升级 sdd
+        if state.schema_version != CURRENT_SCHEMA_VERSION {
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!(
+                    "状态 schemaVersion {} 与当前版本 {} 不兼容",
+                    state.schema_version, CURRENT_SCHEMA_VERSION
+                ),
+            ));
+        }
+        Ok(state)
     }
 
     /// 更新 runtime 的 state 节点；不生成独立状态备份文件。
@@ -179,7 +188,12 @@ impl StateStore {
         F: FnOnce(&mut WorkflowState),
     {
         let mut state = self.read()?;
+        let old_phase = state.current_phase.clone();
         f(&mut state);
+        // 阶段推进时自动维护 previousPhase（恢复字段，供 sdd status 展示恢复上下文）。
+        if state.current_phase != old_phase {
+            state.previous_phase = Some(old_phase);
+        }
         state.updated_at = now_iso();
         state.version = state.version.saturating_add(1);
         self.write(&state)?;

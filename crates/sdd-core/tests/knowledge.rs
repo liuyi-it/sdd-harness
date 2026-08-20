@@ -61,7 +61,14 @@ fn initialize_writes_diagnostics_without_failing() {
     )
     .unwrap();
     assert!(runtime["index"]["diagnostics"].is_array());
-    assert!(runtime["index"]["summary"].is_string());
+    let summary = runtime["index"]["summary"]
+        .as_str()
+        .expect("summary 应为字符串");
+    // 摘要首行必须是来源 meta 注释（双轨化）
+    assert!(
+        summary.starts_with("<!-- summary-provider:"),
+        "summary 首行应为 meta 注释，实际: {summary:?}"
+    );
 }
 
 #[test]
@@ -121,6 +128,24 @@ fn fake_cli() -> tempfile::TempDir {
     dir
 }
 
+/// 构造记录每次调用参数的 fake-cli（供探测缓存计数）
+#[cfg(unix)]
+fn fake_cli_logging(dir: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let log = dir.join("calls.log");
+    let path = dir.join("fake-cli");
+    let script = format!(
+        "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nprintf '%s' \"$*\"\n",
+        log.display()
+    );
+    std::fs::write(&path, script).unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    path
+}
+
 #[cfg(unix)]
 #[test]
 fn fake_codegraph_uses_documented_query_commands() {
@@ -159,4 +184,54 @@ fn router_uses_codegraph_for_every_intent() {
         result.payload["output"],
         format!("impact cancel_order --path {root}")
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn query_caches_probe_result_within_ttl() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = fake_cli_logging(dir.path());
+    let root = dir.path().to_string_lossy();
+    let router = KnowledgeRouter {
+        codegraph: CodeGraphProvider { bin: Some(bin) },
+    };
+
+    let _ = router.query(&root, KnowledgeIntent::Impact, "cancel_order");
+    let _ = router.query(&root, KnowledgeIntent::Impact, "cancel_order");
+
+    let calls = std::fs::read_to_string(dir.path().join("calls.log")).unwrap();
+    let probe_count = calls.lines().filter(|l| l.starts_with("--version")).count();
+    assert_eq!(probe_count, 1, "两次查询只应探测一次 codegraph（TTL 缓存）");
+    assert_eq!(
+        calls.lines().filter(|l| l.starts_with("impact")).count(),
+        2,
+        "两次查询命令都应执行"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn initialize_uses_codegraph_summary_when_available() {
+    let dir = tempfile::tempdir().unwrap();
+    let bin = fake_cli_logging(dir.path());
+    let root = dir.path().to_string_lossy();
+    let router = KnowledgeRouter {
+        codegraph: CodeGraphProvider { bin: Some(bin) },
+    };
+
+    router.initialize(&root, 600_000).unwrap();
+
+    let runtime: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
+    )
+    .unwrap();
+    let summary = runtime["index"]["summary"]
+        .as_str()
+        .expect("summary 应为字符串");
+    // CodeGraph 可用且索引成功：summary 首行标记 codegraph 来源，正文为查询输出
+    assert!(
+        summary.starts_with("<!-- summary-provider: codegraph degraded=false -->"),
+        "实际: {summary:?}"
+    );
+    assert!(summary.contains("query"), "正文应为架构查询输出");
 }

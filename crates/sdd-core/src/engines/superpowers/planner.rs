@@ -3,6 +3,8 @@
 //! createAtomicTasks：从 spec/design/impact 生成 RED/GREEN/REFACTOR/VERIFY
 //! 任务链，并对文件范围做精确映射与重叠检测。
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 use regex::RegexBuilder;
 
@@ -19,6 +21,38 @@ use crate::error::SddError;
 const FILE_PATTERN: &str = r#"(?:^|[\s`'"(\[])((?:(?:[A-Za-z]:)?\/{1,2})?(?:[\w@.-]+\/)*[\w@.-]+\.(?:properties|json|java|scala|swift|tsx|jsx|mjs|cjs|xml|ya?ml|kt|go|rs|py|rb|php|cs|ts|js|toml))"#;
 const DIRECTORY_PATTERN: &str =
     r#"(?:^|[\s`'"(\[])((?:(?:[A-Za-z]:)?\/{1,2})?[\w@.-]+(?:\/[\w@.-]+)+\/)"#;
+
+static MIGRATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"(?:expand[–-]migrate[–-]contract|schema migration|database migration|兼容迁移|数据迁移|扩展.*迁移.*收缩)",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("迁移判定正则必须合法")
+});
+static FILE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(FILE_PATTERN).expect("文件路径正则必须合法"));
+static DIRECTORY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(DIRECTORY_PATTERN).expect("目录路径正则必须合法"));
+static REQUIREMENT_HEADING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?m)^### Requirement:.*$").expect("需求标题正则必须合法"));
+static TEST_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(.*)\.(?:test|spec)(\.[^./]+)$").expect("测试文件名正则必须合法")
+});
+static REQUIREMENT_ID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)REQ-\d+").expect("需求 ID 正则必须合法"));
+static TEST_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(^|/)(?:test|tests|__tests__)(/|$)|\.(?:test|spec)\.[^.]+$")
+        .expect("测试路径正则必须合法")
+});
+static PROJECT_MANIFEST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^(?:package\.json|pom\.xml)$|/(?:package\.json|pom\.xml)$")
+        .expect("项目清单正则必须合法")
+});
+static SOURCE_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|go|rs|py|rb|php|cs|swift|scala)$")
+        .expect("源码扩展名正则必须合法")
+});
 
 /// 生成原子任务链（语义对齐 createAtomicTasks）
 pub fn create_atomic_tasks(
@@ -167,7 +201,12 @@ pub fn create_atomic_tasks(
                 depends_on,
                 allowed_files,
                 expected_new_files,
-                forbidden_files: vec![".git/**".into(), ".env".into(), "**/credentials*".into()],
+                forbidden_files: vec![
+                    ".git/**".into(),
+                    ".sdd/**".into(),
+                    ".env".into(),
+                    "**/credentials*".into(),
+                ],
                 verification: commands.clone(),
                 done_criteria: done_criteria(phase, &scenario_ids),
                 slice_type: Some(if migration {
@@ -338,13 +377,7 @@ fn push_list(lines: &mut Vec<String>, title: &str, values: &[String]) {
 
 fn requires_expand_contract(design: &str, impact: &str) -> bool {
     let combined = format!("{design}\n{impact}");
-    let re = RegexBuilder::new(
-        r"(?:expand[–-]migrate[–-]contract|schema migration|database migration|兼容迁移|数据迁移|扩展.*迁移.*收缩)",
-    )
-    .case_insensitive(true)
-    .build()
-    .unwrap();
-    re.is_match(&combined)
+    MIGRATION_RE.is_match(&combined)
 }
 
 fn assert_acyclic(tasks: &[TaskDefinition]) -> Result<(), SddError> {
@@ -387,18 +420,16 @@ fn assert_acyclic(tasks: &[TaskDefinition]) -> Result<(), SddError> {
 
 /// 从文本提取文件路径（extractPaths）
 pub fn extract_paths(text: &str) -> Vec<String> {
-    let file_re = Regex::new(FILE_PATTERN).unwrap();
-    let dir_re = Regex::new(DIRECTORY_PATTERN).unwrap();
     let mut paths: Vec<String> = Vec::new();
     for raw_line in text.split('\n') {
         let line = raw_line.replace('\\', "/");
-        for caps in file_re.captures_iter(&line) {
+        for caps in FILE_RE.captures_iter(&line) {
             let path = caps.get(1).unwrap().as_str().to_string();
             if is_safe_relative_path(&path) {
                 paths.push(path);
             }
         }
-        for caps in dir_re.captures_iter(&line) {
+        for caps in DIRECTORY_RE.captures_iter(&line) {
             let directory = caps.get(1).unwrap().as_str().to_string();
             if is_safe_focused_directory(&directory) {
                 paths.push(format!("{directory}**"));
@@ -423,19 +454,14 @@ pub fn extract_paths(text: &str) -> Vec<String> {
 fn extract_new_paths(text: &str) -> Vec<String> {
     let mut new_paths: Vec<String> = Vec::new();
     for line in text.split('\n') {
-        let normalized = line.replace('\\', "/");
-        for path in extract_paths(&normalized) {
-            let raw_path = path.strip_suffix("/**").unwrap_or(&path).to_string();
-            let escaped = regex::escape(&raw_path);
-            let re1 = RegexBuilder::new(&format!(r"新增\s+{escaped}"))
-                .case_insensitive(true)
-                .build()
-                .unwrap();
-            let re2 = RegexBuilder::new(&format!(r"{escaped}\s*(?:\(new\)|\[new\])"))
-                .case_insensitive(true)
-                .build()
-                .unwrap();
-            if re1.is_match(&normalized) || re2.is_match(&normalized) {
+        let paths = extract_paths(line);
+        if paths.is_empty() {
+            continue;
+        }
+        let normalized_lower = line.replace('\\', "/").to_lowercase();
+        for path in paths {
+            let raw_path = path.strip_suffix("/**").unwrap_or(&path);
+            if is_marked_as_new(&normalized_lower, raw_path) {
                 new_paths.push(path);
             }
         }
@@ -443,64 +469,62 @@ fn extract_new_paths(text: &str) -> Vec<String> {
     unique(new_paths)
 }
 
-fn parse_requirements(spec: &str) -> Result<Vec<RequirementPlan>, SddError> {
-    match parse_spec(spec) {
-        Ok(document) if !document.requirements.is_empty() => Ok(document
-            .requirements
-            .iter()
-            .map(|r| RequirementPlan {
-                id: r.id.clone(),
-                title: r.title.clone(),
-                scenarios: r
-                    .scenarios
-                    .iter()
-                    .map(|s| super::protocol::ScenarioRef {
-                        id: s.id.clone(),
-                        title: s.title.clone(),
-                    })
-                    .collect(),
-                source_files: Vec::new(),
-                test_files: Vec::new(),
-            })
-            .collect()),
-        _ => {
-            // 兼容旧 REQ 格式（### REQ-001: title）
-            let heading_re = Regex::new(r"(?m)^### REQ-(\d+)(?::\s*(.*))?$").unwrap();
-            let scenario_re = Regex::new(r"(?m)^#### Scenario:\s*(.+)$").unwrap();
-            let headings: Vec<_> = heading_re.captures_iter(spec).collect();
-            let mut plans = Vec::new();
-            for (index, heading) in headings.iter().enumerate() {
-                let id = format!("REQ-{}", heading.get(1).unwrap().as_str());
-                let start = heading.get(0).unwrap().end();
-                let end = headings
-                    .get(index + 1)
-                    .map(|h| h.get(0).unwrap().start())
-                    .unwrap_or(spec.len());
-                let body = &spec[start..end];
-                let scenarios: Vec<super::protocol::ScenarioRef> = scenario_re
-                    .captures_iter(body)
-                    .enumerate()
-                    .map(|(sc_index, caps)| super::protocol::ScenarioRef {
-                        id: format!("{id}-SC-{:03}", sc_index + 1),
-                        title: caps.get(1).unwrap().as_str().trim().to_string(),
-                    })
-                    .collect();
-                let id_clone = id.clone();
-                plans.push(RequirementPlan {
-                    id,
-                    title: heading
-                        .get(2)
-                        .map(|m| m.as_str().trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(id_clone),
-                    scenarios,
-                    source_files: Vec::new(),
-                    test_files: Vec::new(),
-                });
-            }
-            Ok(plans)
+/// `extract_new_paths` 仅在规划时调用，但每行可能包含多个路径；不在循环内动态编译正则。
+/// 路径由当前提取器产生，非空，因此按命中位置推进不会出现空串循环。
+fn is_marked_as_new(lower_line: &str, raw_path: &str) -> bool {
+    let lower_path = raw_path.to_lowercase();
+    has_added_prefix(lower_line, &lower_path) || has_new_suffix(lower_line, &lower_path)
+}
+
+fn has_added_prefix(line: &str, path: &str) -> bool {
+    let mut remaining = line;
+    while let Some(index) = remaining.find("新增") {
+        let after_marker = &remaining[index + "新增".len()..];
+        let after_space = after_marker.trim_start();
+        if after_space.len() < after_marker.len() && after_space.starts_with(path) {
+            return true;
         }
+        remaining = after_marker;
     }
+    false
+}
+
+fn has_new_suffix(line: &str, path: &str) -> bool {
+    let mut remaining = line;
+    while let Some(index) = remaining.find(path) {
+        let after_path = &remaining[index + path.len()..];
+        let marker = after_path.trim_start();
+        if marker.starts_with("(new)") || marker.starts_with("[new]") {
+            return true;
+        }
+        remaining = after_path;
+    }
+    false
+}
+
+fn parse_requirements(spec: &str) -> Result<Vec<RequirementPlan>, SddError> {
+    let document = parse_spec(spec).map_err(|error| {
+        SddError::new("E_UNRESOLVED_BLOCKER", &format!("规格解析失败：{error}"))
+            .with_next("sdd plan")
+    })?;
+    Ok(document
+        .requirements
+        .iter()
+        .map(|r| RequirementPlan {
+            id: r.id.clone(),
+            title: r.title.clone(),
+            scenarios: r
+                .scenarios
+                .iter()
+                .map(|s| super::protocol::ScenarioRef {
+                    id: s.id.clone(),
+                    title: s.title.clone(),
+                })
+                .collect(),
+            source_files: Vec::new(),
+            test_files: Vec::new(),
+        })
+        .collect())
 }
 
 /// 需求 → 文件映射（mapFiles）
@@ -562,8 +586,7 @@ fn merge_spec_path_mapping(
     category: fn(&str) -> bool,
     requirements: &[RequirementPlan],
 ) {
-    let heading_re = Regex::new(r"(?m)^### Requirement:.*$").unwrap();
-    let starts: Vec<usize> = heading_re
+    let starts: Vec<usize> = REQUIREMENT_HEADING_RE
         .find_iter(spec)
         .map(|match_| match_.start())
         .collect();
@@ -586,12 +609,11 @@ fn merge_spec_path_mapping(
 }
 
 fn related_source_files(source_files: &[String], test_files: &[String]) -> Vec<String> {
-    let test_name_re = Regex::new(r"^(.*)\.(?:test|spec)(\.[^./]+)$").unwrap();
     unique(
         test_files
             .iter()
             .filter_map(|test| {
-                let captures = test_name_re.captures(test)?;
+                let captures = TEST_NAME_RE.captures(test)?;
                 let source = format!("{}{}", captures.get(1)?.as_str(), captures.get(2)?.as_str());
                 source_files
                     .iter()
@@ -675,13 +697,11 @@ fn is_workspace_owned_file(file: &str) -> bool {
 }
 
 fn line_explicitly_references(line: &str, requirement: &RequirementPlan) -> bool {
-    let id_re = Regex::new(r"(?i)REQ-\d+").unwrap();
-    let ids: Vec<String> = id_re
-        .captures_iter(line)
-        .map(|c| c.get(0).unwrap().as_str().to_uppercase())
-        .collect();
-    if !ids.is_empty() {
-        return ids.contains(&requirement.id.to_uppercase());
+    if REQUIREMENT_ID_RE.is_match(line) {
+        let expected_id = requirement.id.to_uppercase();
+        return REQUIREMENT_ID_RE
+            .find_iter(line)
+            .any(|id| id.as_str().eq_ignore_ascii_case(&expected_id));
     }
     let normalized = line.trim().trim_start_matches(['-', '*']).to_lowercase();
     let title = requirement.title.to_lowercase();
@@ -700,8 +720,7 @@ fn requirement_tokens(requirement: &RequirementPlan) -> Vec<String> {
 }
 
 fn is_test_file(file: &str) -> bool {
-    let re = Regex::new(r"(^|/)(?:test|tests|__tests__)(/|$)|\.(?:test|spec)\.[^.]+$").unwrap();
-    re.is_match(file)
+    TEST_FILE_RE.is_match(file)
 }
 
 fn is_source_file(file: &str) -> bool {
@@ -714,16 +733,10 @@ fn is_source_file(file: &str) -> bool {
     if is_test_file(file) {
         return false;
     }
-    if Regex::new(r"(?i)^(?:package\.json|pom\.xml)$|/(?:package\.json|pom\.xml)$")
-        .unwrap()
-        .is_match(file)
-    {
+    if PROJECT_MANIFEST_RE.is_match(file) {
         return false;
     }
-    file.ends_with("/**")
-        || Regex::new(r"\.(?:ts|tsx|js|jsx|mjs|cjs|java|kt|go|rs|py|rb|php|cs|swift|scala)$")
-            .unwrap()
-            .is_match(file)
+    file.ends_with("/**") || SOURCE_FILE_RE.is_match(file)
 }
 
 fn is_safe_focused_directory(directory: &str) -> bool {
@@ -739,11 +752,16 @@ fn is_safe_focused_directory(directory: &str) -> bool {
 
 fn is_safe_relative_path(path: &str) -> bool {
     !path.starts_with('/')
-        && !Regex::new(r"^[A-Za-z]:/").unwrap().is_match(path)
+        && !has_windows_drive_prefix(path)
         && !path.starts_with("//")
         && path
             .split('/')
             .all(|segment| segment != "." && segment != "..")
+}
+
+fn has_windows_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && &bytes[1..3] == b":/"
 }
 
 fn overlaps(left: &RequirementPlan, right: &RequirementPlan) -> bool {
@@ -857,4 +875,26 @@ fn unique(values: Vec<String>) -> Vec<String> {
         }
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_new_paths;
+
+    #[test]
+    fn extracts_case_insensitive_new_path_markers() {
+        let paths = extract_new_paths(
+            "新增 crates/sdd-core/src/new_file.rs\ncrates/sdd-core/tests/new_file.test.rs [NEW]\ncrates/sdd-core/src/existing.rs",
+        );
+
+        assert!(paths
+            .iter()
+            .any(|path| path == "crates/sdd-core/src/new_file.rs"));
+        assert!(paths
+            .iter()
+            .any(|path| path == "crates/sdd-core/tests/new_file.test.rs"));
+        assert!(!paths
+            .iter()
+            .any(|path| path == "crates/sdd-core/src/existing.rs"));
+    }
 }

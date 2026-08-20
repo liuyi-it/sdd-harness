@@ -18,6 +18,18 @@ use crate::state::StateStore;
 pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
     let empty_args = serde_json::Value::Null;
     let args = args.unwrap_or(&empty_args);
+    // --tail 只对事件查看有意义，必须与 --events 一起使用。
+    if args.get("tail").is_some()
+        && !args
+            .get("events")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "--tail 必须与 --events 一起使用",
+        ));
+    }
     let timeout_ms = args
         .get("timeout")
         .and_then(|value| value.as_f64())
@@ -62,6 +74,19 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     if args.get("stop").and_then(|v| v.as_bool()).unwrap_or(false) {
         let context = active_loop(&state)?;
         update_loop(&store, &context, "ABORTED", None)?;
+        // 停止只终止 loop，不改变工作流阶段；恢复时应回到原有 Agent/命令边界。
+        {
+            let _guard = crate::state::file_lock::lock_sdd(
+                cwd,
+                "sdd auto stop",
+                state.current_change_id.as_deref(),
+                timeout_ms.or(Some(5_000)),
+            )?;
+            store.update(|s| {
+                s.in_progress_phase = None;
+                s.suggested_command = Some("sdd auto --resume".to_string());
+            })?;
+        }
         append_event(cwd, &context, "LOOP_STOPPED", &state.current_phase, None)?;
         return Ok(paused_result_with_reason(
             &state.current_phase,
@@ -91,11 +116,13 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     let spec_engine = SpecEngine::new();
 
     // 第一步：new。INDEX_READY 必须提供需求，其它可恢复阶段从 runtime 读取原始需求。
+    // ARCHIVED 且提供了新需求时也要走 new 开启新变更；无需求保持走 archive 幂等分支。
     let mut phase = state.current_phase.clone();
     if matches!(
         phase.as_str(),
         "INDEX_READY" | "CLARIFYING" | "FAILED" | "PAUSED" | "NEW_STARTED"
-    ) {
+    ) || (phase == "ARCHIVED" && requirement.is_some())
+    {
         if phase == "INDEX_READY" && requirement.is_none() {
             update_loop(&store, &context, "PAUSED", Some("CLARIFICATION"))?;
             append_event(cwd, &context, "LOOP_PAUSED", &phase, None)?;
@@ -205,9 +232,13 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
                         cwd,
                         "sdd auto failure",
                         state.current_change_id.as_deref(),
-                        timeout_ms,
+                        timeout_ms.or(Some(5_000)),
                     )?;
+                    // 恢复语义落地：步骤失败把工作流阶段置为 PAUSED 并清空 in_progress_phase，
+                    // 与返回结果一致，使 sdd status 能给出 auto --resume 建议。
                     store.update(|s| {
+                        s.current_phase = "PAUSED".to_string();
+                        s.in_progress_phase = None;
                         s.failed_command = Some(format!("sdd {name}"));
                         s.failed_reason = Some(e.message.clone());
                         s.suggested_command = Some("sdd auto --resume".to_string());
@@ -332,7 +363,8 @@ fn update_loop(
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "无法解析项目根目录"))?
         .to_string_lossy()
         .to_string();
-    let _guard = crate::state::file_lock::lock_sdd(&cwd, "sdd auto state", None, None)?;
+    // 给 update_loop 一个短等待超时：瞬时锁冲突时短暂重试，避免直接 E_CONCURRENT_RUN 脆断。
+    let _guard = crate::state::file_lock::lock_sdd(&cwd, "sdd auto state", None, Some(5_000))?;
     let now = crate::state::state_store::now_iso();
     let active = json!({
         "loopId": context.loop_id,
@@ -361,6 +393,7 @@ fn append_event(
     phase: &str,
     command: Option<&str>,
 ) -> Result<(), SddError> {
+    let _guard = crate::state::file_lock::lock_sdd(cwd, "sdd auto event", None, Some(5_000))?;
     crate::state::runtime_store::append_loop_event(
         cwd,
         &context.run_id,
@@ -429,5 +462,7 @@ fn unique_id(prefix: &str) -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    format!("{prefix}-{nanos}")
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("{prefix}-{}-{nanos}-{sequence}", std::process::id())
 }

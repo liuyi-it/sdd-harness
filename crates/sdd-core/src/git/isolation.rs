@@ -203,9 +203,13 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String, SddError> {
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<std::process::Output, SddError> {
+    // 与 inspector.rs 一致：子命令前加全局参数（关闭 fsmonitor 与 pager）；
+    // GIT_TERMINAL_PROMPT=0 由 run_command 的内部加固统一注入（签名固定）。
+    let mut full_args = vec!["-c", "core.fsmonitor=false", "--no-pager"];
+    full_args.extend_from_slice(args);
     run_command(
         Path::new("git"),
-        args,
+        &full_args,
         cwd.to_string_lossy().as_ref(),
         30_000,
     )

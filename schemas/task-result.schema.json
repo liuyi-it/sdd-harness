@@ -3,7 +3,7 @@
   "$id": "https://sdd-harness.dev/schemas/task-result.schema.json",
   "title": "SDD 任务执行结果",
   "type": "object",
-  "required": ["taskId", "status"],
+  "required": ["taskId", "status", "evidence", "filesChanged"],
   "properties": {
     "taskId": { "type": "string" },
     "status": {
@@ -30,7 +30,8 @@
           },
           "output": { "type": "string" },
           "file": { "type": "string" }
-        }
+        },
+        "additionalProperties": false
       }
     },
     "verification": {
@@ -46,7 +47,8 @@
           },
           "passed": { "type": "boolean" },
           "output": { "type": "string" }
-        }
+        },
+        "additionalProperties": false
       }
     },
     "filesChanged": {
@@ -54,5 +56,5 @@
       "items": { "type": "string" }
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

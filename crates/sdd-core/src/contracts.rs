@@ -5,6 +5,38 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 当前 SDD 可原生接入的宿主 Agent。
+///
+/// 该类型是 CLI 注入的 `hostAdapter` 与资产层之间唯一的边界，避免在各层散落
+/// 字符串字面量和不一致的可选值。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostAdapter {
+    Codex,
+    Omp,
+}
+
+impl HostAdapter {
+    pub const DEFAULT: Self = Self::Codex;
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Omp => "omp",
+        }
+    }
+
+    pub fn parse(raw: &str) -> Option<Self> {
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("codex") {
+            Some(Self::Codex)
+        } else if raw.eq_ignore_ascii_case("omp") {
+            Some(Self::Omp)
+        } else {
+            None
+        }
+    }
+}
+
 /// 命令集合（12 个，与 Node 版一致）
 pub const COMMANDS: [&str; 12] = [
     "init", "auto", "new", "change", "design", "plan", "build", "verify", "review", "archive",
@@ -37,43 +69,51 @@ pub const PHASES: [&str; 22] = [
     "PAUSED",
 ];
 
+/// 错误码 → 退出码映射表（与 Node 版 ERROR_EXIT_CODES 逐字一致）。
+/// `error_exit_codes` 与 `is_known_error_code` 共用同一张表，避免两处漂移。
+const ERROR_EXIT_CODES: [(&str, i32); 33] = [
+    ("E_NOT_INITIALIZED", 3),
+    ("E_INVALID_PHASE_COMMAND", 3),
+    ("E_ACTIVE_CHANGE_EXISTS", 3),
+    ("E_MISSING_CHANGE", 4),
+    ("E_MISSING_ARTIFACT", 4),
+    ("E_INVALID_REQUIREMENT", 6),
+    ("E_COMPONENT_UNAVAILABLE", 5),
+    ("E_COMPONENT_INTEGRITY_FAILED", 10),
+    ("E_DEGRADED_MODE", 0),
+    ("E_UNRESOLVED_BLOCKER", 6),
+    ("E_VERIFY_REQUIRED", 3),
+    ("E_REVIEW_REQUIRED", 3),
+    ("E_VERIFY_FAILED", 7),
+    ("E_TDD_EVIDENCE_REQUIRED", 7),
+    ("E_AGENT_TASK_FAILED", 7),
+    ("E_UNDECLARED_FILE_CHANGE", 10),
+    ("E_REVIEW_FAILED", 8),
+    ("E_REVIEW_BACKEND_UNAVAILABLE", 5),
+    ("E_REVIEW_BACKEND_TIMEOUT", 124),
+    ("E_REVIEW_BACKEND_FAILED", 8),
+    ("E_REVIEW_BACKEND_INVALID_OUTPUT", 8),
+    ("E_UNPLANNED_DEPENDENCY", 8),
+    ("E_ARCHIVED_READONLY", 3),
+    ("E_CONCURRENT_RUN", 9),
+    ("E_LOCK_TIMEOUT", 9),
+    ("E_TIMEOUT", 124),
+    ("E_INTERRUPTED", 130),
+    ("E_STATE_CORRUPTED", 1),
+    ("E_SECURITY_BLOCKED", 10),
+    ("E_PATH_OUTSIDE_REPO", 10),
+    ("E_SYMLINK_BLOCKED", 10),
+    ("E_PARALLEL_FILE_CONFLICT", 3),
+    ("E_GENERATION_FAILED", 5),
+];
+
 /// 错误码到退出码的映射（与 Node 版 ERROR_EXIT_CODES 逐字一致）
 pub fn error_exit_codes(code: &str) -> i32 {
-    match code {
-        "E_NOT_INITIALIZED" => 3,
-        "E_INVALID_PHASE_COMMAND" => 3,
-        "E_ACTIVE_CHANGE_EXISTS" => 3,
-        "E_MISSING_CHANGE" => 4,
-        "E_MISSING_ARTIFACT" => 4,
-        "E_INVALID_REQUIREMENT" => 6,
-        "E_COMPONENT_UNAVAILABLE" => 5,
-        "E_COMPONENT_INTEGRITY_FAILED" => 10,
-        "E_DEGRADED_MODE" => 0,
-        "E_UNRESOLVED_BLOCKER" => 6,
-        "E_VERIFY_REQUIRED" => 3,
-        "E_REVIEW_REQUIRED" => 3,
-        "E_VERIFY_FAILED" => 7,
-        "E_TDD_EVIDENCE_REQUIRED" => 7,
-        "E_AGENT_TASK_FAILED" => 7,
-        "E_UNDECLARED_FILE_CHANGE" => 10,
-        "E_REVIEW_FAILED" => 8,
-        "E_REVIEW_BACKEND_UNAVAILABLE" => 5,
-        "E_REVIEW_BACKEND_TIMEOUT" => 124,
-        "E_REVIEW_BACKEND_FAILED" => 8,
-        "E_REVIEW_BACKEND_INVALID_OUTPUT" => 8,
-        "E_UNPLANNED_DEPENDENCY" => 8,
-        "E_ARCHIVED_READONLY" => 3,
-        "E_CONCURRENT_RUN" => 9,
-        "E_LOCK_TIMEOUT" => 9,
-        "E_TIMEOUT" => 124,
-        "E_INTERRUPTED" => 130,
-        "E_STATE_CORRUPTED" => 1,
-        "E_SECURITY_BLOCKED" => 10,
-        "E_PATH_OUTSIDE_REPO" => 10,
-        "E_SYMLINK_BLOCKED" => 10,
-        "E_PARALLEL_FILE_CONFLICT" => 3,
-        _ => 1,
-    }
+    ERROR_EXIT_CODES
+        .iter()
+        .find(|(candidate, _)| *candidate == code)
+        .map(|(_, exit_code)| *exit_code)
+        .unwrap_or(1)
 }
 
 /// 结构化警告（对应 Node 版 CliWarning）
@@ -216,39 +256,7 @@ impl CommandResult {
 
 /// 检查错误码是否为已知错误码
 pub fn is_known_error_code(code: &str) -> bool {
-    matches!(
-        code,
-        "E_NOT_INITIALIZED"
-            | "E_INVALID_PHASE_COMMAND"
-            | "E_ACTIVE_CHANGE_EXISTS"
-            | "E_MISSING_CHANGE"
-            | "E_MISSING_ARTIFACT"
-            | "E_INVALID_REQUIREMENT"
-            | "E_COMPONENT_UNAVAILABLE"
-            | "E_COMPONENT_INTEGRITY_FAILED"
-            | "E_DEGRADED_MODE"
-            | "E_UNRESOLVED_BLOCKER"
-            | "E_VERIFY_REQUIRED"
-            | "E_REVIEW_REQUIRED"
-            | "E_VERIFY_FAILED"
-            | "E_TDD_EVIDENCE_REQUIRED"
-            | "E_AGENT_TASK_FAILED"
-            | "E_UNDECLARED_FILE_CHANGE"
-            | "E_REVIEW_FAILED"
-            | "E_REVIEW_BACKEND_UNAVAILABLE"
-            | "E_REVIEW_BACKEND_TIMEOUT"
-            | "E_REVIEW_BACKEND_FAILED"
-            | "E_REVIEW_BACKEND_INVALID_OUTPUT"
-            | "E_UNPLANNED_DEPENDENCY"
-            | "E_ARCHIVED_READONLY"
-            | "E_CONCURRENT_RUN"
-            | "E_LOCK_TIMEOUT"
-            | "E_TIMEOUT"
-            | "E_INTERRUPTED"
-            | "E_STATE_CORRUPTED"
-            | "E_SECURITY_BLOCKED"
-            | "E_PATH_OUTSIDE_REPO"
-            | "E_SYMLINK_BLOCKED"
-            | "E_PARALLEL_FILE_CONFLICT"
-    )
+    ERROR_EXIT_CODES
+        .iter()
+        .any(|(candidate, _)| *candidate == code)
 }

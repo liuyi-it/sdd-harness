@@ -4,7 +4,7 @@
 //! Core 是整个工作流的统一调度入口，所有平台适配器最终都只通过这里
 //! 推进状态机、写入制品和返回结果。
 
-pub mod assets;
+mod assets;
 pub mod commands;
 pub mod contracts;
 pub mod engines;
@@ -28,7 +28,10 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
     match request.command.as_str() {
         // status 是纯只读命令，不依赖完整分发流程
         "status" => commands::status::run_status(cwd, request.args.as_ref()),
-        "codebase" => commands::codebase::run_codebase(cwd, request.args.as_ref()),
+        "codebase" => {
+            check_auto_loop_busy(cwd, request.command.as_str(), request.args.as_ref())?;
+            commands::codebase::run_codebase(cwd, request.args.as_ref())
+        }
         "change" => {
             ensure_phase(cwd, request.command.as_str(), request.args.as_ref())?;
             commands::change::run_change(
@@ -37,9 +40,13 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
                 &engines::spec::spec_engine::SpecEngine::new(),
             )
         }
-        "init" => commands::init::run_init(cwd, request.args.as_ref()),
+        "init" => {
+            check_auto_loop_busy(cwd, request.command.as_str(), request.args.as_ref())?;
+            commands::init::run_init(cwd, request.args.as_ref())
+        }
         // 写命令统一先检查初始化状态
         "new" => {
+            check_auto_loop_busy(cwd, request.command.as_str(), request.args.as_ref())?;
             let phase = read_phase(cwd)?;
             if phase == "NOT_INITIALIZED" {
                 return Err(
@@ -92,12 +99,52 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
     }
 }
 
+/// auto loop 协调锁：activeLoop 处于 RUNNING/WAITING_AGENT 时，拒绝会切换变更或
+/// 阶段规划的命令（init/new/change/design/plan、codebase 的 index/rebuild），
+/// 避免与 auto 的推进相互踩踏。build/verify/review/archive/auto 与只读 codebase
+/// 子命令放行，保证 Agent 在 loop 运行期间仍可手动 build complete 提交任务。
+fn check_auto_loop_busy(
+    cwd: &str,
+    command: &str,
+    args: Option<&serde_json::Value>,
+) -> Result<(), SddError> {
+    let state = state::StateStore::new(cwd.to_string()).read()?;
+    let Some(active) = state.active_loop.as_ref() else {
+        return Ok(());
+    };
+    let status = active
+        .get("status")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if status != "RUNNING" && status != "WAITING_AGENT" {
+        return Ok(());
+    }
+    let busy = match command {
+        "init" | "new" | "change" | "design" | "plan" => true,
+        "codebase" => matches!(
+            args.and_then(|value| value.get("sub"))
+                .and_then(|value| value.as_str()),
+            Some("index") | Some("rebuild")
+        ),
+        _ => false,
+    };
+    if busy {
+        return Err(SddError::new(
+            "E_CONCURRENT_RUN",
+            "auto loop 正在运行（RUNNING/WAITING_AGENT），请等待其结束或查看进度",
+        )
+        .with_next("sdd auto --events"));
+    }
+    Ok(())
+}
+
 /// 写命令前置检查：未初始化 / 已归档只读 / 阶段门禁（对齐 Node 版 core.ts 的分发前检查）
 fn ensure_phase(
     cwd: &str,
     command: &str,
     args: Option<&serde_json::Value>,
 ) -> Result<(), SddError> {
+    check_auto_loop_busy(cwd, command, args)?;
     let state = state::StateStore::new(cwd.to_string()).read()?;
     let phase = state.current_phase.clone();
     if phase == "NOT_INITIALIZED" {

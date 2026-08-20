@@ -1,15 +1,14 @@
-//! sdd / sdd-harness CLI 入口 — 参数解析、命令路由、输出格式化。
+//! sdd CLI 入口 — 参数解析、命令路由、输出格式化。
 //!
 //! 参数与输出契约对齐 早期 Node 实现：
 //! - 全局参数：--json/--cwd/--change/--timeout/--non-interactive/--verbose
 //! - 命令：init/status/new/design/plan/build/verify/review/archive/auto/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
 
-use std::io::{self, Write};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use sdd_core::contracts::{CommandRequest, CommandResult};
+use sdd_core::contracts::{CommandRequest, CommandResult, HostAdapter};
 use sdd_core::error::SddError;
 
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -36,7 +35,7 @@ struct GlobalArgs {
     /// 指定变更 ID
     #[arg(long, global = true)]
     change: Option<String>,
-    /// 超时秒数
+    /// 超时秒数（锁等待与子进程执行超时）
     #[arg(long, global = true, value_parser = parse_timeout)]
     timeout: Option<f64>,
     /// 无人值守模式；遇到未回答的需求阻塞问题直接失败
@@ -52,7 +51,7 @@ enum Command {
     /// 初始化 .sdd/
     Init {
         /// 空项目目录结构策略
-        #[arg(long = "structurePolicy", alias = "structure-policy", value_parser = ["free-design", "user-defined"])]
+        #[arg(long = "structurePolicy", value_parser = ["free-design", "user-defined"])]
         structure_policy: Option<String>,
         /// 宿主适配器（仅供宿主 Agent 内部传入，终端隐藏）
         #[arg(long = "host-adapter", hide = true)]
@@ -61,7 +60,7 @@ enum Command {
     /// 显示当前 SDD 状态
     Status {
         /// 显示 loop 状态摘要
-        #[arg(long = "loop", alias = "loop-status")]
+        #[arg(long = "loop")]
         loop_status: bool,
     },
     /// 创建新变更（需求）
@@ -130,7 +129,7 @@ enum Command {
         /// 查看 auto run 事件
         #[arg(long, default_value_t = false)]
         events: bool,
-        /// 事件条数（与 --events 配合）
+        /// 事件条数（必须与 --events 一起使用）
         #[arg(long)]
         tail: Option<u64>,
         /// 查看 auto loop 状态
@@ -172,8 +171,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let init_agent = match resolve_init_agent(&cli) {
-        Ok(agent) => agent,
+    let init_adapter = match resolve_init_adapter(&cli) {
+        Ok(adapter) => adapter,
         Err(error) => return render_error_and_exit(&error, cli.global.json, "FAILED"),
     };
     let cwd = match &cli.global.cwd {
@@ -187,7 +186,7 @@ fn main() -> ExitCode {
             }
         },
     };
-    let (command, args) = build_request(&cli, init_agent.as_deref());
+    let (command, args) = build_request(&cli, init_adapter.as_deref());
     let args = if args.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         None
     } else {
@@ -208,67 +207,20 @@ fn main() -> ExitCode {
     }
 }
 
-/// 终端初始化必须让用户选择宿主；宿主 Agent 通过隐藏选项传入自己的适配器。
-fn resolve_init_agent(cli: &Cli) -> Result<Option<String>, SddError> {
+/// `sdd init` 默认生成 Codex 原生资产；其他宿主通过隐藏选项自行标记。
+fn resolve_init_adapter(cli: &Cli) -> Result<Option<String>, SddError> {
     let Command::Init { host_adapter, .. } = &cli.command else {
         return Ok(None);
     };
     if let Some(agent) = host_adapter {
-        return validate_agent(agent).map(Some);
+        return validate_adapter(agent).map(|adapter| Some(adapter.as_str().to_string()));
     }
-    if cli.global.non_interactive {
-        return Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            "非交互初始化必须由宿主 Agent 注入当前适配器",
-        ));
-    }
-    select_agent_interactively().map(Some)
+    Ok(Some(HostAdapter::DEFAULT.as_str().to_string()))
 }
 
-fn validate_agent(agent: &str) -> Result<String, SddError> {
-    match agent.trim().to_ascii_lowercase().as_str() {
-        "omp" => Ok("omp".to_string()),
-        "opencode" => Ok("opencode".to_string()),
-        _ => Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            "宿主 Agent 仅支持 OMP 或 OpenCode",
-        )),
-    }
-}
-
-fn select_agent_interactively() -> Result<String, SddError> {
-    eprintln!("请选择要接入的 Agent：");
-    eprintln!("  1) OMP (Oh My Pi)");
-    eprintln!("  2) OpenCode");
-    eprint!("请输入编号 [1/2]: ");
-    io::stderr().flush().map_err(|error| {
-        SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            &format!("显示选择提示失败：{error}"),
-        )
-    })?;
-
-    let mut choice = String::new();
-    let read = io::stdin().read_line(&mut choice).map_err(|error| {
-        SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            &format!("读取 Agent 选择失败：{error}"),
-        )
-    })?;
-    if read == 0 {
-        return Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            "未读取到 Agent 选择；请输入 1 选择 OMP，或 2 选择 OpenCode",
-        ));
-    }
-    match choice.trim().to_ascii_lowercase().as_str() {
-        "1" | "omp" => Ok("omp".to_string()),
-        "2" | "opencode" => Ok("opencode".to_string()),
-        _ => Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            "Agent 选择无效；请输入 1 选择 OMP，或 2 选择 OpenCode",
-        )),
-    }
+fn validate_adapter(adapter: &str) -> Result<HostAdapter, SddError> {
+    HostAdapter::parse(adapter)
+        .ok_or_else(|| SddError::new("E_INVALID_PHASE_COMMAND", "宿主 Agent 仅支持 Codex 或 OMP"))
 }
 
 fn render_error_and_exit(error: &SddError, json: bool, state: &str) -> ExitCode {
@@ -345,7 +297,15 @@ fn render_text(result: &CommandResult) -> String {
     if let Some(data) = &result.data {
         if let Ok(text) = serde_json::to_string(data) {
             if !text.is_empty() && text != "null" {
-                lines.push(format!("数据：{text}"));
+                if text.chars().count() > 512 {
+                    // 长数据在文本模式下只给提示，避免倾倒整个状态对象；完整内容走 --json。
+                    lines.push(format!(
+                        "数据：<JSON 过长，已省略 {} 字符；使用 --json 查看完整内容>",
+                        text.chars().count()
+                    ));
+                } else {
+                    lines.push(format!("数据：{text}"));
+                }
             }
         }
     }
@@ -364,9 +324,11 @@ fn clamp_exit(code: i32) -> u8 {
 }
 
 fn render_text_error(error: &SddError) -> String {
+    // 文本模式也带错误码，便于脚本识别 E_* 码。
+    let base = format!("错误（{}）：{}", error.code, error.message);
     match &error.next {
-        Some(next) => format!("{}\n建议：{}", error.message, next),
-        None => error.message.clone(),
+        Some(next) => format!("{base}\n建议：{next}"),
+        None => base,
     }
 }
 

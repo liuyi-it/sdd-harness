@@ -16,17 +16,18 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 - 质量与归档：`VERIFYING`、`REVIEWING`、`ARCHIVING`。
 - 异常控制：`FAILED`、`PAUSED`。
 
-这些值属于稳定枚举；当前实现会持久化 `INITIALIZING`、`NEW_STARTED`、`CLARIFYING`、`BUILDING`、`BUILD_WAITING_AGENT`、`FAILED` 和 `PAUSED`。其余过程值为兼容保留值，调用方不能假设每个命令都会短暂写入对应过程值。
+这些值属于当前稳定枚举；当前实现会持久化 `INITIALIZING`、`NEW_STARTED`、`CLARIFYING`、`BUILDING`、`BUILD_WAITING_AGENT` 和 `PAUSED`（auto 步骤失败或 `--stop` 时写入）。`FAILED` 为契约预留值，当前实现不持久化；其余过程值不会被每个命令短暂写入，调用方不能依赖这一点。
 
-信息不足时 `new` 进入 `CLARIFYING`；`NEW_STARTED` 表示 `new` 已记录当前 `changeId`/`runId` 但尚未完成规格生成，恢复建议为 `sdd auto --resume`。用户可用 `sdd new --answers '<JSON>'` 或 `sdd auto --resume --answers '<JSON>'` 继续，不得新建第二个变更或直接编辑 `.sdd/`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；用户中断或需要扩大修复范围时进入 `PAUSED`。
+信息不足时 `new` 进入 `CLARIFYING`；`NEW_STARTED` 表示 `new` 已记录当前 `changeId`/`runId` 但尚未完成规格生成，恢复建议为 `sdd auto --resume`。用户可用 `sdd new --answers '<JSON>'` 或 `sdd auto --resume --answers '<JSON>'` 继续，不得新建第二个变更或直接编辑 `.sdd/`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；auto 步骤失败或用户 `--stop` 时进入 `PAUSED`（保留 failed_command/failed_reason/suggested_command，`sdd auto --resume` 恢复）。
 
 ## 恢复信息
 
 `.sdd/runtime.json` 的 `state` 节点提供以下恢复字段；命令只在对应失败或中断信息存在时写入：
 
-- `previousPhase`：最近一次稳定阶段。
+- `previousPhase`：最近一次稳定阶段（阶段推进时由 Core 自动维护）。
 - `inProgressPhase`：被中断或失败的执行阶段。
-- `failedCommand` / `interruptedCommand`：需要恢复的命令。
+- `failedCommand`：需要恢复的失败命令。
+- `interruptedCommand`：预留字段，当前实现不写入。
 - `suggestedCommand`：`sdd status` 返回的下一步建议。
 - `tasks` / `artifacts`：任务和关键制品状态。
 
@@ -41,8 +42,10 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 - `CLARIFYING`：等待用户回答。
 - `BUILD_WAITING_AGENT`：等待 Agent 执行任务。
-- `FAILED` / `PAUSED`：等待恢复或人工决策。
+- `PAUSED`：auto 步骤失败或用户停止，等待恢复或人工决策。
 - `ARCHIVED`：流程完成。
+
+`activeLoop.status` 为 `RUNNING`/`WAITING_AGENT` 期间，会切换变更或阶段规划的手动写命令（`init`、`new`、`change`、`design`、`plan`、`codebase index/rebuild`）返回 `E_CONCURRENT_RUN`；`build`、`verify`、`review`、`archive` 与只读命令不受影响。
 
 ## Git 工作区
 

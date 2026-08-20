@@ -34,20 +34,35 @@ fn complete_all_tasks(cwd: &str) {
         };
         let is_verify = action.task_id.ends_with("-VERIFY");
         let is_red = action.task_id.ends_with("-RED");
+        // 证据/验证命令必须来自 actionRequired 声明的 verification（项目相关）
+        let verify_command = action
+            .verification
+            .first()
+            .map(|v| {
+                std::iter::once(v.command.as_str())
+                    .chain(v.args.iter().map(String::as_str))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_else(|| "cargo test".to_string());
         let evidence = if is_verify {
             json!([])
         } else {
-            json!([{ "type": "command-run", "command": "cargo test",
+            json!([{ "type": "command-run", "command": verify_command,
                 "output": if is_red { "FAILED: expected" } else { "ok" },
                 "passed": !is_red, "expectedFailure": is_red }])
         };
+        // 全阶段强制 verification 非空；RED 必须带 passed=false 的失败验证
+        let verification = json!([{
+            "command": verify_command,
+            "args": [],
+            "passed": !is_red,
+        }]);
         let result = json!({
             "taskId": action.task_id,
             "status": "completed",
             "evidence": evidence,
-            "verification": if is_verify {
-                json!([{ "command": "cargo test", "args": [], "passed": true }])
-            } else { json!([]) },
+            "verification": verification,
             "filesChanged": []
         });
         let result = run(&CommandRequest {

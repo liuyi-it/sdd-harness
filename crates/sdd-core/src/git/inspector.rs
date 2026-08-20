@@ -68,6 +68,13 @@ impl GitInspector {
                 "当前目录不是 git 仓库",
             ));
         }
+        // base_head 必须是一次完整提交哈希（40 位 hex），拒绝引用/路径注入
+        if base_head.len() != 40 || !base_head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(SddError::new(
+                "E_SECURITY_BLOCKED",
+                &format!("非法基线提交：{base_head}"),
+            ));
+        }
         let out = git(cwd, &["diff", "--name-status", base_head, "HEAD"])?;
         if !out.status.success() {
             return Err(SddError::new(
@@ -117,7 +124,14 @@ impl GitInspector {
             &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
         )?;
         if !out.status.success() {
-            return Ok(Vec::new());
+            // fail-closed：git 状态读取失败不能当作"无变更"，否则会漏掉事实核对
+            return Err(SddError::new(
+                "E_COMPONENT_UNAVAILABLE",
+                &format!(
+                    "git status 执行失败：{}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                ),
+            ));
         }
         let records: Vec<&[u8]> = out.stdout.split(|byte| *byte == 0).collect();
         let mut files = Vec::new();
@@ -147,6 +161,9 @@ impl GitInspector {
         Ok(files)
     }
 
+    /// 业务变更：过滤 SDD 自身运行产物（.sdd/）。
+    /// 状态文件（runtime.json 等）的损坏检测由 runtime 校验和边车负责，
+    /// 此处只做路径过滤，不校验内容。
     pub fn business_changes(cwd: &str) -> Result<Vec<String>, SddError> {
         Ok(Self::changed_files(cwd)?
             .into_iter()
@@ -279,7 +296,12 @@ impl GitInspector {
     }
 }
 
+/// 统一 git 执行入口：子命令前加全局参数（关闭 fsmonitor 与 pager）。
+/// 环境变量 GIT_TERMINAL_PROMPT=0 由 run_command 的内部加固统一注入
+/// （其签名固定，见 knowledge::provider::run_command）。
 fn git(cwd: &str, args: &[&str]) -> Result<std::process::Output, SddError> {
-    run_command(&PathBuf::from("git"), args, cwd, 30_000)
+    let mut full_args = vec!["-c", "core.fsmonitor=false", "--no-pager"];
+    full_args.extend_from_slice(args);
+    run_command(&PathBuf::from("git"), &full_args, cwd, 30_000)
         .map_err(|e| SddError::new("E_PATH_OUTSIDE_REPO", &format!("git 命令执行失败：{e}")))
 }

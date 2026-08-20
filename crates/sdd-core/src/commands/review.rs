@@ -7,7 +7,8 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::path::PathBuf;
+use std::io::Read;
+use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
@@ -22,7 +23,7 @@ use crate::quality::ocr::{
 };
 use crate::quality::report::{render_report_markdown, Issue, Report};
 use crate::schema::validate_json;
-use crate::security::secrets_scanner::scan_secrets;
+use crate::security::secrets_scanner::validate_no_secrets;
 use crate::security::task_scope::validate_file_change;
 use crate::state::file_lock::lock_sdd;
 use crate::state::StateStore;
@@ -53,6 +54,8 @@ fn run_review_with_executor<E: OcrExecutor>(
 
     let mut issues: Vec<Issue> = Vec::new();
     let mut debt_files = Vec::new();
+    let mut warnings: Vec<serde_json::Value> = Vec::new();
+    let is_git = GitInspector::is_git_repo(&business_cwd);
 
     for key in [
         format!("{change_id}:plan"),
@@ -71,7 +74,7 @@ fn run_review_with_executor<E: OcrExecutor>(
                     SddError::new("E_STATE_CORRUPTED", &format!("验证报告解析失败：{e}"))
                 })
             })?;
-    if GitInspector::is_git_repo(&business_cwd) {
+    if is_git {
         let expected = verify_report
             .minimality
             .as_ref()
@@ -92,11 +95,17 @@ fn run_review_with_executor<E: OcrExecutor>(
                 origin: None,
             });
         }
+    } else {
+        // 非 git 仓库：跳过 git 类扫描时明确提示，避免静默缺少事实校验
+        warnings.push(json!({
+            "code": "W_NO_GIT_SCOPE_CHECK",
+            "message": "当前目录不是 git 仓库，未执行 git 事实校验（文件范围、依赖增量、工作区指纹）",
+        }));
     }
 
     // 1. 变更文件扫描（git 可用时）
     let mut changed_files: Vec<String> = Vec::new();
-    if GitInspector::is_git_repo(&business_cwd) {
+    if is_git {
         changed_files = if let Some(workspace) = &state.workspace {
             GitInspector::changes_since(
                 &business_cwd,
@@ -178,42 +187,86 @@ fn run_review_with_executor<E: OcrExecutor>(
             });
         }
     }
-    // 2. 敏感信息扫描：读取变更文件内容检查
+    // 2. 敏感信息扫描：读取变更文件内容检查。
+    //    路径先经 resolve_repo_path 解析（防 symlink 逃逸，与 ocr.rs 一致）；
+    //    扫描受 config audit.maxSizeMb/maxFiles 限额约束（默认 5MB/200 文件）。
+    let (audit_max_files, audit_max_bytes) =
+        audit_limits(&crate::state::runtime_store::read_config(cwd)?);
+    let mut scanned_count = 0usize;
+    let mut scanned_bytes = 0usize;
+    let mut scan_limited = false;
     for file in &changed_files {
-        let path = PathBuf::from(&business_cwd).join(file);
-        if let Ok(content) = fs::read_to_string(&path) {
-            let hits = scan_secrets(&content);
-            if !hits.is_empty() {
-                let names: Vec<String> = hits.iter().map(|(n, _)| n.clone()).collect();
-                issues.push(Issue {
-                    code: "E_SECURITY_BLOCKED".to_string(),
-                    severity: "critical".to_string(),
-                    message: format!("文件 {file} 包含敏感信息（{}）", names.join("、")),
-                    file: Some(file.clone()),
-                    category: None,
-                    start_line: None,
-                    end_line: None,
-                    existing_code: None,
-                    suggestion_code: None,
-                    origin: None,
-                });
+        if scanned_count >= audit_max_files || scanned_bytes >= audit_max_bytes {
+            scan_limited = true;
+            break;
+        }
+        let path = GitInspector::resolve_repo_path(&business_cwd, file)?;
+        let remaining = audit_max_bytes.saturating_sub(scanned_bytes);
+        match read_text_with_limit(&path, remaining) {
+            Ok(Some(content)) => {
+                scanned_count += 1;
+                scanned_bytes = scanned_bytes.saturating_add(content.len());
+                if let Err(error) = validate_no_secrets([(file.as_str(), content.as_str())]) {
+                    issues.push(Issue {
+                        code: error.code,
+                        severity: "critical".to_string(),
+                        message: error.message,
+                        file: Some(file.clone()),
+                        category: None,
+                        start_line: None,
+                        end_line: None,
+                        existing_code: None,
+                        suggestion_code: None,
+                        origin: None,
+                    });
+                }
+                if content.contains("sdd-debt") || content.contains("ponytail:") {
+                    debt_files.push(file.clone());
+                    issues.push(Issue {
+                        code: "W_DEBT_MARKER".to_string(),
+                        severity: "low".to_string(),
+                        message: format!("文件 {file} 包含显式债务标记"),
+                        file: Some(file.clone()),
+                        category: None,
+                        start_line: None,
+                        end_line: None,
+                        existing_code: None,
+                        suggestion_code: None,
+                        origin: None,
+                    });
+                }
             }
-            if content.contains("sdd-debt") || content.contains("ponytail:") {
-                debt_files.push(file.clone());
-                issues.push(Issue {
-                    code: "W_DEBT_MARKER".to_string(),
-                    severity: "low".to_string(),
-                    message: format!("文件 {file} 包含显式债务标记"),
-                    file: Some(file.clone()),
-                    category: None,
-                    start_line: None,
-                    end_line: None,
-                    existing_code: None,
-                    suggestion_code: None,
-                    origin: None,
-                });
+            Ok(None) => {
+                scan_limited = true;
+                break;
+            }
+            Err(error) => {
+                // 二进制/不可读文件不静默跳过：记录诊断警告
+                warnings.push(json!({
+                    "code": "W_FILE_UNREADABLE",
+                    "message": format!("变更文件 {file} 无法按文本读取（可能是二进制文件）：{error}"),
+                    "details": json!({ "file": file }),
+                }));
             }
         }
+    }
+    if scan_limited {
+        issues.push(Issue {
+            code: "E_AUDIT_SCAN_INCOMPLETE".to_string(),
+            severity: "critical".to_string(),
+            message: format!(
+                "变更文件扫描达到配置上限（{} 个文件 / {} MB），无法确认未扫描文件不含敏感信息",
+                audit_max_files,
+                audit_max_bytes / (1024 * 1024)
+            ),
+            file: None,
+            category: None,
+            start_line: None,
+            end_line: None,
+            existing_code: None,
+            suggestion_code: None,
+            origin: None,
+        });
     }
 
     // 3. 变更规模指标（记录不阻断）
@@ -243,7 +296,7 @@ fn run_review_with_executor<E: OcrExecutor>(
         format!("发现 {} 个审查发现", issues.len())
     };
     report.issues = issues.clone();
-    let git_fingerprint = if GitInspector::is_git_repo(&business_cwd) {
+    let git_fingerprint = if is_git {
         Some(GitInspector::workspace_fingerprint(&business_cwd)?)
     } else {
         None
@@ -254,7 +307,6 @@ fn run_review_with_executor<E: OcrExecutor>(
         "debtFiles": debt_files,
         "gitFingerprint": git_fingerprint,
     }));
-    let mut warnings = Vec::new();
     let mut ocr_error = None;
     if !report.passed {
         set_ocr_status(
@@ -409,12 +461,39 @@ fn run_review_with_executor<E: OcrExecutor>(
     })
 }
 
+/// 以字节上限读取 UTF-8 文本；超限时不返回内容，避免大文件进入内存。
+fn read_text_with_limit(path: &Path, maximum: usize) -> Result<Option<String>, std::io::Error> {
+    if fs::metadata(path)?.len() > maximum as u64 {
+        return Ok(None);
+    }
+    let mut content = String::new();
+    let mut reader = fs::File::open(path)?.take((maximum as u64).saturating_add(1));
+    let bytes = reader.read_to_string(&mut content)?;
+    Ok((bytes <= maximum).then_some(content))
+}
+
 fn ocr_timeout(args: Option<&serde_json::Value>) -> std::time::Duration {
     args.and_then(|value| value.get("timeout"))
         .and_then(serde_json::Value::as_f64)
         .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
         .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
         .unwrap_or_else(|| std::time::Duration::from_secs(120))
+}
+
+/// 审计扫描限额：config 的 audit.maxSizeMb（默认 5MB）与 audit.maxFiles（默认 200）。
+/// 缺省或非法值回退默认，避免把扫描上限压到 0。
+fn audit_limits(config: &serde_json::Value) -> (usize, usize) {
+    let max_files = config
+        .pointer("/audit/maxFiles")
+        .and_then(|value| value.as_u64())
+        .filter(|count| *count > 0)
+        .unwrap_or(200) as usize;
+    let max_mb = config
+        .pointer("/audit/maxSizeMb")
+        .and_then(|value| value.as_u64())
+        .filter(|mb| *mb > 0)
+        .unwrap_or(5);
+    (max_files, (max_mb as usize) * 1024 * 1024)
 }
 
 fn set_ocr_status(report: &mut Report, status: serde_json::Value) {
@@ -545,7 +624,42 @@ fn planned_dependency_additions(plan: &serde_json::Value) -> BTreeSet<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cargo_dependency_names, planned_dependency_additions};
+    use super::{
+        audit_limits, cargo_dependency_names, planned_dependency_additions, read_text_with_limit,
+    };
+
+    #[test]
+    fn audit_limits_default_to_5mb_and_200_files() {
+        let (files, bytes) = audit_limits(&serde_json::json!({}));
+        assert_eq!(files, 200);
+        assert_eq!(bytes, 5 * 1024 * 1024);
+    }
+
+    #[test]
+    fn audit_limits_read_config_and_ignore_invalid() {
+        let config = serde_json::json!({
+            "audit": { "maxSizeMb": 2, "maxFiles": 50 }
+        });
+        let (files, bytes) = audit_limits(&config);
+        assert_eq!(files, 50);
+        assert_eq!(bytes, 2 * 1024 * 1024);
+        // 非法值（0/负数）回退默认
+        let (files, _) = audit_limits(&serde_json::json!({ "audit": { "maxFiles": 0 } }));
+        assert_eq!(files, 200);
+    }
+
+    #[test]
+    fn bounded_text_reader_skips_oversized_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("large.txt");
+        std::fs::write(&path, "0123456789").unwrap();
+
+        assert_eq!(read_text_with_limit(&path, 9).unwrap(), None);
+        assert_eq!(
+            read_text_with_limit(&path, 10).unwrap().as_deref(),
+            Some("0123456789")
+        );
+    }
 
     #[test]
     fn cargo_dependencies_ignore_metadata_and_detect_target_tables() {

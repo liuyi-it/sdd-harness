@@ -5,4 +5,3 @@ node_modules/
 dist/
 coverage/
 package-lock.json
-fixtures/broken-state-project/.sdd/state.json

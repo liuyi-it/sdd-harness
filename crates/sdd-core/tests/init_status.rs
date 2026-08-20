@@ -27,31 +27,26 @@ fn init_creates_sdd_and_index_ready() {
     )
     .unwrap();
     let config = &runtime["config"];
-    let plugins = config
-        .get("plugins")
-        .and_then(|plugins| plugins.as_object());
-    assert_eq!(plugins.map(|plugins| plugins.len()), Some(1));
-    assert!(plugins.is_some_and(|plugins| plugins.contains_key("omp")));
+    assert_eq!(config["hostAdapter"], "codex");
+    assert!(config.get("plugins").is_none());
     assert_eq!(runtime["config"]["quality"]["ocr"]["mode"], "auto");
     assert_eq!(runtime["config"]["quality"]["ocr"]["command"], "ocr");
     assert!(runtime["index"]["summary"].is_string());
     assert!(runtime["index"]["diagnostics"].is_array());
     assert!(!dir.path().join(".sdd/index").exists());
-    assert!(dir.path().join(".omp/skills/sdd-harness/SKILL.md").exists());
-    assert!(dir.path().join(".omp/config.yml").exists());
-    assert!(dir.path().join(".omp/commands/sdd.md").exists());
-    assert!(dir.path().join(".omp/agents/sdd-worker-simple.md").exists());
-    assert!(dir.path().join(".omp/agents/sdd-worker.md").exists());
     assert!(dir
         .path()
-        .join(".omp/agents/sdd-worker-complex.md")
+        .join(".agents/skills/sdd-harness/SKILL.md")
         .exists());
-    for legacy in [
+    assert!(dir.path().join(".codex/agents/sdd-explorer.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-reviewer.toml").exists());
+    for obsolete in [
         "codebase-summary.md",
         "package-structure.md",
         "architecture.md",
     ] {
-        assert!(!dir.path().join(".sdd/index").join(legacy).exists());
+        assert!(!dir.path().join(".sdd/index").join(obsolete).exists());
     }
 }
 

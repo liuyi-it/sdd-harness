@@ -122,9 +122,21 @@ pub fn run_new(
             ));
         }
     }
-    // 阶段前置检查：中断在 NEW_STARTED 的当前 change/run 可安全续跑。
+    // SPEC_READY：需求已充分且存在当前变更时必须用 change 修订，禁止无提示覆盖当前 spec。
+    if state.current_phase == "SPEC_READY" {
+        if let Some(change_id) = state.current_change_id.as_deref() {
+            return Err(SddError::new(
+                "E_ACTIVE_CHANGE_EXISTS",
+                "存在已完成规格的当前变更，请用 sdd change 修订需求，禁止直接覆盖",
+            )
+            .with_next(&format!("sdd change {change_id}")));
+        }
+        return Err(recovery_error(&state));
+    }
+    // 阶段前置检查：中断在 NEW_STARTED 的当前 change/run 可安全续跑；
+    // PAUSED/FAILED 由 auto --resume 先走 new 步骤恢复。
     let continuing = state.current_phase == "CLARIFYING"
-        || state.current_phase == "SPEC_READY"
+        || state.current_phase == "PAUSED"
         || state.current_phase == "FAILED"
         || can_resume_new(&state);
     if state.current_phase != "INDEX_READY"
@@ -160,8 +172,14 @@ pub fn run_new(
         parsed.requirement.clone()
     };
     let Some(requirement) = requirement.filter(|s| !s.trim().is_empty()) else {
-        return Err(SddError::new("E_MISSING_ARTIFACT", "需求内容不能为空"));
+        return Err(SddError::new("E_INVALID_REQUIREMENT", "请提供非空需求文本"));
     };
+    if requirement.chars().count() > 32_768 {
+        return Err(SddError::new(
+            "E_INVALID_REQUIREMENT",
+            "需求文本超过 32768 字符上限",
+        ));
+    }
 
     let change_id = if continuing {
         state.current_change_id.clone().unwrap_or_else(|| {
@@ -241,8 +259,11 @@ pub fn run_new(
     };
     answers.extend(parsed.answers.clone());
 
-    crate::state::runtime_store::write_run_field(cwd, &run_id, "input", json!(requirement))?;
-    crate::state::runtime_store::write_run_field(cwd, &run_id, "answers", json!(answers))?;
+    crate::state::runtime_store::write_run_fields(
+        cwd,
+        &run_id,
+        [("input", json!(requirement)), ("answers", json!(answers))],
+    )?;
 
     // 需求分析先于状态提交，保证解析失败不会留下不可恢复的 NEW_STARTED。
     let analysis = engine.analyze(&requirement, &answers);
@@ -346,7 +367,7 @@ pub fn run_new(
     };
     let artifacts = engine
         .generate(&input)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("生成规格失败：{e}")))?;
+        .map_err(|e| SddError::new("E_GENERATION_FAILED", &format!("生成规格失败：{e}")))?;
 
     let spec_markdown = render_spec_document(&requirement, &answers, &artifacts.spec);
     let spec_json = json!({
@@ -480,7 +501,7 @@ fn render_clarifying_spec(
         String::new(),
         "## 当前需求".to_string(),
         String::new(),
-        requirement.to_string(),
+        crate::engines::openspec::escape_spec_text(requirement),
         String::new(),
         "## 待澄清问题".to_string(),
         String::new(),
@@ -512,7 +533,7 @@ pub(crate) fn render_spec_document(
         String::new(),
         "## 目标与价值".to_string(),
         String::new(),
-        requirement.to_string(),
+        crate::engines::openspec::escape_spec_text(requirement),
         String::new(),
         "## 范围".to_string(),
         String::new(),
@@ -534,7 +555,12 @@ pub(crate) fn render_spec_document(
         let mut answer_ids: Vec<&String> = answers.keys().collect();
         answer_ids.sort();
         for id in answer_ids {
-            lines.push(format!("- {}：{}", id, answers[id]));
+            // 答案同样转义结构行，避免澄清回答注入规格结构。
+            lines.push(format!(
+                "- {}：{}",
+                id,
+                crate::engines::openspec::escape_spec_text(&answers[id])
+            ));
         }
     }
     lines.extend([

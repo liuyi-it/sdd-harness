@@ -3,21 +3,19 @@
 //! 所有机器数据写入 `.sdd/runtime.json`；项目接入文件写入所选 Agent 目录。
 //! 知识图谱索引由 knowledge 模块接入，不托管外部服务进程。
 
-use std::fs;
 use std::path::PathBuf;
 
 use serde_json::json;
 
-use crate::contracts::CommandResult;
+use crate::contracts::{CommandResult, HostAdapter};
 use crate::error::SddError;
 use crate::state::file_lock::lock_sdd;
-use crate::state::state_store::{
-    WorkflowState, INDEX_STATUS_INDEX_READY, INDEX_STATUS_UNAVAILABLE, STATE_FILE,
-};
+use crate::state::runtime_store::RUNTIME_FILE;
+use crate::state::state_store::{INDEX_STATUS_INDEX_READY, INDEX_STATUS_UNAVAILABLE};
 use crate::state::StateStore;
 
 /// 配置 schema 版本（Rust 版新格式）
-pub const CONFIG_SCHEMA_VERSION: u32 = 2;
+pub const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
     let timeout_ms = args
@@ -28,16 +26,11 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
 
     let adapter = requested_adapter(args)?;
 
-    let sdd_root = PathBuf::from(cwd).join(".sdd");
-    fs::create_dir_all(&sdd_root)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{e}")))?;
-
     let store = StateStore::new(cwd.to_string());
     let previous = store.read()?;
     let first_init = !previous.initialized;
 
     if first_init {
-        store.write(&WorkflowState::not_initialized())?;
         store.update(|s| {
             s.current_phase = "INITIALIZING".to_string();
             s.in_progress_phase = Some("INITIALIZING".to_string());
@@ -57,15 +50,27 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     }
 
     // 写入默认配置到 runtime.json；重复 init 仅更新显式指定的结构策略。
-    write_default_config(cwd, &sdd_root, structure_policy, &adapter)?;
+    write_default_config(cwd, structure_policy, adapter)?;
 
-    let adapter_files = crate::assets::write_adapter_files_for(cwd, &adapter)?;
+    // 写资产前检测会被覆盖的既有适配器文件（目标已存在且内容与嵌入模板不同），
+    // 复跑 init 时提示用户本地文件被模板覆盖。
+    let overwritten = crate::assets::detect_overwrites(cwd, adapter);
+    let adapter_files = crate::assets::write_adapter_files(cwd, adapter)?;
 
     // 空项目检测：无源文件时附加 warning（一期不做 CLARIFYING 暂停）
     let empty_project = is_empty_project(cwd);
     let mut warnings: Vec<serde_json::Value> = Vec::new();
-    for file in adapter_files {
-        warnings.push(json!({ "code": "W_ADAPTER_FILE", "message": file }));
+    for target in adapter_files {
+        warnings.push(json!({
+            "code": "W_ADAPTER_FILE",
+            "message": format!("写入：{target}"),
+        }));
+    }
+    for target in overwritten {
+        warnings.push(json!({
+            "code": "W_ADAPTER_OVERWRITE",
+            "message": format!("已覆盖与嵌入模板不一致的适配器文件：{target}"),
+        }));
     }
     if first_init && empty_project && structure_policy.is_none() {
         warnings.push(json!({
@@ -148,9 +153,8 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
 /// 写默认配置到 runtime.json 的 config 节点。
 fn write_default_config(
     cwd: &str,
-    _sdd_root: &std::path::Path,
     structure_policy: Option<&str>,
-    adapter: &str,
+    adapter: HostAdapter,
 ) -> Result<(), SddError> {
     let project_name = cwd
         .trim_end_matches(['/', '\\'])
@@ -163,7 +167,7 @@ fn write_default_config(
         config = json!({
             "schemaVersion": CONFIG_SCHEMA_VERSION,
             "project": { "name": project_name },
-            "plugins": {},
+            "hostAdapter": adapter.as_str(),
             "codebase": {
                 "providers": ["codegraph"],
                 "fallbackProvider": "file-scan",
@@ -181,7 +185,7 @@ fn write_default_config(
                 "ocr": { "mode": "auto", "command": "ocr" }
             },
             "contextPack": { "maxSizeKb": 30 },
-            "audit": { "maxSizeMb": 10, "maxFiles": 5 },
+            "audit": { "maxSizeMb": 5, "maxFiles": 200 },
             "git": { "createBranch": false, "createWorktree": false },
             "security": {
                 "blockOutsideRepo": true,
@@ -200,58 +204,46 @@ fn write_default_config(
             "runtime.json 的 config 必须包含 workflow 对象",
         ));
     }
-    let plugins = config
-        .get_mut("plugins")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_else(|| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                "runtime.json 的 config 缺少 plugins 对象",
-            )
-        })?;
-    plugins
-        .entry(adapter.to_string())
-        .or_insert_with(|| json!({ "enabled": true }));
-    if let Some(policy) = structure_policy {
-        config
-            .get_mut("workflow")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| {
-                SddError::new(
-                    "E_STATE_CORRUPTED",
-                    "runtime.json 的 config 缺少 workflow 对象",
-                )
-            })?
-            .insert("structurePolicy".to_string(), json!(policy));
+    {
+        let config_object = config.as_object_mut().expect("已验证 config 为对象");
+        config_object.insert("schemaVersion".to_string(), json!(CONFIG_SCHEMA_VERSION));
+        config_object.insert("hostAdapter".to_string(), json!(adapter.as_str()));
+        config_object.remove("plugins");
+        if let Some(policy) = structure_policy {
+            config_object
+                .get_mut("workflow")
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| {
+                    SddError::new(
+                        "E_STATE_CORRUPTED",
+                        "runtime.json 的 config 缺少 workflow 对象",
+                    )
+                })?
+                .insert("structurePolicy".to_string(), json!(policy));
+        }
     }
     crate::state::runtime_store::write_config(cwd, config)
 }
 
 /// 解析并校验宿主注入的 Agent 适配器。
-fn requested_adapter(args: Option<&serde_json::Value>) -> Result<String, SddError> {
+fn requested_adapter(args: Option<&serde_json::Value>) -> Result<HostAdapter, SddError> {
     if args.and_then(|value| value.get("agent")).is_some() {
         return Err(SddError::new(
             "E_INVALID_PHASE_COMMAND",
-            "不再接受 Agent 参数；终端请交互选择，宿主 Agent 请注入当前适配器",
+            "不支持 agent 参数；请使用 hostAdapter",
         ));
     }
     let raw = match args.and_then(|value| value.get("hostAdapter")) {
-        None => "omp",
+        None => return Ok(HostAdapter::DEFAULT),
         Some(value) => value.as_str().ok_or_else(|| {
             SddError::new(
                 "E_INVALID_PHASE_COMMAND",
-                "Agent 必须是字符串；仅支持 omp 或 opencode",
+                "hostAdapter 必须是字符串；仅支持 codex 或 omp",
             )
         })?,
     };
-    let adapter = raw.trim();
-    if !matches!(adapter, "omp" | "opencode") {
-        return Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            "Agent 仅支持 omp 或 opencode",
-        ));
-    }
-    Ok(adapter.to_string())
+    HostAdapter::parse(raw)
+        .ok_or_else(|| SddError::new("E_INVALID_PHASE_COMMAND", "Agent 仅支持 Codex 或 OMP"))
 }
 
 /// 空项目检测：无 README/源文件/包清单时视为空项目
@@ -267,8 +259,9 @@ fn is_empty_project(cwd: &str) -> bool {
         "lib",
         "tests",
     ];
+    let root = PathBuf::from(cwd);
     for marker in markers {
-        if PathBuf::from(cwd).join(marker).exists() {
+        if root.join(marker).exists() {
             return false;
         }
     }
@@ -277,5 +270,5 @@ fn is_empty_project(cwd: &str) -> bool {
 
 /// 供测试与后续任务复用的状态文件路径
 pub fn state_path(cwd: &str) -> PathBuf {
-    PathBuf::from(cwd).join(".sdd").join(STATE_FILE)
+    PathBuf::from(cwd).join(".sdd").join(RUNTIME_FILE)
 }

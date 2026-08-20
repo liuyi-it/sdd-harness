@@ -62,8 +62,10 @@ pub fn run_status(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
         }));
     }
 
+    // 序列化失败说明状态损坏，直接传播错误而不是静默降级为空对象。
+    let mut data = serde_json::to_value(&state)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化工作流状态失败：{e}")))?;
     // --loop 时返回 activeLoop 摘要
-    let mut data = serde_json::to_value(&state).unwrap_or(json!({}));
     if args
         .and_then(|a| a.get("loopStatus").or_else(|| a.get("loop")))
         .and_then(|v| v.as_bool())

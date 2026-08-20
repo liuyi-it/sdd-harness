@@ -19,17 +19,6 @@ const EXCLUDED_DIRECTORIES: [&str; 8] = [
     "logs",
 ];
 
-const SAFE_TEXT_EXTENSIONS: [&str; 10] = [
-    ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".yml", ".yaml", ".java", ".rs",
-];
-
-const KEYWORD_RULES: [(&str, [&str; 3]); 4] = [
-    ("service", ["service", "Service", "services"]),
-    ("controller", ["controller", "Controller", "controllers"]),
-    ("route", ["route", "router", "endpoint"]),
-    ("test", ["describe(", "it(", "test("]),
-];
-
 /// 密钥文件名直接跳过（与 Node 版 isSecretFile 一致）
 pub fn is_secret_file(name: &str) -> bool {
     let lower = name.to_lowercase();
@@ -149,35 +138,4 @@ fn scan_files(root: &str, limit: usize) -> Vec<String> {
     }
     result.sort();
     result
-}
-
-/// 安全文本文件判断
-pub fn is_safe_text_file(file: &str) -> bool {
-    SAFE_TEXT_EXTENSIONS.iter().any(|ext| file.ends_with(ext))
-}
-
-/// 关键字扫描（供 codebase query 降级结果使用）
-pub fn keyword_matches(files: &[String], root: &str) -> Vec<String> {
-    let mut matches = Vec::new();
-    for (label, patterns) in KEYWORD_RULES {
-        let mut hit_files: Vec<String> = Vec::new();
-        for file in files.iter().take(80) {
-            if !is_safe_text_file(file) {
-                continue;
-            }
-            let full = std::path::PathBuf::from(root).join(file);
-            if let Ok(content) = std::fs::read_to_string(&full) {
-                if patterns.iter().any(|p| content.contains(p)) {
-                    hit_files.push(file.clone());
-                }
-            }
-            if hit_files.len() >= 3 {
-                break;
-            }
-        }
-        if !hit_files.is_empty() {
-            matches.push(format!("- {label}：{}", hit_files.join("、")));
-        }
-    }
-    matches
 }

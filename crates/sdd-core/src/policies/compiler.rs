@@ -32,16 +32,3 @@ pub fn compile_policy(policy_md: &str) -> Vec<PolicyRule> {
     }
     rules
 }
-
-/// 规则是否允许某文件变更（简单包含匹配）
-pub fn rule_allows_file(rule: &PolicyRule, _file: &str) -> bool {
-    let lower_rule = rule.text.to_lowercase();
-    if lower_rule.contains("禁止修改") || lower_rule.contains("禁止") {
-        if lower_rule.contains("未声明") || lower_rule.contains("未计划") {
-            return false;
-        }
-        // 规则文本中出现的路径片段不在 file 中 → 该规则不适用
-        return true;
-    }
-    true
-}

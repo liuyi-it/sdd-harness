@@ -44,28 +44,39 @@ pub fn run_design(
     let codebase_summary = crate::state::runtime_store::read_index_field(cwd, "summary")?
         .and_then(|value| value.as_str().map(String::from))
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少索引摘要"))?;
+    // 不可信上下文边界（与 build.rs 的 Context Pack 做法一致）：代码库摘要是外部输入，
+    // 先转义 END 标记防止注入逃逸，再按字符截断 8192，最后用 BEGIN/END 标记包裹。
+    let safe_summary = codebase_summary
+        .replace(
+            "END_UNTRUSTED_CODEBASE_CONTEXT",
+            "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
+        )
+        .chars()
+        .take(8_192)
+        .collect::<String>();
+    let wrapped_summary =
+        format!("BEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{safe_summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT");
     let existing_design = spec_json
         .get("design")
         .and_then(|value| value.as_str())
         .map(String::from);
+    // DesignInput 结构不动：三个代码库字段统一传包裹后的安全串，设计提示不再直接拼接原始摘要。
     let design = engine.generate_design(&DesignInput {
         spec,
         impact,
-        codebase_summary: codebase_summary.clone(),
-        package_structure: codebase_summary.clone(),
-        architecture: codebase_summary,
+        codebase_summary: wrapped_summary.clone(),
+        package_structure: wrapped_summary.clone(),
+        architecture: wrapped_summary,
         existing_design,
     });
     spec_json
         .as_object_mut()
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 的 spec 必须是对象"))?
         .insert("design".to_string(), json!(design));
-    crate::state::runtime_store::write_change_field(cwd, &change_id, "spec", spec_json)?;
-    crate::state::runtime_store::write_change_field(
+    crate::state::runtime_store::write_change_fields(
         cwd,
         &change_id,
-        "design",
-        json!(design.clone()),
+        [("spec", spec_json), ("design", json!(design.clone()))],
     )?;
     fs::write(change_dir.join("design.md"), &design)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 design.md 失败：{e}")))?;

@@ -1,5 +1,7 @@
 //! OpenSpec markdown 解析器（翻译自早期 Node 实现）。
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 
 use super::model::{SpecDocument, SpecRequirement, SpecScenario};
@@ -8,6 +10,17 @@ const DELTA_HEADING: &str = r"^## (ADDED|MODIFIED|REMOVED) Requirements$";
 const REQUIREMENT_HEADING: &str = r"^### Requirement:(.*)$";
 const SCENARIO_HEADING: &str = r"^#### Scenario:(.*)$";
 const STEP: &str = r"^-\s+(GIVEN|WHEN|THEN)\s+(.+)$";
+
+// 五个正则均为编译期常量，进程内只编译一次（parse_spec 之前每次调用都重复编译）。
+static TITLE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^# ([^#].*)$").expect("title 正则必须合法"));
+static DELTA_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(DELTA_HEADING).expect("delta 正则必须合法"));
+static REQUIREMENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(REQUIREMENT_HEADING).expect("requirement 正则必须合法"));
+static SCENARIO_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(SCENARIO_HEADING).expect("scenario 正则必须合法"));
+static STEP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(STEP).expect("step 正则必须合法"));
 
 /// 解析 OpenSpec markdown；格式非法时返回错误（语义对齐 parser.ts 的 throw）
 pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
@@ -22,18 +35,10 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
         .ok_or_else(|| "OpenSpec 文档缺少一级标题".to_string())?;
 
     let title_line = lines[first_content].trim();
-    let title_match = Regex::new(r"^# ([^#].*)$")
-        .map_err(|e| e.to_string())?
-        .captures(title_line);
-    let title = match title_match {
+    let title = match TITLE_RE.captures(title_line) {
         Some(caps) => caps.get(1).unwrap().as_str().trim().to_string(),
         None => return Err(format!("第 {} 行必须是一级文档标题", first_content + 1)),
     };
-
-    let delta_re = Regex::new(DELTA_HEADING).unwrap();
-    let requirement_re = Regex::new(REQUIREMENT_HEADING).unwrap();
-    let scenario_re = Regex::new(SCENARIO_HEADING).unwrap();
-    let step_re = Regex::new(STEP).unwrap();
 
     let mut requirements: Vec<SpecRequirement> = Vec::new();
     let mut operation: Option<String> = None;
@@ -48,7 +53,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
         }
         let line_no = offset + 1;
 
-        if let Some(caps) = delta_re.captures(line) {
+        if let Some(caps) = DELTA_RE.captures(line) {
             if let Some(req) = requirement.take() {
                 requirements.push(finish_requirement(req, &mut statement_lines));
             }
@@ -62,7 +67,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             continue;
         }
 
-        if let Some(caps) = requirement_re.captures(line) {
+        if let Some(caps) = REQUIREMENT_RE.captures(line) {
             if operation.is_none() {
                 return Err(format!("第 {line_no} 行的 Requirement 缺少 delta 标题"));
             }
@@ -85,7 +90,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             continue;
         }
 
-        if let Some(caps) = scenario_re.captures(line) {
+        if let Some(caps) = SCENARIO_RE.captures(line) {
             let req = requirement
                 .as_mut()
                 .ok_or_else(|| format!("第 {line_no} 行存在孤立 Scenario"))?;
@@ -104,7 +109,7 @@ pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
             continue;
         }
 
-        if let Some(caps) = step_re.captures(line) {
+        if let Some(caps) = STEP_RE.captures(line) {
             if !in_scenario {
                 return Err(format!("第 {line_no} 行存在孤立场景步骤"));
             }

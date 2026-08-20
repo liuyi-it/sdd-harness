@@ -34,7 +34,7 @@ fn invalid_codebase_provider_rejected() {
     let doc = json!({
         "currentPhase": "INDEX_READY",
         "indexStatus": "INDEX_READY",
-        "codebaseProvider": "legacy-provider"
+        "codebaseProvider": "unknown-provider"
     });
     assert!(validate_json("state", &doc).is_err());
 }
@@ -136,4 +136,100 @@ fn invalid_report_kind_rejected() {
 fn valid_artifact_passes() {
     let doc = json!({ "type": "spec", "hash": "abc123", "contentPath": "spec.md" });
     assert!(validate_json("artifact", &doc).is_ok());
+}
+
+#[test]
+fn task_id_pattern_enforced() {
+    // planner 生成格式 TASK-001-RED 通过
+    let good = json!({
+        "id": "TASK-001-RED",
+        "title": "x",
+        "phase": "RED",
+        "status": "PENDING"
+    });
+    assert!(validate_json("task", &good).is_ok());
+    let refactor = json!({
+        "id": "TASK-002-REFACTOR",
+        "title": "x",
+        "phase": "REFACTOR",
+        "status": "PENDING"
+    });
+    assert!(validate_json("task", &refactor).is_ok());
+    // 非数字序号或未知阶段均不匹配 pattern
+    let bad_id = json!({
+        "id": "TASK-XYZ-RED",
+        "title": "x",
+        "phase": "RED",
+        "status": "PENDING"
+    });
+    assert!(validate_json("task", &bad_id).is_err());
+    let bad_phase = json!({
+        "id": "TASK-001-BLUE",
+        "title": "x",
+        "phase": "BLUE",
+        "status": "PENDING"
+    });
+    assert!(validate_json("task", &bad_phase).is_err());
+}
+
+#[test]
+fn task_ref_phase_and_status_resolve() {
+    // task.schema.json 的 phase/status 经 $ref 指向 $defs，解析后仍按枚举校验
+    let good = json!({
+        "id": "TASK-001-GREEN",
+        "title": "x",
+        "phase": "GREEN",
+        "status": "DONE"
+    });
+    assert!(validate_json("task", &good).is_ok());
+    let bad = json!({
+        "id": "TASK-001-GREEN",
+        "title": "x",
+        "phase": "GREEN",
+        "status": "NOT_A_STATUS"
+    });
+    assert!(validate_json("task", &bad).is_err());
+}
+
+#[test]
+fn minimum_keyword_enforced() {
+    // report.schema.json 的 startLine/endLine 带 minimum: 0
+    let ok = json!({
+        "kind": "verify",
+        "summary": "ok",
+        "passed": true,
+        "issues": [{
+            "code": "X",
+            "severity": "low",
+            "message": "m",
+            "startLine": 0,
+            "endLine": 1
+        }]
+    });
+    assert!(validate_json("report", &ok).is_ok());
+    let bad = json!({
+        "kind": "verify",
+        "summary": "ok",
+        "passed": true,
+        "issues": [{
+            "code": "X",
+            "severity": "low",
+            "message": "m",
+            "startLine": -1,
+            "endLine": 0
+        }]
+    });
+    assert!(validate_json("report", &bad).is_err());
+}
+
+#[test]
+fn state_accepts_loop_agent_and_workspace_fields() {
+    let doc = json!({
+        "currentPhase": "BUILD_WAITING_AGENT",
+        "indexStatus": "INDEX_READY",
+        "activeLoop": { "runId": "run-1" },
+        "pendingAgentTask": { "taskId": "TASK-001-RED" },
+        "workspace": { "baselineCommit": "abc" }
+    });
+    assert!(validate_json("state", &doc).is_ok());
 }

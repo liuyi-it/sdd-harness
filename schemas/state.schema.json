@@ -34,6 +34,9 @@
     "interruptedCommand": { "type": ["string", "null"] },
     "recoverable": { "type": "boolean" },
     "suggestedCommand": { "type": ["string", "null"] },
+    "activeLoop": { "type": "object" },
+    "pendingAgentTask": { "type": "object" },
+    "workspace": { "type": "object" },
     "tasks": {
       "type": "object",
       "additionalProperties": {

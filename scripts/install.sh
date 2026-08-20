@@ -1,23 +1,20 @@
 #!/usr/bin/env bash
-# sdd-harness 一键全局安装脚本 (macOS/Linux/Git Bash)
+# sdd 一键全局安装脚本 (macOS/Linux/Git Bash)
 # 用法: bash scripts/install.sh
 set -euo pipefail
 
-echo "=== sdd-harness 安装 ==="
+echo "=== sdd 安装 ==="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # 选择安装前缀：允许 PREFIX 覆盖，便于受控安装与 CI 验收。
-CUSTOM_PREFIX=false
 if [ -z "${PREFIX:-}" ]; then
   if [ -d "$HOME/.local/bin" ] || [ ! -w /usr/local/bin ]; then
     PREFIX="$HOME/.local/bin"
   else
     PREFIX="/usr/local/bin"
   fi
-else
-  CUSTOM_PREFIX=true
 fi
 mkdir -p "$PREFIX"
 
@@ -25,8 +22,7 @@ case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) EXE_SUFFIX=".exe" ;;
   *) EXE_SUFFIX="" ;;
 esac
-COMMANDS=("sdd${EXE_SUFFIX}" "sdd-harness${EXE_SUFFIX}")
-LEGACY_NPM_PACKAGES=("@sdd-harness/cli" "sdd-harness")
+COMMANDS=("sdd${EXE_SUFFIX}")
 
 # 加载 cargo 环境（rustup 默认安装位置）
 if [ -f "$HOME/.cargo/env" ]; then
@@ -64,8 +60,8 @@ rollback_failed_install() {
 }
 trap rollback_failed_install EXIT
 
-echo "清理旧版安装..."
-rm -f "$PREFIX/sdd" "$PREFIX/sdd-harness" "$PREFIX/sdd.exe" "$PREFIX/sdd-harness.exe"
+echo "清理已有安装..."
+rm -f "$PREFIX/sdd" "$PREFIX/sdd.exe"
 
 # 构建 release 二进制
 echo "构建..."
@@ -80,7 +76,6 @@ fi
 # 注册全局命令
 echo "注册全局命令到 $PREFIX ..."
 install -m 0755 "$BIN" "$PREFIX/sdd${EXE_SUFFIX}"
-install -m 0755 "$BIN" "$PREFIX/sdd-harness${EXE_SUFFIX}"
 
 # 验证安装
 if [ "$(command -v sdd || true)" != "$PREFIX/sdd${EXE_SUFFIX}" ]; then
@@ -94,24 +89,6 @@ for command_name in "${COMMANDS[@]}"; do
   }
 done
 
-# 新二进制验证成功后再清理 npm 全局 link，避免失败回滚时丢失旧版 CLI。
-if [ "$CUSTOM_PREFIX" = false ] && command -v npm >/dev/null 2>&1; then
-  for package_name in "${LEGACY_NPM_PACKAGES[@]}"; do
-    npm uninstall -g "$package_name" >/dev/null 2>&1 || true
-  done
-  NPM_PREFIX="$(npm prefix -g)"
-  NPM_ROOT="$(npm root -g)"
-  rmdir "$NPM_ROOT/@sdd-harness" 2>/dev/null || true
-  if [ -n "$EXE_SUFFIX" ]; then
-    NPM_BIN="$NPM_PREFIX"
-  else
-    NPM_BIN="$NPM_PREFIX/bin"
-  fi
-  rm -f "$NPM_BIN/sdd" "$NPM_BIN/sdd-harness" \
-    "$NPM_BIN/sdd.cmd" "$NPM_BIN/sdd-harness.cmd" \
-    "$NPM_BIN/sdd.ps1" "$NPM_BIN/sdd-harness.ps1" 2>/dev/null || true
-fi
-
 INSTALL_SUCCEEDED=true
 rm -rf "$BACKUP_DIR"
 trap - EXIT
@@ -119,5 +96,5 @@ trap - EXIT
 echo ""
 echo "=== 安装完成 ==="
 echo "命令位置: $PREFIX/sdd${EXE_SUFFIX}"
-echo "可用命令: sdd, sdd-harness"
+echo "可用命令: sdd"
 echo "使用 sdd init 初始化项目"

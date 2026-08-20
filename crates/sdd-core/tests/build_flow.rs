@@ -164,7 +164,9 @@ fn build_complete_with_valid_result_passes_red() {
             { "type": "command-run", "command": "cargo test", "output": "FAILED: expected",
               "passed": false, "expectedFailure": true }
         ],
-        "verification": [],
+        "verification": [
+            { "command": "cargo test", "args": [], "passed": false }
+        ],
         "filesChanged": []
     })
     .to_string();
@@ -202,7 +204,9 @@ fn build_complete_rejects_unexpected_failure_as_red_evidence() {
             "type": "command-run", "command": "cargo test", "output": "编译器崩溃",
             "passed": false, "expectedFailure": false
         }],
-        "verification": [],
+        "verification": [
+            { "command": "cargo test", "args": [], "passed": false }
+        ],
         "filesChanged": []
     })
     .to_string();
@@ -238,6 +242,46 @@ fn build_complete_rejects_result_path_override() {
     .unwrap_err();
     assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
 }
+#[test]
+fn build_complete_accepts_result_from_file_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    let next = run(&CommandRequest {
+        command: "build".into(),
+        cwd: cwd.clone(),
+        args: Some(json!({ "sub": "next" })),
+    })
+    .unwrap();
+    let action = next.action_required.unwrap();
+    let result_json = json!({
+        "taskId": action.task_id,
+        "status": "completed",
+        "evidence": [{
+            "type": "command-run", "command": "cargo test", "output": "FAILED: expected",
+            "passed": false, "expectedFailure": true
+        }],
+        "verification": [
+            { "command": "cargo test", "args": [], "passed": false }
+        ],
+        "filesChanged": []
+    })
+    .to_string();
+    let result_path = dir.path().join("task-result.json");
+    std::fs::write(&result_path, &result_json).unwrap();
+    let result = run(&CommandRequest {
+        command: "build".into(),
+        cwd,
+        args: Some(json!({
+            "sub": "complete",
+            "task": action.task_id,
+            "resultPath": result_path.to_string_lossy(),
+        })),
+    })
+    .unwrap();
+    assert!(result.ok);
+    assert_eq!(result.state, "PLAN_READY");
+}
+
 #[test]
 fn build_complete_rejects_files_changed_that_disagree_with_git() {
     let dir = tempfile::tempdir().unwrap();
@@ -283,7 +327,9 @@ fn build_complete_rejects_files_changed_that_disagree_with_git() {
             "type": "command-run", "command": "cargo test", "output": "expected failure",
             "passed": false, "expectedFailure": true
         }],
-        "verification": [],
+        "verification": [
+            { "command": "cargo test", "args": [], "passed": false }
+        ],
         "filesChanged": []
     })
     .to_string();
@@ -350,7 +396,9 @@ fn build_next_accepts_existing_changes_from_completed_task() {
             "type": "command-run", "command": "cargo test", "output": "expected failure",
             "passed": false, "expectedFailure": true
         }],
-        "verification": [],
+        "verification": [
+            { "command": "cargo test", "args": [], "passed": false }
+        ],
         "filesChanged": changed
     })
     .to_string();

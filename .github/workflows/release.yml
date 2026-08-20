@@ -6,13 +6,14 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +22,11 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: sdd-linux-x64
+            bin: sdd
+          - name: linux-x64-musl
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: sdd-linux-x64-musl
             bin: sdd
           - name: macos-x64
             os: macos-latest
@@ -39,22 +45,39 @@ jobs:
             bin: sdd.exe
     steps:
       - uses: actions/checkout@v4
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - run: cargo build --release --package sdd-cli --target ${{ matrix.target }}
+      - run: cargo build --release --locked --package sdd-cli --target ${{ matrix.target }}
       - name: Rename binary for release
         shell: bash
         run: cp "target/${{ matrix.target }}/release/${{ matrix.bin }}" "${{ matrix.artifact }}"
+      - name: Generate checksum
+        shell: bash
+        run: |
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          else
+            shasum -a 256 "${{ matrix.artifact }}" > "${{ matrix.artifact }}.sha256"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256
           if-no-files-found: error
 
   release:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -65,7 +88,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           find dist -type f -print
-          gh release delete "$GITHUB_REF_NAME" --yes >/dev/null 2>&1 || true
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::发布 $GITHUB_REF_NAME 已存在；拒绝删除既有发布以重新创建"
+            exit 1
+          fi
           if ! gh release create "$GITHUB_REF_NAME" dist/*/* --generate-notes > /tmp/release.err 2>&1; then
             echo "::error::gh release create 失败"
             tail -30 /tmp/release.err | sed 's/^/::error::/'

@@ -1,46 +1,60 @@
-//! FileLock 为所有写命令提供仓库级串行化保护。
+//! 基于操作系统独占锁的 `.sdd` 写锁。
 //!
-//! 翻译自 早期 Node 实现：
-//! - 锁文件 `.sdd/lock` 包含 JSON 元数据（pid/command/createdAt/expiresAt）
-//! - 未过期或旧进程仍存活时拒绝新锁
-//! - 设置了超时且超时耗尽 → E_LOCK_TIMEOUT；未设置超时 → E_CONCURRENT_RUN
-//! - 过期的锁允许抢占（删除后重试）
+//! 锁文件只保存当前持有者的诊断元数据；排他性由保持打开的文件描述符保证。
+//! 因此进程异常退出会由操作系统自动释放锁，也不需要“过期抢占”或删除锁文件。
 
-use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Seek, SeekFrom, Write};
+use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::error::SddError;
 use crate::state::state_store::{now_iso, SDD_DIR};
 
 const LOCK_FILE: &str = "lock";
-/// 锁有效期 10 分钟（与 Node 版 expiresAt 一致）
-const LOCK_TTL_SECS: u64 = 10 * 60;
-/// 重试间隔
 const RETRY_DELAY_MS: u64 = 50;
 
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+thread_local! {
+    /// 同一线程中的组合命令复用持有中的文件描述符，避免内部状态写入产生自竞争。
+    /// 每个线程独立记录，其他线程和进程仍由 OS 独占锁阻断。
+    static HELD_LOCKS: RefCell<HashMap<PathBuf, Rc<LockHandle>>> = RefCell::new(HashMap::new());
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct LockData {
     pid: u32,
-    #[serde(default)]
-    token: String,
     command: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     change_id: Option<String>,
     created_at: String,
-    expires_at: String,
 }
 
 #[derive(Debug)]
+struct LockHandle {
+    _file: File,
+}
+
+/// 持有文件描述符即持有独占锁；同一线程的嵌套调用复用句柄，最后一个 guard Drop 时释放。
+#[derive(Debug)]
 pub struct SddLockGuard {
     path: PathBuf,
-    owner: LockData,
+    handle: Rc<LockHandle>,
 }
 
 impl Drop for SddLockGuard {
     fn drop(&mut self) {
-        if read_lock_data(&self.path).as_ref() == Ok(&self.owner) {
-            let _ = fs::remove_file(&self.path);
-        }
+        HELD_LOCKS.with(|locks| {
+            let mut locks = locks.borrow_mut();
+            let Some(held) = locks.get(&self.path) else {
+                return;
+            };
+            // map 与当前 guard 各持有一个 Rc；移除 map 后由当前 guard 的 Drop 释放 File。
+            if Rc::ptr_eq(held, &self.handle) && Rc::strong_count(&self.handle) == 2 {
+                locks.remove(&self.path);
+            }
+        });
     }
 }
 
@@ -73,199 +87,107 @@ fn lock_named(
     timeout_ms: Option<u64>,
 ) -> Result<SddLockGuard, SddError> {
     let dir = PathBuf::from(cwd).join(SDD_DIR);
-    fs::create_dir_all(&dir)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{e}")))?;
+    fs::create_dir_all(&dir).map_err(|error| {
+        SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{error}"))
+    })?;
     let path = dir.join(file_name);
+    if let Some(guard) = reentrant_guard(&path) {
+        return Ok(guard);
+    }
     let deadline =
         timeout_ms.map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
 
     loop {
         match try_acquire(&path, command, change_id) {
             Ok(guard) => return Ok(guard),
-            Err(Conflict::Timeout) => {
-                // 未设置等待时限 → 直接冲突（对齐 Node 版 E_CONCURRENT_RUN）
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if deadline.is_none() {
-                    let holder = read_lock_data(&path).ok();
-                    let msg = match holder {
-                        Some(h) => format!("命令 {} 正在运行（pid {}）", h.command, h.pid),
-                        None => "其他命令正在运行".to_string(),
-                    };
-                    return Err(SddError::new("E_CONCURRENT_RUN", &msg).with_next("sdd status"));
+                    return Err(SddError::new("E_CONCURRENT_RUN", &holder_message(&path))
+                        .with_next("sdd status"));
                 }
-                if deadline
-                    .map(|d| std::time::Instant::now() < d)
-                    .unwrap_or(false)
-                {
+                if deadline.is_some_and(|at| std::time::Instant::now() < at) {
                     std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
                     continue;
                 }
-                let holder = read_lock_data(&path).ok();
-                let msg = match holder {
-                    Some(h) => format!("命令 {} 持有锁超时，无法在限定时间内获取写锁", h.command),
-                    None => "等待 .sdd/lock 超时，可能有其他命令正在运行".to_string(),
-                };
-                return Err(SddError::new("E_LOCK_TIMEOUT", &msg).with_next("sdd status"));
+                return Err(SddError::new(
+                    "E_LOCK_TIMEOUT",
+                    &format!("{}，无法在限定时间内获取写锁", holder_message(&path)),
+                )
+                .with_next("sdd status"));
             }
-            Err(Conflict::Stale) => {
-                // 锁已过期：删除后重试
-                if let Err(error) = fs::remove_file(&path) {
-                    if error.kind() != std::io::ErrorKind::NotFound {
-                        return Err(SddError::new(
-                            "E_STATE_CORRUPTED",
-                            &format!("清理过期锁失败：{error}"),
-                        ));
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
-                continue;
-            }
-            Err(Conflict::Io(message)) => {
-                return Err(SddError::new("E_STATE_CORRUPTED", &message));
+            Err(error) => {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    &format!("获取 .sdd 写锁失败：{error}"),
+                ));
             }
         }
     }
-}
-
-enum Conflict {
-    /// 锁被占用且未过期（或进程存活）
-    Timeout,
-    /// 锁已过期，可抢占
-    Stale,
-    Io(String),
 }
 
 fn try_acquire(
-    path: &PathBuf,
+    path: &Path,
     command: &str,
     change_id: Option<&str>,
-) -> Result<SddLockGuard, Conflict> {
-    let data = LockData {
+) -> Result<SddLockGuard, std::io::Error> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        // 先取得 OS 锁，再由 write_lock_data 截断并写入诊断元数据。
+        // 打开时不可截断，否则竞争进程会抹掉当前持锁者的信息。
+        .truncate(false)
+        .open(path)?;
+    file.try_lock()?;
+
+    let owner = LockData {
         pid: std::process::id(),
-        token: format!(
-            "{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|duration| duration.as_nanos())
-                .unwrap_or(0)
-        ),
         command: command.to_string(),
-        change_id: change_id.map(|s| s.to_string()),
+        change_id: change_id.map(str::to_string),
         created_at: now_iso(),
-        expires_at: expires_at_iso(),
     };
-    let content = match serde_json::to_string(&data) {
-        Ok(c) => c,
-        Err(error) => return Err(Conflict::Io(format!("序列化锁信息失败：{error}"))),
-    };
-    match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(mut file) => {
-            use std::io::Write;
-            if let Err(error) = file
-                .write_all(format!("{content}\n").as_bytes())
-                .and_then(|_| file.sync_all())
-            {
-                let _ = fs::remove_file(path);
-                return Err(Conflict::Io(format!("写入锁文件失败：{error}")));
-            }
-            Ok(SddLockGuard {
-                path: path.clone(),
-                owner: data,
+    if let Err(error) = write_lock_data(&mut file, &owner) {
+        let _ = file.unlock();
+        return Err(error);
+    }
+    let path = path.to_path_buf();
+    let handle = Rc::new(LockHandle { _file: file });
+    HELD_LOCKS.with(|locks| {
+        locks.borrow_mut().insert(path.clone(), Rc::clone(&handle));
+    });
+    Ok(SddLockGuard { path, handle })
+}
+
+fn reentrant_guard(path: &Path) -> Option<SddLockGuard> {
+    HELD_LOCKS.with(|locks| {
+        locks
+            .borrow()
+            .get(path)
+            .cloned()
+            .map(|handle| SddLockGuard {
+                path: path.to_path_buf(),
+                handle,
             })
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            // 读取现有锁数据判断是否过期
-            match read_lock_data(path) {
-                Ok(existing) if !is_expired(&existing.expires_at) => Err(Conflict::Timeout),
-                // 锁已过期但旧进程仍存活：Unix 下用 kill -0 探测；探测失败视为可抢占
-                Ok(existing) => {
-                    if process_alive(existing.pid) {
-                        Err(Conflict::Timeout)
-                    } else {
-                        Err(Conflict::Stale)
-                    }
-                }
-                // 锁文件损坏（无法解析）：按过期处理
-                Err(_) => Err(Conflict::Stale),
-            }
-        }
-        Err(error) => Err(Conflict::Io(format!("创建锁文件失败：{error}"))),
+    })
+}
+
+fn write_lock_data(file: &mut File, owner: &LockData) -> Result<(), std::io::Error> {
+    let content = serde_json::to_string(owner)
+        .map_err(|error| std::io::Error::other(format!("序列化锁信息失败：{error}")))?;
+    file.set_len(0)?;
+    file.seek(SeekFrom::Start(0))?;
+    file.write_all(format!("{content}\n").as_bytes())?;
+    file.sync_all()
+}
+
+fn holder_message(path: &Path) -> String {
+    match read_lock_data(path) {
+        Some(holder) => format!("命令 {} 正在运行（pid {}）", holder.command, holder.pid),
+        None => "其他命令正在运行".to_string(),
     }
 }
 
-fn read_lock_data(path: &PathBuf) -> Result<LockData, ()> {
-    let raw = fs::read_to_string(path).map_err(|_| ())?;
-    serde_json::from_str(&raw).map_err(|_| ())
-}
-
-fn is_expired(expires_at: &str) -> bool {
-    parse_iso_epoch(expires_at)
-        .map(|t| t <= now_epoch())
-        .unwrap_or(true)
-}
-
-fn expires_at_iso() -> String {
-    let now = now_epoch();
-    // 直接构造 expiresAt：当前 ISO 的 epoch + TTL
-    let secs = now + LOCK_TTL_SECS;
-    crate::state::state_store::format_iso_epoch(secs)
-}
-
-fn now_epoch() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
-/// 解析 "YYYY-MM-DDTHH:MM:SSZ" 为 epoch 秒
-fn parse_iso_epoch(iso: &str) -> Option<u64> {
-    let iso = iso.trim_end_matches('Z');
-    let mut parts = iso.split('T');
-    let date = parts.next()?;
-    let time = parts.next()?;
-    let mut dp = date.split('-');
-    let y: i64 = dp.next()?.parse().ok()?;
-    let m: u32 = dp.next()?.parse().ok()?;
-    let d: u32 = dp.next()?.parse().ok()?;
-    let mut tp = time.split(':');
-    let h: u32 = tp.next()?.parse().ok()?;
-    let mi: u32 = tp.next()?.parse().ok()?;
-    let s: u32 = tp.next()?.parse().ok()?;
-    let days = days_from_civil(y, m, d);
-    Some((days * 86_400 + i64::from(h) * 3600 + i64::from(mi) * 60 + i64::from(s)) as u64)
-}
-
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m as i64 - 3 } else { m as i64 + 9 };
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// 探测进程是否存活。
-fn process_alive(pid: u32) -> bool {
-    #[cfg(unix)]
-    {
-        use std::process::Command;
-        let status = Command::new("kill").args(["-0", &pid.to_string()]).status();
-        match status {
-            Ok(s) => s.success(),
-            Err(_) => false,
-        }
-    }
-    #[cfg(windows)]
-    {
-        std::process::Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/NH"])
-            .output()
-            .map(|output| {
-                output.status.success()
-                    && String::from_utf8_lossy(&output.stdout).contains(&pid.to_string())
-            })
-            .unwrap_or(false)
-    }
+fn read_lock_data(path: &Path) -> Option<LockData> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
 }

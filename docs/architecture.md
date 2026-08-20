@@ -3,7 +3,7 @@
 ## 分层与依赖
 
 ```text
-OMP / OpenCode Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
+Codex / OMP Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
                                       ├── commands / state / quality / security
                                       ├── git / engines / protocol / policies
                                       └── knowledge（CodeGraph）
@@ -14,7 +14,8 @@ OMP / OpenCode Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
 - `crates/sdd-core/src/protocol`：定义 Agent 行动要求、结果和约束结构。
 - `crates/sdd-core/src/policies`：按阶段解析 Policy，并生成可校验摘要。
 - `crates/sdd-core/src/knowledge`：CodeGraph 探测、索引、查询与降级。
-- `assets/adapters/omp/*`、`assets/adapters/opencode/*`：把各 Agent 的 Skill、命令和 subagent 翻译为 CLI 调用，不直接修改状态（编译期嵌入二进制）。
+- `assets/adapters/codex/*`：生成 Codex 仓库级 Skill 与 `.codex/agents/*.toml` 专用 subagent，不直接修改状态（编译期嵌入二进制）。
+- `assets/adapters/omp/*`：生成 OMP 的 Skill、命令和 subagent profile，不直接修改状态（编译期嵌入二进制）。
 
 Core 是唯一推进状态机的入口，外部 Agent 或工具不能绕过 Core 推进阶段。
 
@@ -62,7 +63,9 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务�
 
 - `.sdd/runtime.json`：工作流状态、配置、制品清单、规格/设计/计划/任务、报告、任务结果、Context Pack、auto loop、知识索引和归档模型。
 - `.sdd/runtime.json.bak`：runtime 原子替换前的可恢复备份。
-- `.sdd/changes/<change-id>/`：当前变更的 `spec.md`、`design.md`、`plan.md`、`tasks.md` 或归档后的 `archive.md`。
+- `.sdd/runtime.json.sha256`：runtime 内容的 SHA-256 校验和，用于检测损坏。
+- `.sdd/runtime.json.bak.sha256`：恢复备份的校验和；备份同样必须通过校验才会被读取。
+- `.sdd/changes/<change-id>/`：当前变更的 `spec.md`、`proposal.md`、`design.md`、`plan.md`、`tasks.md`、`verify-report.md`、`review-report.md` 或归档后的 `archive.md`。
 
 ## 归档
 
@@ -85,7 +88,7 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 只为当前任务�
 
 ## Git 隔离
 
-`workflow.gitIsolation`（config.json）启用后，`new` 为变更创建或验证 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`。`build`、`review` 和归档 Git 快照使用该业务工作区，状态与制品仍保留在控制根目录。系统不会自动 merge、push、reset、clean 或删除 worktree。
+`workflow.gitIsolation`（`.sdd/runtime.json` 的 `config` 节点）启用后，`new` 为变更创建或验证 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`。`build`、`review` 和归档 Git 快照使用该业务工作区，状态与制品仍保留在控制根目录。系统不会自动 merge、push、reset、clean 或删除 worktree。
 
 ## 上游快照
 

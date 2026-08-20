@@ -1,6 +1,7 @@
 //! 状态层：工作流状态存储、文件锁。
 
 pub mod artifact_store;
+pub mod checksum;
 pub mod file_lock;
 pub mod runtime_store;
 pub mod state_store;

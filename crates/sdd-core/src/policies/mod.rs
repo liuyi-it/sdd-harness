@@ -4,5 +4,5 @@ pub mod compiler;
 pub mod digest;
 pub mod resolver;
 
-pub use compiler::{compile_policy, rule_allows_file, PolicyRule};
+pub use compiler::{compile_policy, PolicyRule};
 pub use resolver::{builtin_build_policies, resolve_policies, PolicyBundle};

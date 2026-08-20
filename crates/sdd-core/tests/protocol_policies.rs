@@ -25,11 +25,16 @@ fn valid_task_result_accepted() {
             { "type": "command-run", "command": "cargo test", "output": "FAIL",
               "passed": false, "expectedFailure": true }
         ],
+        "verification": [
+            { "command": "cargo test", "args": ["--workspace"], "passed": true, "output": "ok" }
+        ],
         "filesChanged": ["src/lib.rs"]
     });
     let result = validate_task_result(&raw).unwrap();
     assert_eq!(result.task_id, "TASK-001-RED");
     assert_eq!(result.evidence.len(), 1);
+    assert_eq!(result.verification[0].args, vec!["--workspace"]);
+    assert_eq!(result.verification[0].passed, Some(true));
     assert_eq!(result.files_changed, vec!["src/lib.rs"]);
 }
 

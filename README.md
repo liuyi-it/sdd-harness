@@ -5,7 +5,7 @@
 ## 核心能力
 
 - CLI-first：`sdd` 是唯一确定性入口，Core 是唯一状态与门禁执行层。
-- Agent 原生接入：当前内置 OMP 与 OpenCode 的项目级 Skill、命令和按复杂度选择的 subagent profiles，暂不支持其他 AI Agent。
+- Agent 原生接入：默认生成 Codex 仓库级 Skill 与专用 subagent，另保留 OMP 的原生命令与角色配置。
 - 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
 - 代码库理解：自动探测并索引 CodeGraph 知识图谱，按 intent 查询；不可用时显式降级到受限文件扫描。
 - 安全可追溯：校验路径、命令、文件范围、Git delta、TDD 证据和敏感信息。
@@ -17,9 +17,9 @@
 - 预编译二进制运行不需要 Rust；从源码构建才需要 Rust 工具链（cargo，edition 2021）
 - Git
 - CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
-  - CodeGraph 可使用独立安装包，无需 Node.js。
-- Oh My Pi（OMP；终端选择 OMP 后写入项目级 Skill、精简 slash 命令集、subagent profiles 和角色模型配置）
-- OpenCode（终端 `sdd init` 交互选择，或在 OpenCode 中使用 `/sdd-init` 自动写入 `.opencode/skills`、`.opencode/commands` 和 `.opencode/agents`）
+  - CodeGraph 是 npm CLI，需要 Node.js；`sdd` 预编译二进制本身不依赖 Node.js。
+- Codex（默认；`sdd init` 写入 `.agents/skills` 和 `.codex/agents`）
+- Oh My Pi（OMP；宿主初始化时写入项目级 Skill、精简 slash 命令集、subagent profiles 和角色模型配置）
 - macOS、Windows（Git Bash）或 Linux
 
 ## 安装
@@ -50,7 +50,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会先备份并清理旧版全局命令，再通过 `cargo build --release` 构建并注册全局命令 `sdd` 与 `sdd-harness`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时恢复原版本。项目通过 GitHub Releases 分发预编译二进制，不发布到 crates.io。
+安装脚本会先备份已有的全局 `sdd`，再通过 `cargo build --release` 构建并注册全局命令 `sdd`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时恢复原版本。项目通过 GitHub Releases 分发预编译二进制，不发布到 crates.io。
 
 卸载：
 
@@ -69,7 +69,7 @@ sdd init
 sdd auto "实现订单取消功能"
 ```
 
-在 OMP 中可以直接描述需求静默触发，也可以使用 `/sdd 需求` 显式调用；OpenCode 项目使用 `/sdd-init` 自动识别宿主并初始化，再使用 `/sdd` 或 `/sdd-new` 等连字符命令。主 Agent 会根据任务边界、风险和验收难度选择 `sdd-worker-simple`、`sdd-worker` 或 `sdd-worker-complex`，主 Agent 负责检查和最终审查。
+在 Codex 中可用 `$sdd-harness` 显式启用，也可直接描述软件任务让 Skill 自动匹配；主 Agent 会把只读调用链探索交给 `sdd-explorer`，把单个边界明确的 build 任务交给 `sdd-worker`，再用 `sdd-reviewer` 独立复核。OMP 中仍可直接描述需求静默触发，或使用 `/sdd 需求` 显式调用。
 
 也可以逐阶段推进：
 
@@ -120,7 +120,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 
 | 命令                      | 作用                                        |
 | ------------------------- | ------------------------------------------- |
-| `sdd init`                | 交互选择 Agent，初始化 `.sdd`、代码库索引和接入文件 |
+| `sdd init`                | 默认接入 Codex，初始化 `.sdd`、代码库索引和接入文件 |
 | `sdd status`              | 查看当前阶段、错误和下一步建议              |
 | `sdd new <需求>`          | 澄清需求并生成规格                          |
 | `sdd design`              | 生成技术设计                                |
@@ -154,11 +154,16 @@ CodeGraph 当前以 MIT 许可证发布。
 .sdd/
 ├── runtime.json       # 状态、配置、制品、规格、计划、报告、结果、loop、索引和归档
 ├── runtime.json.bak   # runtime 崩溃恢复备份（不是需求修订历史）
+├── runtime.json.sha256 # runtime 损坏检测校验和
+├── runtime.json.bak.sha256 # 备份的校验和
 └── changes/<change-id>/
     ├── spec.md
+    ├── proposal.md    # sdd change 后保留
     ├── design.md
     ├── plan.md
     ├── tasks.md
+    ├── verify-report.md
+    ├── review-report.md
     └── archive.md     # archive 后仅保留
 ```
 
@@ -171,7 +176,7 @@ CodeGraph 当前以 MIT 许可证发布。
 | `crates/sdd-cli`              | 参数解析和命令路由（bin: sdd）    |
 | `crates/sdd-core`             | 状态机、制品、Git、安全与质量门禁 |
 | `crates/sdd-core/src/knowledge` | CodeGraph 探测、路由与降级 |
-| `assets/adapters/omp` / `opencode` | OMP / OpenCode 的 Skill、命令和 subagent 模板（编译期嵌入） |
+| `assets/adapters/omp` / `codex` | OMP / Codex 的原生 Skill、命令和 subagent 模板（编译期嵌入） |
 | `vendor`                      | 上游快照（openspec/superpowers）  |
 | `fixtures`                    | 测试样例项目                       |
 

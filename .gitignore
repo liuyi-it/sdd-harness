@@ -6,6 +6,11 @@ coverage/
 .worktrees/
 /.sdd/
 
+# 维护者本机的宿主接入文件（sdd init 生成，与 assets/adapters 重复，不作为仓库内容跟踪）
+.omp/
+.agents/skills/sdd-harness/
+.codex/agents/sdd-*.toml
+
 # Rust 构建产物
 target/
 

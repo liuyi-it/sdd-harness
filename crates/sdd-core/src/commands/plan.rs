@@ -63,6 +63,14 @@ pub fn run_plan(
         codebase_summary,
     })?;
 
+    // 写任务前校验每条验证命令：任务进入 build 派发后不再拦截，
+    // 必须在计划落盘时就把"任意命令"挡在门外
+    for task in &artifacts.tasks {
+        for verification in &task.verification {
+            crate::security::verification_command::validate_verification_command(verification)?;
+        }
+    }
+
     let plan_markdown = render_plan_document(&design, &artifacts.test_plan, &dependencies);
     let tasks_markdown = artifacts.tasks_markdown.clone();
     let plan_value = json!({
@@ -223,6 +231,18 @@ pub fn read_plan_tasks(cwd: &str, change_id: &str) -> Result<Vec<TaskDefinition>
     let tasks = value.get("tasks").ok_or_else(|| {
         SddError::new("E_MISSING_ARTIFACT", "runtime.json 的 plan 缺少 tasks 字段")
     })?;
+    // 对每个任务执行 task.schema.json 校验（task id 格式、status/phase 枚举等），
+    // 防止手工篡改 runtime 的计划任务绕过结构约束。
+    if let Some(list) = tasks.as_array() {
+        for (index, task) in list.iter().enumerate() {
+            crate::schema::validate_json("task", task).map_err(|error| {
+                SddError::new(
+                    "E_STATE_CORRUPTED",
+                    &format!("计划任务 {index} 校验失败：{}", error.message),
+                )
+            })?;
+        }
+    }
     serde_json::from_value(tasks.clone())
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("tasks 解析失败：{e}")))
 }

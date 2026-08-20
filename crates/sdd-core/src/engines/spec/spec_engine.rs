@@ -7,6 +7,8 @@
 //!
 //! JS 正则在 Rust 中不可用的 lookahead 已用手动分割替代，语义保持一致。
 
+use std::sync::LazyLock;
+
 use regex::Regex;
 use regex::RegexBuilder;
 
@@ -16,6 +18,211 @@ use super::semantic_lexicon::{
 use crate::engines::openspec::model::{SpecDocument, SpecRequirement, SpecScenario};
 use crate::engines::openspec::renderer::render_spec;
 use crate::engines::openspec::validator::validate_spec;
+
+// —— 正则预编译：均为编译期常量，进程内只编译一次 ——
+
+/// split_behaviors：英文分隔关键词（"," 后紧跟 and tests / audit / conflict）
+static EN_KEYWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"^\s+(?:(?:and\s+)?(?:automated\s+)?tests?\b|(?:and\s+)?audit\b|(?:and\s+)?conflict\s+(?:error|handling))",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("split_behaviors 英文关键词正则必须合法")
+});
+/// split_behaviors：空格前分隔（" and tests/audit"、中文"以及/并且/同时 审计/测试"）
+static EN_AND_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"^(?:and|以及|并且|同时)\s+(?:(?:automated\s+)?tests?\b|audit\b|审计|测试)")
+        .case_insensitive(true)
+        .build()
+        .expect("split_behaviors 连接词正则必须合法")
+});
+/// split_behaviors：剥离行为开头的连接词（and/以及/并且/同时）
+static LEADING_JOINER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"^(?:and|以及|并且|同时)\s+")
+        .case_insensitive(true)
+        .build()
+        .expect("leading joiner 正则必须合法")
+});
+/// replace_zh_behaviors：中文逗号 + 行为关键词 → 分号
+static ZH_BEHAVIOR_SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"，\s*(?:重复|未授权|失败|冲突|每次|审计|需要|测试)")
+        .build()
+        .expect("中文行为分割正则必须合法")
+});
+/// 接口行为检测（split_behaviors 合并判定与 classify_behavior 共用）
+static INTERFACE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(?:api|endpoint|POST|PUT|PATCH|DELETE)\b|接口")
+        .case_insensitive(true)
+        .build()
+        .expect("interface 正则必须合法")
+});
+/// 结果标记（split_behaviors / before_result_marker / after_result_marker 共用）
+static RESULT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"返回|变为|\bbecomes?\b|\breturns?\b")
+        .case_insensitive(true)
+        .build()
+        .expect("result 正则必须合法")
+});
+/// classify_behavior：审计 / 测试 / 拒绝 判定
+static AUDIT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"audit|审计|日志").expect("audit 正则必须合法"));
+static TEST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"test|测试|自动化").expect("test 正则必须合法"));
+static REJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"conflict|error|fail|reject|unauthorized|forbidden|冲突|错误|失败|拒绝|未授权")
+        .expect("reject 正则必须合法")
+});
+/// audit_scenario：英文写入锚点（word 边界，避免 "when the system writes..." 在 when 的 w 处误切）
+static AUDIT_WRITE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\bwrites?\b")
+        .case_insensitive(true)
+        .build()
+        .expect("audit write 正则必须合法")
+});
+/// audit_scenario：剥离 then 结果中的 "writes " 前缀
+static AUDIT_WRITE_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^writes?\s+").expect("audit write prefix 正则必须合法"));
+static STRUCTURAL_SEPARATOR_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[；;。\n，,]").expect("行为分隔符正则必须合法"));
+static MULTI_BEHAVIOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"(?:同时|并且|以及).*(?:重复|未授权|失败|冲突|每次|审计|需要|测试)")
+        .case_insensitive(true)
+        .build()
+        .expect("多行为判定正则必须合法")
+});
+static DUPLICATE_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(?:duplicate|repeated)\s+").expect("重复动作前缀正则必须合法"));
+static QUESTION_GOAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"目标|为了|使得|结果|成功|返回|变为|支持|outcome|goal|success|returns?|becomes?|so that",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("目标判定正则必须合法")
+});
+static QUESTION_SCOPE_BOUNDARY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"API|接口|endpoint|模块|服务|前端|后端|数据库|命令|client|server|module|service|(?:GET|POST|PUT|PATCH|DELETE)\s+/|/[A-Za-z]",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("范围边界正则必须合法")
+});
+static QUESTION_SCOPE_SUBJECT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"订单|资源|用户|记录|任务|数据|order|resource|record|task|data")
+        .case_insensitive(true)
+        .build()
+        .expect("范围主体正则必须合法")
+});
+static QUESTION_ACCEPTANCE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"测试|自动化|验收|断言|回归|成功.*失败|success.*failure|acceptance|assert")
+        .case_insensitive(true)
+        .build()
+        .expect("验收标准正则必须合法")
+});
+static QUESTION_ACTOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(authenticated|authorized\s+(?:users?|administrators?|actors?)|users?|administrators?|creators?|owners?|actors?)\b|用户|管理员|创建者|所有者|操作者|开发者|负责人")
+        .case_insensitive(true)
+        .build()
+        .expect("角色判定正则必须合法")
+});
+static QUESTION_AUTHORIZATION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(authorization|authorized|permission|unauthorized|forbidden|authentication)\b|授权|鉴权|权限|未授权|无权限|仅允许|认证")
+        .case_insensitive(true)
+        .build()
+        .expect("授权判定正则必须合法")
+});
+static QUESTION_ACTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(cancel|cancellation|create|update|delete|query|search|get|read|return|respond)\b|取消|创建|更新|删除|查询|搜索|获取|读取|返回")
+        .case_insensitive(true)
+        .build()
+        .expect("动作判定正则必须合法")
+});
+static QUESTION_INTERFACE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"(?:GET|POST|PUT|PATCH|DELETE)\s+[/A-Za-z]|/[A-Za-z][\w/{}:-]*|路径|方法|字段|参数|响应字段|错误码|command\s+\w+",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("接口判定正则必须合法")
+});
+static QUESTION_PRECONDITION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(pending|precondition|eligible|authenticated|unregistered|state|duplicate|retry|idempotent|concurrent)\b|待处理|未完成|未注册|前置|满足条件|状态|重复|重试|幂等|并发|存在且未归档|未归档|非空")
+        .case_insensitive(true)
+        .build()
+        .expect("前置条件判定正则必须合法")
+});
+static QUESTION_RESULT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(result|success|successful|cancelled|canceled|becomes?|returns?)\b|结果|成功|已取消|取消成功|返回|变为|状态变为")
+        .case_insensitive(true)
+        .build()
+        .expect("结果判定正则必须合法")
+});
+static QUESTION_FAILURE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(fail|failure|error|conflict|reject|denied|unauthorized|forbidden|not found|duplicate|retry)\b|失败|错误|异常|冲突|拒绝|未授权|无权限|不存在|重复|重试|下游")
+        .case_insensitive(true)
+        .build()
+        .expect("失败判定正则必须合法")
+});
+static QUESTION_TEST_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\b(test|tests|testing|automated|automation|assert|acceptance)\b|测试|自动化|验收|断言|回归")
+        .case_insensitive(true)
+        .build()
+        .expect("测试判定正则必须合法")
+});
+static ACTOR_ZH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(授权(?:用户|管理员|创建者|所有者|开发者)|(?:用户|管理员|创建者|所有者|开发者)|产品经理|产品负责人|需求负责人|项目负责人)")
+        .expect("中文角色提取正则必须合法")
+});
+static ACTOR_EN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"\b((?:an?\s+)?(?:authenticated|authorized)(?:\s+and\s+(?:authenticated|authorized))?\s+(?:users?|administrators?|actors?|creators?|owners?)|(?:an?\s+)?(?:users?|administrators?|actors?|creators?|owners?))\b",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("英文角色提取正则必须合法")
+});
+static AUTHENTICATED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(r"\bauthenticated\b")
+        .case_insensitive(true)
+        .build()
+        .expect("认证判定正则必须合法")
+});
+static PRECONDITION_ZH_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"((?:邮箱)?未注册|待处理订单|未完成订单|订单必须处于待处理状态|[^，；,;]{1,20}(?:满足条件|存在且未归档|未归档|非空))",
+    )
+    .expect("中文前置条件提取正则必须合法")
+});
+static PRECONDITION_EN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"((?:the\s+)?email\s+is\s+unregistered|(?:an?\s+)?pending\s+(?:order|records?|resources?)|[^,;]{1,40}\s+is\s+eligible)",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("英文前置条件提取正则必须合法")
+});
+static NORMALIZE_CANCEL_ORDER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(取消)(?:待处理|未完成)(订单)").expect("取消动作归一化正则必须合法")
+});
+static CANCEL_ACTION_PREFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^cancel\s+(?:the\s+)?").expect("取消动作前缀正则必须合法"));
+static TEST_CASE_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:需要|automated tests cover)\s*").expect("测试前缀正则必须合法")
+});
+static TEST_CASE_ZH_SUFFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:自动化)?测试.*$").expect("中文测试后缀正则必须合法"));
+static TEST_CASE_EN_SUFFIX_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"cases?\.?$").expect("英文测试后缀正则必须合法"));
+static TEST_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    RegexBuilder::new(
+        r"成功|未授权|失败|冲突|\bsuccess\b|\bunauthorized\b|\bfailure\b|\bconflict\b",
+    )
+    .case_insensitive(true)
+    .build()
+    .expect("测试标记正则必须合法")
+});
 
 #[derive(Debug, Clone)]
 pub struct ClarifyingQuestion {
@@ -91,7 +298,7 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "参与角色",
         question: "谁发起这个动作，谁受到影响？如果有多个角色，分别能做什么，不能做什么？",
         recommendation: "推荐写出具体角色和资源归属，不使用“用户”这种无法决定权限的泛称。",
-        satisfied: |context| matches(context, r"\b(authenticated|authorized\s+(?:users?|administrators?|actors?)|users?|administrators?|creators?|owners?|actors?)\b|用户|管理员|创建者|所有者|操作者|开发者|负责人"),
+        satisfied: actor_is_clear,
     },
     QuestionRule {
         id: "Q-AUTHORIZATION",
@@ -99,7 +306,7 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "授权与拒绝",
         question: "系统如何确认调用者有权执行？未认证、无权限和资源不存在时分别返回什么，是否会泄露资源信息？",
         recommendation: "推荐明确认证来源、授权判定、稳定错误码/HTTP 状态以及敏感信息不泄露规则。",
-        satisfied: |context| matches(context, r"\b(authorization|authorized|permission|unauthorized|forbidden|authentication)\b|授权|鉴权|权限|未授权|无权限|仅允许|认证"),
+        satisfied: authorization_is_clear,
     },
     QuestionRule {
         id: "Q-ACTION",
@@ -107,7 +314,7 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "具体动作",
         question: "要对什么资源执行什么动作？是单条还是批量，重复提交、重试和并发请求的语义是什么？",
         recommendation: "推荐写出资源、动作、粒度和幂等性；不要让实现者从“做一个功能”自行推断业务语义。",
-        satisfied: |context| matches(context, r"\b(cancel|cancellation|create|update|delete|query|search|get|read|return|respond)\b|取消|创建|更新|删除|查询|搜索|获取|读取|返回"),
+        satisfied: action_is_clear,
     },
     QuestionRule {
         id: "Q-INTERFACE",
@@ -123,7 +330,7 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "前置条件",
         question: "动作开始前资源必须处于什么状态？资源缺失、状态不符合、并发竞争和重复操作分别怎么处理？",
         recommendation: "推荐把状态迁移和拒绝条件写成明确的状态机，而不是只写“满足条件”。",
-        satisfied: |context| matches(context, r"\b(pending|precondition|eligible|authenticated|unregistered|state|duplicate|retry|idempotent|concurrent)\b|待处理|未完成|未注册|前置|满足条件|状态|重复|重试|幂等|并发|存在且未归档|未归档|非空"),
+        satisfied: precondition_is_clear,
     },
     QuestionRule {
         id: "Q-RESULT",
@@ -131,7 +338,7 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "成功结果",
         question: "成功后具体改变什么？请说明响应、持久化状态、事件/副作用和事务边界，避免只写“返回成功”。",
         recommendation: "推荐同时写出外部可见响应和内部状态变化，并说明哪些副作用必须与主变更同事务完成。",
-        satisfied: |context| matches(context, r"\b(result|success|successful|cancelled|canceled|becomes?|returns?)\b|结果|成功|已取消|取消成功|返回|变为|状态变为"),
+        satisfied: result_is_clear,
     },
     QuestionRule {
         id: "Q-FAILURE",
@@ -139,7 +346,7 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "失败与边界",
         question: "请逐项列出失败、未授权、资源不存在、重复提交、冲突和下游失败时的可观察行为；哪些情况允许重试？",
         recommendation: "推荐每个相关失败分支都给出稳定错误码、状态、是否写审计以及客户端下一步。",
-        satisfied: |context| matches(context, r"\b(fail|failure|error|conflict|reject|denied|unauthorized|forbidden|not found|duplicate|retry)\b|失败|错误|异常|冲突|拒绝|未授权|无权限|不存在|重复|重试|下游"),
+        satisfied: failure_is_clear,
     },
     QuestionRule {
         id: "Q-TEST",
@@ -147,49 +354,52 @@ const QUESTION_RULES: &[QuestionRule] = &[
         title: "验证证据",
         question: "哪些自动化测试证明每条成功和失败路径都成立？测试入口、测试数据、关键断言和回归范围是什么？",
         recommendation: "推荐至少覆盖成功、权限、无效状态、重复/并发中实际相关的路径，并给出可执行命令。",
-        satisfied: |context| matches(context, r"\b(test|tests|testing|automated|automation|assert|acceptance)\b|测试|自动化|验收|断言|回归"),
+        satisfied: test_is_clear,
     },
 ];
 
-fn matches(context: &str, pattern: &str) -> bool {
-    RegexBuilder::new(pattern)
-        .case_insensitive(true)
-        .build()
-        .expect("question rule regex must be valid")
-        .is_match(context)
-}
-
 fn goal_is_clear(context: &str) -> bool {
-    matches(
-        context,
-        r"目标|为了|使得|结果|成功|返回|变为|支持|outcome|goal|success|returns?|becomes?|so that",
-    )
+    QUESTION_GOAL_RE.is_match(context)
 }
 
 fn scope_is_clear(context: &str) -> bool {
-    let boundary = matches(
-        context,
-        r"API|接口|endpoint|模块|服务|前端|后端|数据库|命令|client|server|module|service|(?:GET|POST|PUT|PATCH|DELETE)\s+/|/[A-Za-z]",
-    );
-    let subject = matches(
-        context,
-        r"订单|资源|用户|记录|任务|数据|order|resource|record|task|data",
-    );
-    boundary && subject
+    QUESTION_SCOPE_BOUNDARY_RE.is_match(context) && QUESTION_SCOPE_SUBJECT_RE.is_match(context)
 }
 
 fn acceptance_is_clear(context: &str) -> bool {
-    matches(
-        context,
-        r"测试|自动化|验收|断言|回归|成功.*失败|success.*failure|acceptance|assert",
-    )
+    QUESTION_ACCEPTANCE_RE.is_match(context)
+}
+
+fn actor_is_clear(context: &str) -> bool {
+    QUESTION_ACTOR_RE.is_match(context)
+}
+
+fn authorization_is_clear(context: &str) -> bool {
+    QUESTION_AUTHORIZATION_RE.is_match(context)
+}
+
+fn action_is_clear(context: &str) -> bool {
+    QUESTION_ACTION_RE.is_match(context)
+}
+
+fn precondition_is_clear(context: &str) -> bool {
+    QUESTION_PRECONDITION_RE.is_match(context)
+}
+
+fn result_is_clear(context: &str) -> bool {
+    QUESTION_RESULT_RE.is_match(context)
+}
+
+fn failure_is_clear(context: &str) -> bool {
+    QUESTION_FAILURE_RE.is_match(context)
+}
+
+fn test_is_clear(context: &str) -> bool {
+    QUESTION_TEST_RE.is_match(context)
 }
 
 fn interface_is_clear(context: &str) -> bool {
-    matches(
-        context,
-        r"(?:GET|POST|PUT|PATCH|DELETE)\s+[/A-Za-z]|/[A-Za-z][\w/{}:-]*|路径|方法|字段|参数|响应字段|错误码|command\s+\w+",
-    )
+    QUESTION_INTERFACE_RE.is_match(context)
 }
 
 pub struct SpecEngine;
@@ -241,14 +451,8 @@ impl SpecEngine {
         }
         // 结构性问题：无分隔符且含多行为关键词
         if questions.is_empty()
-            && !Regex::new(r"[；;。\n，,]").unwrap().is_match(&context)
-            && RegexBuilder::new(
-                r"(?:同时|并且|以及).*(?:重复|未授权|失败|冲突|每次|审计|需要|测试)",
-            )
-            .case_insensitive(true)
-            .build()
-            .unwrap()
-            .is_match(&context)
+            && !STRUCTURAL_SEPARATOR_RE.is_match(&context)
+            && MULTI_BEHAVIOR_RE.is_match(&context)
         {
             questions.push(ClarifyingQuestion {
                 id: "Q-STRUCTURE".to_string(),
@@ -347,7 +551,8 @@ impl SpecEngine {
         let assumptions = [
             "# Assumptions".to_string(),
             String::new(),
-            "- Existing behavior remains compatible unless explicitly changed.".to_string(),
+            "- The new specification is authoritative; remove superseded interfaces and compatibility layers."
+                .to_string(),
             "- Security, audit, and tests are required for changed behavior.".to_string(),
         ]
         .join("\n");
@@ -446,27 +651,17 @@ fn build_model(requirement: &str) -> Result<SpecDocument, String> {
     })
 }
 
-/// 行为分割：JS lookahead 用手动方式替代（语义一致）
+/// 行为分割：JS lookahead 用手动方式替代（语义一致）。
+/// 加固：对分隔符的后续判断只取 ≤48 字符前瞻窗口，避免对每个分隔符 collect 剩余全文
+/// 跑正则（消除 O(n²) 分配）；窗口足以覆盖全部关键词模式（最长约 30 字符），
+/// 匹配语义与旧实现一致（仅当分隔符后紧跟超长空白时才可能漏判，实际输入不会出现）。
 fn split_behaviors(requirement: &str) -> Vec<String> {
+    const LOOKAHEAD: usize = 48;
     let separated = if is_chinese(requirement) {
         replace_zh_behaviors(requirement)
     } else {
         requirement.to_string()
     };
-    // 分割点：；;。\n 或 ", " 后紧跟测试/审计/冲突关键词
-    // （正则构建一次，避免循环内重复编译）
-    let en_keyword_re = RegexBuilder::new(
-        r"^\s+(?:(?:and\s+)?(?:automated\s+)?tests?\b|(?:and\s+)?audit\b|(?:and\s+)?conflict\s+(?:error|handling))",
-    )
-    .case_insensitive(true)
-    .build()
-    .unwrap();
-    let en_and_re = RegexBuilder::new(
-        r"^(?:and|以及|并且|同时)\s+(?:(?:automated\s+)?tests?\b|audit\b|审计|测试)",
-    )
-    .case_insensitive(true)
-    .build()
-    .unwrap();
     let mut behaviors: Vec<String> = Vec::new();
     let mut current = String::new();
     let chars: Vec<char> = separated.chars().collect();
@@ -480,27 +675,27 @@ fn split_behaviors(requirement: &str) -> Vec<String> {
         }
         if ch == ',' {
             // 检查后续是否紧跟行为关键词（en: and tests / audit / conflict；zh: 审计/测试）
-            let rest: String = chars[i + 1..].iter().collect();
-            let zh_keyword = rest.starts_with("审计") || rest.starts_with("测试");
-            if zh_keyword || en_keyword_re.is_match(&rest) {
+            let window = lookahead(&chars, i + 1, LOOKAHEAD);
+            let zh_keyword = window.starts_with("审计") || window.starts_with("测试");
+            if zh_keyword || EN_KEYWORD_RE.is_match(&window) {
                 push_behavior(&mut behaviors, &mut current);
                 i += 1;
                 continue;
             }
         }
-        // 中文 "，审计/测试" 与英文 " and tests/audit" 分割
+        // 中文 "，审计/测试" 分割
         if ch == '，' {
-            let rest: String = chars[i + 1..].iter().collect();
-            if rest.starts_with("审计") || rest.starts_with("测试") {
+            let window = lookahead(&chars, i + 1, LOOKAHEAD);
+            if window.starts_with("审计") || window.starts_with("测试") {
                 push_behavior(&mut behaviors, &mut current);
                 i += 1;
                 continue;
             }
         }
         if ch == ' ' && !current.is_empty() && !current.ends_with(' ') {
-            let rest: String = chars[i + 1..].iter().collect();
+            let window = lookahead(&chars, i + 1, LOOKAHEAD);
             // 直接消费匹配（Rust regex 不支持 lookahead，语义等价）
-            if en_and_re.is_match(&rest) {
+            if EN_AND_RE.is_match(&window) {
                 push_behavior(&mut behaviors, &mut current);
                 i += 1;
                 continue;
@@ -510,32 +705,25 @@ fn split_behaviors(requirement: &str) -> Vec<String> {
         i += 1;
     }
     push_behavior(&mut behaviors, &mut current);
-    // 只在主行为缺少结果时合并后续片段，避免“动作；前置条件；结果”
+    // 只在主行为缺少结果时合并后续片段，避免"动作；前置条件；结果"
     // 被误当成三个独立 Scenario，同时保留审计和测试等独立行为。
     let normalized: Vec<String> = behaviors
         .into_iter()
         .map(|b| {
-            let re = RegexBuilder::new(r"^(?:and|以及|并且|同时)\s+")
-                .case_insensitive(true)
-                .build()
-                .unwrap();
-            re.replace(&b, "").to_string().trim().to_string()
+            LEADING_JOINER_RE
+                .replace(&b, "")
+                .to_string()
+                .trim()
+                .to_string()
         })
         .filter(|b| !b.is_empty())
         .collect();
-    let interface_re = RegexBuilder::new(r"\b(?:api|endpoint|POST|PUT|PATCH|DELETE)\b|接口")
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-    let result_re = RegexBuilder::new(r"返回|变为|\bbecomes?\b|\breturns?\b")
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-    let detector = action_detector();
     let mut merged: Vec<String> = Vec::new();
     for behavior in normalized {
         let needs_result = merged.last().is_some_and(|last| {
-            interface_re.is_match(last) && detector.is_match(last) && !result_re.is_match(last)
+            INTERFACE_RE.is_match(last)
+                && action_detector().is_match(last)
+                && !RESULT_RE.is_match(last)
         });
         if needs_result {
             let last = merged.last_mut().expect("上一行为已存在");
@@ -548,13 +736,18 @@ fn split_behaviors(requirement: &str) -> Vec<String> {
     merged
 }
 
+/// 取从 `from` 起的 ≤`max` 个字符作为前瞻窗口（不分配剩余全文，消除 O(n²) 分配）
+fn lookahead(chars: &[char], from: usize, max: usize) -> String {
+    let end = (from + max).min(chars.len());
+    chars[from..end].iter().collect()
+}
+
 fn replace_zh_behaviors(requirement: &str) -> String {
     // "，重复/未授权/失败/冲突/每次/审计/需要/测试" → "；"
     // （Rust regex 不支持 lookahead，直接消费匹配，语义等价）
-    let re = RegexBuilder::new(r"，\s*(?:重复|未授权|失败|冲突|每次|审计|需要|测试)")
-        .build()
-        .unwrap();
-    re.replace_all(requirement, "；").to_string()
+    ZH_BEHAVIOR_SPLIT_RE
+        .replace_all(requirement, "；")
+        .to_string()
 }
 
 fn push_behavior(behaviors: &mut Vec<String>, current: &mut String) {
@@ -598,23 +791,16 @@ fn build_requirement(
 }
 
 fn classify_behavior(behavior: &str) -> BehaviorKind {
-    let interface = RegexBuilder::new(r"\b(?:api|endpoint|POST|PUT|PATCH|DELETE)\b|接口")
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-    if interface.is_match(behavior) && action_detector().is_match(behavior) {
+    if INTERFACE_RE.is_match(behavior) && action_detector().is_match(behavior) {
         return BehaviorKind::Success;
     }
-    if Regex::new(r"audit|审计|日志").unwrap().is_match(behavior) {
+    if AUDIT_RE.is_match(behavior) {
         return BehaviorKind::Audit;
     }
-    if Regex::new(r"test|测试|自动化").unwrap().is_match(behavior) {
+    if TEST_RE.is_match(behavior) {
         return BehaviorKind::Test;
     }
-    if Regex::new(r"conflict|error|fail|reject|unauthorized|forbidden|冲突|错误|失败|拒绝|未授权")
-        .unwrap()
-        .is_match(behavior)
-    {
+    if REJECT_RE.is_match(behavior) {
         return BehaviorKind::Rejection;
     }
     BehaviorKind::Success
@@ -696,13 +882,7 @@ fn rejection_scenario(
     context: &str,
     chinese: bool,
 ) -> Result<ScenarioDetails, String> {
-    if !chinese
-        && !RegexBuilder::new(r"\b(?:returns?|becomes?)\b")
-            .case_insensitive(true)
-            .build()
-            .unwrap()
-            .is_match(behavior)
-    {
+    if !chinese && !RESULT_RE.is_match(behavior) {
         let action = extract_action(context, false)?;
         return Ok(ScenarioDetails {
             title: format!("{action} conflict is rejected"),
@@ -747,10 +927,7 @@ fn rejection_scenario(
             then,
         })
     } else {
-        let subject = Regex::new(r"^(?:duplicate|repeated)\s+")
-            .unwrap()
-            .replace(&when, "")
-            .to_string();
+        let subject = DUPLICATE_PREFIX_RE.replace(&when, "").to_string();
         Ok(ScenarioDetails {
             title: format!("{when} is rejected"),
             given: format!("{subject} already exists or has already completed"),
@@ -761,9 +938,14 @@ fn rejection_scenario(
 }
 
 fn audit_scenario(behavior: &str, context: &str, chinese: bool) -> Result<ScenarioDetails, String> {
-    let write_index = behavior
-        .find(['写', 'w', 'W'])
-        .ok_or_else(|| format!("无法从行为“{behavior}”生成具体 Scenario：缺少审计写入动作"))?;
+    // 关键词锚点定位审计写入动作：中文找"写入"（回退到单独的"写"），英文找 \bwrites?\b，
+    // 避免 "when the system writes..." 在 when 的 w 处错误切分
+    let write_index = if chinese {
+        behavior.find("写入").or_else(|| behavior.find('写'))
+    } else {
+        AUDIT_WRITE_RE.find(behavior).map(|m| m.start())
+    }
+    .ok_or_else(|| format!("无法从行为“{behavior}”生成具体 Scenario：缺少审计写入动作"))?;
     let action = extract_action(context, chinese)?;
     if chinese {
         let successful = behavior[..write_index]
@@ -780,10 +962,16 @@ fn audit_scenario(behavior: &str, context: &str, chinese: bool) -> Result<Scenar
         } else {
             successful.clone()
         };
+        // 锚点已是"写入"时不再重复替换（避免 "写入入"）；回退锚点"写"仍补全为"写入"
+        let written_body = if written.starts_with("写入") {
+            written.clone()
+        } else {
+            written.replacen("写", "写入", 1)
+        };
         Ok(ScenarioDetails {
             title: format!("{successful}写入审计"),
             given,
-            when: format!("系统{}", written.replacen("写", "写入", 1)),
+            when: format!("系统{written_body}"),
             then: if written.contains("审计日志") {
                 "产生可追踪的审计记录".to_string()
             } else {
@@ -799,7 +987,7 @@ fn audit_scenario(behavior: &str, context: &str, chinese: bool) -> Result<Scenar
             when: format!("the system {written}"),
             then: format!(
                 "{} is stored as a traceable record",
-                Regex::new(r"^writes?\s+").unwrap().replace(&written, "")
+                AUDIT_WRITE_PREFIX_RE.replace(&written, "")
             ),
         })
     }
@@ -807,27 +995,16 @@ fn audit_scenario(behavior: &str, context: &str, chinese: bool) -> Result<Scenar
 
 fn extract_actor(context: &str, chinese: bool) -> Result<String, String> {
     let re = if chinese {
-        Regex::new(r"(授权(?:用户|管理员|创建者|所有者|开发者)|(?:用户|管理员|创建者|所有者|开发者)|产品经理|产品负责人|需求负责人|项目负责人)").unwrap()
+        &*ACTOR_ZH_RE
     } else {
-        RegexBuilder::new(
-            r"\b((?:an?\s+)?(?:authenticated|authorized)(?:\s+and\s+(?:authenticated|authorized))?\s+(?:users?|administrators?|actors?|creators?|owners?)|(?:an?\s+)?(?:users?|administrators?|actors?|creators?|owners?))\b",
-        )
-        .case_insensitive(true)
-        .build()
-        .unwrap()
+        &*ACTOR_EN_RE
     };
     if let Some(caps) = re.captures(context) {
         if let Some(m) = caps.get(1) {
             return Ok(m.as_str().trim().to_string());
         }
     }
-    if !chinese
-        && RegexBuilder::new(r"\bauthenticated\b")
-            .case_insensitive(true)
-            .build()
-            .unwrap()
-            .is_match(context)
-    {
+    if !chinese && AUTHENTICATED_RE.is_match(context) {
         return Ok("an authenticated actor with authorization".to_string());
     }
     Err("无法从上下文生成具体 Scenario：缺少具体 actor".to_string())
@@ -835,30 +1012,16 @@ fn extract_actor(context: &str, chinese: bool) -> Result<String, String> {
 
 fn extract_precondition(context: &str, chinese: bool) -> Result<String, String> {
     let re = if chinese {
-        Regex::new(
-            r"((?:邮箱)?未注册|待处理订单|未完成订单|订单必须处于待处理状态|[^，；,;]{1,20}(?:满足条件|存在且未归档|未归档|非空))",
-        )
-        .unwrap()
+        &*PRECONDITION_ZH_RE
     } else {
-        RegexBuilder::new(
-            r"((?:the\s+)?email\s+is\s+unregistered|(?:an?\s+)?pending\s+(?:order|records?|resources?)|[^,;]{1,40}\s+is\s+eligible)",
-        )
-        .case_insensitive(true)
-        .build()
-        .unwrap()
+        &*PRECONDITION_EN_RE
     };
     if let Some(caps) = re.captures(context) {
         if let Some(m) = caps.get(1) {
             return Ok(m.as_str().trim().to_string());
         }
     }
-    if !chinese
-        && RegexBuilder::new(r"\bauthenticated\b")
-            .case_insensitive(true)
-            .build()
-            .unwrap()
-            .is_match(context)
-    {
+    if !chinese && AUTHENTICATED_RE.is_match(context) {
         return Ok("authentication is satisfied".to_string());
     }
     Err("无法从上下文生成具体 Scenario：缺少具体前置条件".to_string())
@@ -875,8 +1038,7 @@ fn extract_action(context: &str, chinese: bool) -> Result<String, String> {
     };
     let mut action = caps.get(1).unwrap().as_str().trim().to_string();
     // 归一化："取消待处理订单" → "取消订单"
-    action = Regex::new(r"(取消)(?:待处理|未完成)(订单)")
-        .unwrap()
+    action = NORMALIZE_CANCEL_ORDER_RE
         .replace(&action, "$1$2")
         .to_string();
     if action.eq_ignore_ascii_case("cancellation") {
@@ -899,9 +1061,7 @@ fn extract_result(behavior: &str, chinese: bool) -> Result<String, String> {
     if !chinese && action.to_lowercase().contains("cancel") {
         return Ok(format!(
             "{} is cancelled",
-            Regex::new(r"^cancel\s+(?:the\s+)?")
-                .unwrap()
-                .replace(&action, "the ")
+            CANCEL_ACTION_PREFIX_RE.replace(&action, "the ")
         ));
     }
     Err(format!(
@@ -910,11 +1070,7 @@ fn extract_result(behavior: &str, chinese: bool) -> Result<String, String> {
 }
 
 fn before_result_marker(behavior: &str) -> Result<String, String> {
-    let re = RegexBuilder::new(r"返回|变为|\bbecomes?\b|\breturns?\b")
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-    let Some(m) = re.find(behavior) else {
+    let Some(m) = RESULT_RE.find(behavior) else {
         return Err(format!(
             "无法从行为“{behavior}”生成具体 Scenario：缺少结果前的动作"
         ));
@@ -928,39 +1084,20 @@ fn before_result_marker(behavior: &str) -> Result<String, String> {
 }
 
 fn after_result_marker(behavior: &str) -> String {
-    let re = RegexBuilder::new(r"返回|变为|\bbecomes?\b|\breturns?\b")
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-    match re.find(behavior) {
+    match RESULT_RE.find(behavior) {
         Some(m) => behavior[m.start()..].trim().to_string(),
         None => behavior.to_string(),
     }
 }
 
 fn extract_test_cases(behavior: &str, context: &str) -> Result<String, String> {
-    let mut cases = Regex::new(r"^(?:需要|automated tests cover)\s*")
-        .unwrap()
-        .replace(behavior, "")
-        .to_string();
-    cases = Regex::new(r"(?:自动化)?测试.*$")
-        .unwrap()
-        .replace(&cases, "")
-        .to_string();
-    cases = Regex::new(r"cases?\.?$")
-        .unwrap()
-        .replace(&cases, "")
-        .to_string();
+    let mut cases = TEST_CASE_PREFIX_RE.replace(behavior, "").to_string();
+    cases = TEST_CASE_ZH_SUFFIX_RE.replace(&cases, "").to_string();
+    cases = TEST_CASE_EN_SUFFIX_RE.replace(&cases, "").to_string();
     let cases = cases.trim().to_string();
     if cases.is_empty() {
-        let markers_re = RegexBuilder::new(
-            r"成功|未授权|失败|冲突|\bsuccess\b|\bunauthorized\b|\bfailure\b|\bconflict\b",
-        )
-        .case_insensitive(true)
-        .build()
-        .unwrap();
         let mut markers: Vec<String> = Vec::new();
-        for m in markers_re.find_iter(context) {
+        for m in TEST_MARKER_RE.find_iter(context) {
             let value = m.as_str().to_string();
             if !markers.contains(&value) {
                 markers.push(value);
@@ -1002,4 +1139,84 @@ fn normalize_statement(behavior: &str) -> String {
         .trim_end_matches(['.', ',', '，', '。'])
         .trim()
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 中文需求：多个"；"分隔的行为片段，分割结果数量应与片段数一致（锁定行为）
+    #[test]
+    fn split_behaviors_zh_semicolon_count_is_stable() {
+        let part = "授权用户取消待处理订单，返回取消成功";
+        let big = vec![part; 200].join("；");
+        let behaviors = split_behaviors(&big);
+        assert_eq!(behaviors.len(), 200);
+        assert!(behaviors.iter().all(|b| b.contains("取消")));
+    }
+
+    /// 英文关键词（", and tests" / " and audit"）均应触发分割（旧实现行为锁定）
+    #[test]
+    fn split_behaviors_en_keywords_split() {
+        let text = "the system cancels the order, and automated tests cover the success, and audit the change";
+        let behaviors = split_behaviors(text);
+        assert!(behaviors
+            .iter()
+            .any(|b| b.contains("the system cancels the order")));
+        assert!(behaviors
+            .iter()
+            .any(|b| b.contains("automated tests cover the success")));
+        assert!(behaviors.iter().any(|b| b.contains("audit the change")));
+    }
+
+    /// 大输入 + 大量空格：旧实现对每个空格 collect 剩余全文（O(n²) 分配），
+    /// 加固后使用 ≤48 字符前瞻窗口；结果一致且不应明显变慢
+    #[test]
+    fn split_behaviors_large_input_consistent() {
+        let base = "the API returns the status and error code ";
+        let big = base.repeat(2_000);
+        let behaviors = split_behaviors(&big);
+        assert_eq!(behaviors.len(), 1, "无分隔关键词时应保持单行为");
+        assert!(behaviors[0].contains("status"));
+    }
+
+    #[test]
+    fn interface_question_requires_a_concrete_contract_signal() {
+        assert!(interface_is_clear("POST /orders 的请求字段和错误码"));
+        assert!(!interface_is_clear("仅说明需要提供接口"));
+    }
+
+    /// audit_scenario 英文锚点：不因 "when" 的首字符 w 错误切分
+    #[test]
+    fn audit_scenario_en_anchor_not_split_at_when() {
+        let behavior = "when the system writes an audit record";
+        let details = audit_scenario(
+            behavior,
+            "the system writes an audit record for every cancel",
+            false,
+        )
+        .unwrap();
+        assert_eq!(details.given, "when the system");
+        assert!(details.when.contains("writes an audit record"));
+        assert!(details.then.contains("traceable record"));
+    }
+
+    /// audit_scenario 中文锚点："写入" 不再产生 "写入入" 的重复替换
+    #[test]
+    fn audit_scenario_zh_anchor_writes() {
+        let behavior = "每次操作成功后写入审计日志";
+        let details = audit_scenario(behavior, "授权用户创建用户", true).unwrap();
+        assert_eq!(details.given, "操作成功后");
+        assert_eq!(details.when, "系统写入审计日志");
+        assert_eq!(details.then, "产生可追踪的审计记录");
+    }
+
+    /// audit_scenario 中文回退锚点：单独"写"仍补全为"写入"
+    #[test]
+    fn audit_scenario_zh_single_write_character() {
+        let behavior = "每次操作成功后写审计日志";
+        let details = audit_scenario(behavior, "授权用户创建用户", true).unwrap();
+        assert_eq!(details.given, "操作成功后");
+        assert_eq!(details.when, "系统写入审计日志");
+    }
 }

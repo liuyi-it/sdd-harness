@@ -104,6 +104,24 @@ fn path_within_repo_checks_scope() {
     assert!(!GitInspector::path_within_repo(&cwd, "/tmp/outside.txt"));
 }
 
+#[test]
+fn resolve_repo_path_rejects_windows_absolute_and_unc_forms() {
+    // 纯字符串规则：Windows 盘符 / UNC / \\?\ 前缀在任何平台都拒绝
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = dir.path().to_string_lossy().to_string();
+    for outside in [
+        "C:\\foo",        // 盘符反斜杠
+        "C:/foo",         // 盘符正斜杠
+        "//server/share", // UNC
+        "\\\\?\\C:\\foo", // \\?\ 长路径前缀
+    ] {
+        let err = GitInspector::resolve_repo_path(&cwd, outside).unwrap_err();
+        assert_eq!(err.code, "E_PATH_OUTSIDE_REPO", "路径 {outside} 应被拒绝");
+    }
+    // 合法仓库相对路径不受影响
+    assert!(GitInspector::resolve_repo_path(&cwd, "src/lib.rs").is_ok());
+}
+
 #[cfg(unix)]
 #[test]
 fn path_within_repo_rejects_symlink_escape() {

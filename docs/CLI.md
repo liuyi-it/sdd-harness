@@ -1,6 +1,6 @@
 # CLI 命令参考
 
-`sdd` 是 sdd-harness 的命令行入口，`sdd-harness` 是等价别名。支持 macOS、Windows（Git Bash）和 Linux。预编译二进制从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载，运行时不需要 Rust；从源码构建才需要 Rust 工具链。可选的 CodeGraph 独立 CLI 不要求 Node.js。
+`sdd` 是 sdd-harness 唯一的命令行入口。支持 macOS、Windows（Git Bash）和 Linux。预编译二进制从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载，运行时不需要 Rust；从源码构建才需要 Rust 工具链。可选的 CodeGraph 是 npm CLI（需要 Node.js），`sdd` 本身不依赖 Node.js。
 
 ## 安装
 
@@ -14,9 +14,9 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-重复安装会先备份并清除旧版全局 CLI，再通过 `cargo build --release` 构建并注册命令；安装后会验证命令可运行。失败安装会恢复原版本。可用 `PREFIX=/path bash scripts/install.sh` 指定安装目录。`bash scripts/uninstall.sh` 执行完整卸载，但不会删除业务项目中的 `.sdd/` 用户数据。
+重复安装会先备份并清除已有全局 `sdd`，再通过 `cargo build --release` 构建并注册命令；安装后会验证命令可运行。失败安装会恢复原版本。可用 `PREFIX=/path bash scripts/install.sh` 指定安装目录。`bash scripts/uninstall.sh` 执行完整卸载，但不会删除业务项目中的 `.sdd/` 用户数据。
 
-在业务项目中重新执行 `sdd init` 会先让终端用户选择 OMP 或 OpenCode，再刷新对应接入文件和代码库索引；工作流状态、变更、运行、归档与有效用户配置会保留。Agent 内部初始化不显示选择，使用宿主自己的初始化命令。
+在业务项目中重新执行 `sdd init` 会默认刷新 Codex 的 Skill、subagent 和代码库索引；工作流状态、变更、运行、归档与有效用户配置会保留。OMP 宿主会通过内部标记生成自己的原生资产；OpenCode 不再受支持。
 
 所有工作流状态和制品都写入目标项目的 `.sdd/`。
 
@@ -27,19 +27,19 @@ bash scripts/install.sh
 | `--json`            | 输出稳定的 `CommandResult` JSON                                                 |
 | `--cwd <path>`      | 指定项目根目录，默认当前目录                                                    |
 | `--change <id>`     | 新建时指定变更 ID；后续命令必须与当前活动变更一致                               |
-| `--timeout <s>`     | 设置命令超时秒数                                                                |
+| `--timeout <s>`     | 锁等待与子进程执行超时（秒）                                                  |
 | `--non-interactive` | 仅用于允许需求不完整时直接失败的无人值守流程；遇到未回答的 BLOCKER 返回退出码 6 |
 | `--verbose`         | 输出详细信息                                                                    |
 | `--help`            | 显示帮助                                                                        |
 | `--version`         | 显示版本                                                                        |
 
-进程退出码始终等于 `CommandResult.exitCode`。常见值为：`0` 成功、`1` 状态损坏或一般错误、`2` 参数错误、`3` 状态冲突、`4` 缺少或无效制品、`6` 非交互模式下存在未回答的 BLOCKER、`7` 验证/TDD 失败、`8` 审查失败、`9` 并发锁冲突、`10` 安全阻断、`124` 超时、`130` 中断。
+进程退出码始终等于 `CommandResult.exitCode`。常见值为：`0` 成功、`1` 状态损坏或一般错误、`2` 参数错误、`3` 状态冲突、`4` 缺少或无效制品、`5` 组件不可用或引擎生成失败、`6` 非交互模式下存在未回答的 BLOCKER、`7` 验证/TDD 失败、`8` 审查失败、`9` 并发锁冲突、`10` 安全阻断、`124` 超时、`130` 中断。
 
 ## 工作流命令
 
 ### `sdd init`
 
-初始化 `.sdd/`、配置、代码库索引和所选 Agent 原生接入文件；终端交互选择 Agent，不能通过 `--agent` 参数选择。
+初始化 `.sdd/`、配置、代码库索引和 Codex 原生接入文件；默认不需要交互选择，不能通过 `--agent` 参数选择。
 空项目可用 `--structurePolicy free-design|user-defined` 固化目录结构策略；未指定时初始化继续完成并返回 `W_EMPTY_PROJECT`。
 
 ```bash
@@ -58,7 +58,7 @@ sdd status --loop --json
 
 ### `sdd new <需求>`
 
-创建变更并生成供人工审核的 `spec.md`，以及写入 `.sdd/runtime.json` 的机器规格模型。首次在 `INDEX_READY` 调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。若进程在 `NEW_STARTED` 中断，Core 会复用当前 `changeId`/`runId`，`sdd new --answers` 只恢复该变更，不会创建新变更。
+创建变更并生成供人工审核的 `spec.md`，以及写入 `.sdd/runtime.json` 的机器规格模型。首次在 `INDEX_READY` 调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。若进程在 `NEW_STARTED` 中断，Core 会复用当前 `changeId`/`runId`，`sdd new --answers` 只恢复该变更，不会创建新变更。当前变更已进入 `SPEC_READY` 时需要修改需求时，请使用 `sdd change`，直接 `sdd new` 会返回 `E_ACTIVE_CHANGE_EXISTS`。
 
 ```bash
 sdd new "实现订单取消功能"
@@ -152,7 +152,7 @@ sdd archive --json
 
 ### `sdd auto <需求>`
 
-根据状态机连续执行可确定的阶段。仅首次处于 `INDEX_READY` 时必须传入非空需求；在 `CLARIFYING`、`NEW_STARTED`、Agent 编码、失败或归档完成时收敛。`--resume`、`--restart`、`--stop`、`--events` 和 `--loop-status` 控制已有 loop；`--answers` 将澄清答案透传给 `new`，不传需求文本。
+根据状态机连续执行可确定的阶段。仅首次处于 `INDEX_READY` 时必须传入非空需求；在 `CLARIFYING`、`NEW_STARTED`、Agent 编码、失败或归档完成时收敛；auto 步骤失败或 `--stop` 后进入 `PAUSED`，用 `sdd auto --resume` 恢复。归档完成后携带新需求再次调用 `sdd auto "<需求>"` 会开启新变更。`--resume`、`--restart`、`--stop`、`--events` 和 `--loop-status` 控制已有 loop；`--tail` 必须与 `--events` 一起使用；`--answers` 将澄清答案透传给 `new`，不传需求文本。
 
 ```bash
 sdd auto "实现订单取消功能"

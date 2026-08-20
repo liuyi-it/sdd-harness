@@ -42,11 +42,13 @@ CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
 TaskExecutionResult 必须带有任务状态、文件变化、命令证据和 TDD evidence：
 
-- RED 至少包含一条 `passed=false`、`expectedFailure=true` 的证据。
-- GREEN、REFACTOR、VERIFY 的阶段证据必须通过，且不能声明预期失败。
-- VERIFY 必须提供最终 verification。
+- 所有阶段（RED/GREEN/REFACTOR/VERIFY）都必须提供非空 verification 结果，且每条命令与计划完全一致。
+- RED 至少包含一条 `passed=false`、`expectedFailure=true` 的证据，且 verification 中至少一条 `passed=false`。
+- GREEN、REFACTOR 的阶段证据必须通过，且不能声明预期失败。
+- VERIFY 的所有 verification 必须 `passed=true`。
+- evidence、verification、message、filesChanged 都有数量与长度上限（evidence ≤ 64 条、verification ≤ 32 条、单条输出 ≤ 8KB、命令 ≤ 2KB、message ≤ 2KB、filesChanged ≤ 500 条）。
 - 可选 `minimality` evidence 可说明复用、标准库/平台选择、依赖、抽象和有意债务；它只作审计辅助，Core 仍以 Git delta 与 manifest 为事实源。
-- 实际文件范围以 Git delta 为事实源，Agent 声明不能扩大权限。
+- 实际文件范围以 Git delta 为事实源，Agent 声明不能扩大权限；非 git 仓库无法核验时结果携带显式警告。
 
 违反任务证据契约返回 `E_TDD_EVIDENCE_REQUIRED`；越权文件或命令返回相应安全错误。
 

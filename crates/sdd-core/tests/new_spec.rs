@@ -4,6 +4,7 @@ use sdd_core::commands::new::run_new;
 use sdd_core::contracts::CommandRequest;
 use sdd_core::engines::openspec::model::SpecDocument;
 use sdd_core::engines::spec::spec_engine::SpecEngine;
+use sdd_core::engines::tdd::tdd_engine::{PlanningInputRust, TddEngine};
 use sdd_core::run;
 use serde_json::json;
 
@@ -29,7 +30,7 @@ fn new_request(dir: &std::path::Path, requirement: &str) -> sdd_core::contracts:
 }
 
 #[test]
-fn new_without_requirement_returns_missing_artifact() {
+fn new_without_requirement_returns_invalid_requirement() {
     let dir = tempfile::tempdir().unwrap();
     init(dir.path());
     let err = run_new(
@@ -38,7 +39,7 @@ fn new_without_requirement_returns_missing_artifact() {
         &SpecEngine::new(),
     )
     .unwrap_err();
-    assert_eq!(err.code, "E_MISSING_ARTIFACT");
+    assert_eq!(err.code, "E_INVALID_REQUIREMENT");
 }
 
 #[test]
@@ -155,6 +156,19 @@ fn spec_parse_render_roundtrip() {
             !scenario.given.is_empty() && !scenario.when.is_empty() && !scenario.then.is_empty()
         })
     }));
+}
+
+#[test]
+fn planner_rejects_removed_req_heading_format() {
+    let err = TddEngine::new()
+        .generate_plan(&PlanningInputRust {
+            spec: "# Requested Change\n\n## ADDED Requirements\n\n### REQ-001: Old format\n\n#### Scenario: legacy\n- GIVEN a resource\n- WHEN it changes\n- THEN it succeeds\n".into(),
+            design: String::new(),
+            impact: String::new(),
+            codebase_summary: String::new(),
+        })
+        .unwrap_err();
+    assert_eq!(err.code, "E_UNRESOLVED_BLOCKER");
 }
 
 #[test]
@@ -315,4 +329,47 @@ fn new_started_without_runtime_requirement_stays_recoverable() {
             .current_phase,
         "NEW_STARTED"
     );
+}
+
+#[test]
+fn new_in_spec_ready_requires_change_instead_of_overwriting() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let created = new_request(dir.path(), FULL_REQUIREMENT);
+    assert_eq!(created.state, "SPEC_READY");
+    let cwd = dir.path().to_string_lossy().to_string();
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+
+    // SPEC_READY 且有活动变更：禁止无提示覆盖，必须走 sdd change。
+    let err = run_new(
+        &cwd,
+        Some(&json!({ "requirement": "另一个需求" })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "E_ACTIVE_CHANGE_EXISTS");
+    assert_eq!(err.next, Some(format!("sdd change {change_id}")));
+    // spec 未被覆盖
+    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
+        .unwrap()
+        .unwrap();
+    assert_eq!(spec_json.get("requirement").unwrap(), FULL_REQUIREMENT);
+}
+
+#[test]
+fn new_rejects_requirement_over_32768_chars() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let long_requirement = "需".repeat(32_769);
+    let err = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": long_requirement })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "E_INVALID_REQUIREMENT");
 }

@@ -76,7 +76,7 @@ impl TddEngine {
             String::new(),
             "## API Changes".to_string(),
             String::new(),
-            "仅公开规格明确要求的接口行为，并保持未涉及行为兼容。".to_string(),
+            "仅公开规格明确要求的接口与行为；删除被新设计替代的旧接口和兼容层。".to_string(),
             String::new(),
             "## Interfaces and Contracts".to_string(),
             String::new(),
@@ -109,7 +109,7 @@ impl TddEngine {
             String::new(),
             "## Risks and Rollback".to_string(),
             String::new(),
-            "风险由受影响文件、兼容边界和状态变更决定；代码与数据变更应可共同回滚。".to_string(),
+            "风险由受影响文件、状态变更和迁移路径决定；代码与数据变更应可共同回滚。".to_string(),
             String::new(),
             "## Specification Reference".to_string(),
             String::new(),
@@ -158,11 +158,7 @@ impl Default for TddEngine {
 fn structured_requirement_lines(spec: &str) -> Vec<String> {
     let lines: Vec<String> = spec
         .split('\n')
-        .filter(|line| {
-            line.starts_with("### Requirement:")
-                || line.starts_with("### REQ-")
-                || line.starts_with("#### Scenario:")
-        })
+        .filter(|line| line.starts_with("### Requirement:") || line.starts_with("#### Scenario:"))
         .map(|line| format!("- {}", line.trim_start_matches(['#', ' '])))
         .collect();
     if lines.is_empty() {

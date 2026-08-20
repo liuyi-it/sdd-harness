@@ -4,7 +4,8 @@
 //! 报告、任务结果、Context Pack、知识索引和 auto loop 全部通过本模块原子更新。
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +15,8 @@ use crate::error::SddError;
 use crate::state::state_store::{validate_run_id, WorkflowState, SDD_DIR};
 
 pub const RUNTIME_FILE: &str = "runtime.json";
-pub const RUNTIME_SCHEMA_VERSION: u32 = 4;
+pub const RUNTIME_CHECKSUM_FILE: &str = "runtime.json.sha256";
+pub const RUNTIME_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -75,15 +77,20 @@ impl RuntimeStore {
         self.root.join(SDD_DIR)
     }
 
+    fn backup_path(&self) -> PathBuf {
+        self.sdd_dir().join("runtime.json.bak")
+    }
+
     pub fn read(&self) -> Result<RuntimeDocument, SddError> {
         let path = self.runtime_path();
         if !path.exists() {
             return Ok(RuntimeDocument::default());
         }
+        // 主文件或其校验和损坏时仅接受同样通过校验的备份。
         match self.read_path(&path) {
             Ok(document) => Ok(document),
             Err(primary_error) => {
-                let backup = path.with_file_name("runtime.json.bak");
+                let backup = self.backup_path();
                 if backup.exists() {
                     self.read_path(&backup).or(Err(primary_error))
                 } else {
@@ -100,6 +107,7 @@ impl RuntimeStore {
                 &format!("读取 runtime.json 失败：{error}"),
             )
         })?;
+        self.verify_checksum(path, &raw)?;
         let value: Value = serde_json::from_str(&raw).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
@@ -117,13 +125,30 @@ impl RuntimeStore {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!(
-                    "runtime schemaVersion {} 与当前版本 {} 不兼容",
+                    "runtime schemaVersion {} 与当前版本 {} 不匹配",
                     document.schema_version, RUNTIME_SCHEMA_VERSION
                 ),
             ));
         }
         validate_identifiers(&document.state)?;
         Ok(document)
+    }
+
+    fn verify_checksum(&self, path: &Path, raw: &str) -> Result<(), SddError> {
+        let sidecar = checksum_path(path);
+        let expected = fs::read_to_string(&sidecar).map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("读取 runtime 校验和失败：{error}"),
+            )
+        })?;
+        if !crate::state::checksum::verify(raw.as_bytes(), &expected) {
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                "runtime.json 与校验和不一致（文件可能已损坏）",
+            ));
+        }
+        Ok(())
     }
 
     pub fn write(&self, document: &RuntimeDocument) -> Result<(), SddError> {
@@ -145,28 +170,56 @@ impl RuntimeStore {
                 &format!("格式化 runtime.json 失败：{error}"),
             )
         })?;
+        // 原子写：临时文件写入 + fsync 落盘，rename 提交，最后对目录做 best-effort fsync
         let temp = dir.join("runtime.json.tmp");
-        fs::write(&temp, content).map_err(|error| {
+        let mut temp_file = File::create(&temp).map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("创建 runtime 临时文件失败：{error}"),
+            )
+        })?;
+        temp_file.write_all(content.as_bytes()).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("写入 runtime 临时文件失败：{error}"),
             )
         })?;
+        temp_file.sync_all().map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("同步 runtime 临时文件失败：{error}"),
+            )
+        })?;
         let path = self.runtime_path();
         if path.exists() && self.read_path(&path).is_ok() {
-            fs::copy(&path, dir.join("runtime.json.bak")).map_err(|error| {
-                SddError::new(
-                    "E_STATE_CORRUPTED",
-                    &format!("备份 runtime.json 失败：{error}"),
-                )
-            })?;
+            self.backup_current(&path)?;
         }
-        fs::rename(&temp, path).map_err(|error| {
+        fs::rename(&temp, &path).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("提交 runtime.json 失败：{error}"),
             )
-        })
+        })?;
+        sync_dir(&dir);
+        write_checksum_sidecar(&path, &content)?;
+        Ok(())
+    }
+
+    fn backup_current(&self, path: &Path) -> Result<(), SddError> {
+        let backup = self.backup_path();
+        fs::copy(path, &backup).map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("备份 runtime.json 失败：{error}"),
+            )
+        })?;
+        fs::copy(checksum_path(path), checksum_path(&backup)).map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("备份 runtime 校验和失败：{error}"),
+            )
+        })?;
+        Ok(())
     }
 
     pub fn update<F>(&self, update: F) -> Result<RuntimeDocument, SddError>
@@ -181,6 +234,7 @@ impl RuntimeStore {
 }
 
 pub fn read_change(cwd: &str, change_id: &str) -> Result<Value, SddError> {
+    crate::git::isolation::validate_change_id(change_id)?;
     let document = RuntimeStore::new(cwd.to_string()).read()?;
     document
         .changes
@@ -203,7 +257,17 @@ pub fn write_change_field(
     field: &str,
     value: Value,
 ) -> Result<(), SddError> {
-    RuntimeStore::new(cwd.to_string()).update(|document| {
+    write_change_fields(cwd, change_id, [(field, value)])
+}
+
+pub fn write_change_fields<'a>(
+    cwd: &str,
+    change_id: &str,
+    fields: impl IntoIterator<Item = (&'a str, Value)>,
+) -> Result<(), SddError> {
+    crate::git::isolation::validate_change_id(change_id)?;
+    let fields: Vec<_> = fields.into_iter().collect();
+    RuntimeStore::new(cwd.to_string()).update(move |document| {
         let change = document
             .changes
             .entry(change_id.to_string())
@@ -211,14 +275,25 @@ pub fn write_change_field(
         if !change.is_object() {
             *change = json!({});
         }
-        change[field] = value;
+        for (field, value) in fields {
+            change[field] = value;
+        }
     })?;
     Ok(())
 }
 
 pub fn write_run_field(cwd: &str, run_id: &str, field: &str, value: Value) -> Result<(), SddError> {
+    write_run_fields(cwd, run_id, [(field, value)])
+}
+
+pub fn write_run_fields<'a>(
+    cwd: &str,
+    run_id: &str,
+    fields: impl IntoIterator<Item = (&'a str, Value)>,
+) -> Result<(), SddError> {
     validate_run_id(run_id)?;
-    RuntimeStore::new(cwd.to_string()).update(|document| {
+    let fields: Vec<_> = fields.into_iter().collect();
+    RuntimeStore::new(cwd.to_string()).update(move |document| {
         let run = document
             .runs
             .entry(run_id.to_string())
@@ -226,7 +301,9 @@ pub fn write_run_field(cwd: &str, run_id: &str, field: &str, value: Value) -> Re
         if !run.is_object() {
             *run = json!({});
         }
-        run[field] = value;
+        for (field, value) in fields {
+            run[field] = value;
+        }
     })?;
     Ok(())
 }
@@ -397,7 +474,54 @@ fn validate_identifiers(state: &WorkflowState) -> Result<(), SddError> {
     Ok(())
 }
 
-#[allow(dead_code)]
-fn _runtime_path(root: &Path) -> PathBuf {
-    root.join(SDD_DIR).join(RUNTIME_FILE)
+/// 将数据文件的 SHA-256 校验和以 tmp+rename 原子写入边车。
+fn write_checksum_sidecar(path: &Path, content: &str) -> Result<(), SddError> {
+    let checksum = crate::state::checksum::compute(content.as_bytes());
+    let sidecar = checksum_path(path);
+    let temp = sidecar.with_extension("sha256.tmp");
+    let mut file = File::create(&temp).map_err(|error| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!("创建 runtime 校验和临时文件失败：{error}"),
+        )
+    })?;
+    file.write_all(format!("{checksum}\n").as_bytes())
+        .map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("写入 runtime 校验和临时文件失败：{error}"),
+            )
+        })?;
+    file.sync_all().map_err(|error| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!("同步 runtime 校验和临时文件失败：{error}"),
+        )
+    })?;
+    fs::rename(&temp, &sidecar).map_err(|error| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!("提交 runtime 校验和失败：{error}"),
+        )
+    })
 }
+
+fn checksum_path(path: &Path) -> PathBuf {
+    let name = path
+        .file_name()
+        .expect("runtime 内部路径必须包含文件名")
+        .to_string_lossy();
+    path.with_file_name(format!("{name}.sha256"))
+}
+
+/// 目录 fsync：保证 rename 后的目录项落盘（防断电丢文件）。
+/// Unix 下打开目录文件 sync_all；Windows 不支持目录句柄，跳过（best-effort）。
+#[cfg(unix)]
+fn sync_dir(dir: &Path) {
+    if let Ok(dir_file) = File::open(dir) {
+        let _ = dir_file.sync_all();
+    }
+}
+
+#[cfg(not(unix))]
+fn sync_dir(_dir: &Path) {}

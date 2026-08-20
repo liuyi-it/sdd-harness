@@ -4,10 +4,7 @@
   "title": "SDD 任务定义",
   "type": "object",
   "required": ["id", "title", "phase", "status"],
-  "properties": {
-    "id": { "type": "string", "pattern": "^TASK-[0-9]{3}-[A-Z]+$" },
-    "title": { "type": "string" },
-    "summary": { "type": "string" },
+  "$defs": {
     "phase": {
       "type": "string",
       "enum": ["RED", "GREEN", "REFACTOR", "VERIFY"]
@@ -15,7 +12,17 @@
     "status": {
       "type": "string",
       "enum": ["PENDING", "BUILDING", "DONE", "FAILED", "SKIPPED"]
+    }
+  },
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^TASK-\\d{3}-(RED|GREEN|REFACTOR|VERIFY)$"
     },
+    "title": { "type": "string" },
+    "summary": { "type": "string" },
+    "phase": { "$ref": "#/$defs/phase" },
+    "status": { "$ref": "#/$defs/status" },
     "acceptance": {
       "type": "array",
       "items": { "type": "string" }
@@ -34,17 +41,23 @@
     },
     "verification": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["command"],
-        "properties": {
-          "command": { "type": "string" },
-          "args": {
-            "type": "array",
-            "items": { "type": "string" }
-          }
-        }
-      }
+      "items": { "type": "string" }
+    },
+    "requirements": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "dependsOn": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "doneCriteria": {
+      "type": "array",
+      "items": { "type": "string" }
     }
   },
   "additionalProperties": true

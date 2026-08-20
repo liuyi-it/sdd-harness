@@ -92,13 +92,17 @@ fn complete_all_tasks(_dir: &std::path::Path, cwd: &str) {
                 "output": if is_red { "FAILED: expected" } else { "ok" },
                 "passed": !is_red, "expectedFailure": is_red }])
         };
+        // 全阶段强制 verification 非空；RED 必须带 passed=false 的失败验证
+        let verification = if is_red {
+            json!([{ "command": "cargo test", "args": [], "passed": false }])
+        } else {
+            json!([{ "command": "cargo test", "args": [], "passed": true }])
+        };
         let result_json = json!({
             "taskId": action.task_id,
             "status": "completed",
             "evidence": evidence,
-            "verification": if is_verify {
-                json!([{ "command": "cargo test", "args": [], "passed": true }])
-            } else { json!([]) },
+            "verification": verification,
             "filesChanged": []
         })
         .to_string();
@@ -305,6 +309,61 @@ fn review_rejects_changes_made_after_verify() {
 }
 
 #[test]
+fn review_fails_closed_when_audit_scan_limit_is_reached() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.email", "test@test.test"]);
+    git(dir.path(), &["config", "user.name", "test"]);
+    git(dir.path(), &["add", "README.md"]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+
+    let state = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap();
+    let change_id = state.current_change_id.as_deref().unwrap();
+    let paths = sdd_core::commands::plan::read_plan_tasks(&cwd, change_id)
+        .unwrap()
+        .into_iter()
+        .flat_map(|task| task.allowed_files)
+        .filter(|path| !path.contains('*'))
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(paths.len() >= 2, "测试需要两个精确允许路径");
+    for path in paths.iter().take(2) {
+        let path = dir.path().join(path);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "// changed\n").unwrap();
+    }
+    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
+    config["audit"] = json!({ "maxFiles": 1, "maxSizeMb": 1 });
+    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
+
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    let error = run(&CommandRequest {
+        command: "review".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_AUDIT_SCAN_INCOMPLETE");
+
+    let report = sdd_core::state::runtime_store::read_change_field(&cwd, change_id, "reports")
+        .unwrap()
+        .unwrap()["review"]
+        .clone();
+    assert!(report["issues"].as_array().unwrap().iter().any(|issue| {
+        issue["code"] == "E_AUDIT_SCAN_INCOMPLETE" && issue["severity"] == "critical"
+    }));
+}
+
+#[test]
 fn archive_rejects_failed_review_report() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = prepare(dir.path());
@@ -374,6 +433,134 @@ fn archive_rejects_tampered_marker_on_retry() {
     })
     .unwrap_err();
     assert_eq!(err.code, "E_COMPONENT_INTEGRITY_FAILED");
+}
+
+/// 构造 git 仓库 + Cargo.toml 基线，跑完 init/new/change/design/plan 的公共流程（PLAN_READY）。
+fn prepare_git_cargo(dir: &std::path::Path) -> String {
+    std::fs::write(dir.join("README.md"), "# demo").unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    git(dir, &["init", "-q"]);
+    git(dir, &["config", "user.email", "test@test.test"]);
+    git(dir, &["config", "user.name", "test"]);
+    git(dir, &["add", "."]);
+    git(dir, &["commit", "-qm", "base"]);
+    prepare(dir)
+}
+
+/// 直接改写 runtime 中的 plan：写入依赖声明，并把 Cargo.toml 加入所有任务的允许范围，
+/// 使"依赖增量"能通过文件范围检查、走到依赖决策比对；同步重录 plan 制品哈希，
+/// 保证 review 的制品完整性校验通过。
+fn rewrite_plan_with_dependencies(cwd: &str, change_id: &str, dependencies: serde_json::Value) {
+    let mut plan = sdd_core::state::runtime_store::read_change_field(cwd, change_id, "plan")
+        .unwrap()
+        .unwrap();
+    plan["dependencies"] = dependencies;
+    if let Some(tasks) = plan["tasks"].as_array_mut() {
+        for task in tasks.iter_mut() {
+            let allowed = task["allowedFiles"].as_array_mut().unwrap();
+            if !allowed.iter().any(|v| v.as_str() == Some("Cargo.toml")) {
+                allowed.push(json!("Cargo.toml"));
+            }
+        }
+    }
+    let plan_text = serde_json::to_string_pretty(&plan).unwrap();
+    sdd_core::state::runtime_store::write_change_field(cwd, change_id, "plan", plan).unwrap();
+    sdd_core::state::artifact_store::record_artifact(
+        cwd,
+        &format!("{change_id}:plan"),
+        "plan",
+        &format!("runtime://changes/{change_id}/plan"),
+        &plan_text,
+        json!({ "spec": "", "design": "" }),
+    )
+    .unwrap();
+}
+
+fn add_serde_dependency(dir: &std::path::Path) {
+    let manifest = std::fs::read_to_string(dir.join("Cargo.toml")).unwrap();
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        format!("{manifest}\n[dependencies]\nserde = \"1\"\n"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn review_rejects_unplanned_dependency_addition() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare_git_cargo(dir.path());
+    // plan 依赖声明为空
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    rewrite_plan_with_dependencies(&cwd, &change_id, json!([]));
+    complete_all_tasks(dir.path(), &cwd);
+    // 修改 Cargo.toml 新增依赖（未在 plan 中声明）
+    add_serde_dependency(dir.path());
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+
+    let err = run(&CommandRequest {
+        command: "review".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(err.code, "E_UNPLANNED_DEPENDENCY");
+    assert_eq!(err.exit_code, 8);
+}
+
+#[test]
+fn review_accepts_dependency_declared_in_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare_git_cargo(dir.path());
+    // 把 serde 声明为 plan 的 ADD 依赖
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    rewrite_plan_with_dependencies(
+        &cwd,
+        &change_id,
+        json!([{
+            "name": "serde",
+            "manifest": "Cargo.toml",
+            "action": "ADD",
+            "reason": "序列化支持",
+            "requirements": ["REQ-1"],
+        }]),
+    );
+    complete_all_tasks(dir.path(), &cwd);
+    add_serde_dependency(dir.path());
+    // 关闭 OCR：本环境 PATH 存在 ocr 但不可用，避免后端失败干扰依赖决策断言
+    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
+    config["quality"]["ocr"]["mode"] = json!("off");
+    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    let result = run(&CommandRequest {
+        command: "review".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap();
+    assert!(result.ok);
+    assert_eq!(result.state, "REVIEW_READY");
 }
 
 #[test]

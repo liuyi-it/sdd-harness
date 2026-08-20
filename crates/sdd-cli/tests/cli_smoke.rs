@@ -1,6 +1,5 @@
 //! CLI 冒烟测试：参数解析、退出码与未初始化行为。
 
-use std::io::Write;
 use std::process::Command;
 
 fn sdd() -> Command {
@@ -97,58 +96,52 @@ fn init_help_hides_host_selection_parameter() {
 }
 
 #[test]
-fn init_opencode_writes_native_project_files() {
+fn init_codex_writes_native_project_files() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
     let out = sdd()
         .current_dir(dir.path())
-        .args(["init", "--host-adapter", "opencode", "--json"])
+        .args(["init", "--host-adapter", "codex", "--json"])
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
     assert!(dir
         .path()
-        .join(".opencode/skills/sdd-harness/SKILL.md")
+        .join(".agents/skills/sdd-harness/SKILL.md")
         .exists());
-    assert!(dir.path().join(".opencode/commands/sdd-new.md").exists());
-    assert!(dir.path().join(".opencode/agents/sdd-worker.md").exists());
+    assert!(dir.path().join(".codex/agents/sdd-explorer.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-reviewer.toml").exists());
     assert!(!dir.path().join(".omp/skills/sdd-harness/SKILL.md").exists());
 }
 
 #[test]
-fn init_without_host_marker_prompts_for_agent() {
+fn init_without_host_marker_defaults_to_codex() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
     let out = sdd()
         .current_dir(dir.path())
         .args(["init", "--json"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .output()
         .unwrap();
-    let output = out.wait_with_output().unwrap();
-    assert_eq!(output.status.code(), Some(3));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("请选择要接入的 Agent"));
+    assert_eq!(out.status.code(), Some(0));
+    assert!(dir
+        .path()
+        .join(".agents/skills/sdd-harness/SKILL.md")
+        .exists());
 }
 
 #[test]
-fn init_interactive_selection_writes_opencode_files() {
+fn init_non_interactive_defaults_to_codex() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
-    let mut child = sdd()
+    let output = sdd()
         .current_dir(dir.path())
-        .args(["init", "--json"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .spawn()
+        .args(["init", "--non-interactive", "--json"])
+        .output()
         .unwrap();
-    child.stdin.as_mut().unwrap().write_all(b"2\n").unwrap();
-    let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(0));
-    assert!(dir.path().join(".opencode/commands/sdd.md").exists());
-    assert!(!dir.path().join(".omp/commands/sdd.md").exists());
+    assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
 }
 
 #[test]
@@ -174,6 +167,46 @@ fn status_loop_flag_is_accepted() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn removed_legacy_cli_aliases_are_rejected() {
+    for args in [
+        vec!["status", "--loop-status"],
+        vec!["init", "--structure-policy", "free-design"],
+    ] {
+        let out = sdd().args(args).output().unwrap();
+        assert_eq!(out.status.code(), Some(2));
+    }
+}
+
+#[test]
+fn install_surface_only_exposes_sdd() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // 安装脚本不得暴露旧命令入口或旧 npm 清理变量。
+    let install = std::fs::read_to_string(root.join("scripts/install.sh")).unwrap();
+    assert!(
+        !install.contains("sdd-harness"),
+        "install.sh 暴露旧命令入口"
+    );
+    assert!(
+        !install.contains("LEGACY_NPM_PACKAGES"),
+        "install.sh 保留旧 npm 清理"
+    );
+    // 卸载脚本只处理当前二进制，不保留 npm 或旧命令兼容清理。
+    let uninstall = std::fs::read_to_string(root.join("scripts/uninstall.sh")).unwrap();
+    assert!(
+        !uninstall.contains("npm uninstall"),
+        "uninstall.sh 不应保留历史 npm 清理"
+    );
+    assert!(
+        !uninstall.contains("sdd-harness"),
+        "uninstall.sh 保留旧命令兼容清理"
+    );
+    assert!(
+        !uninstall.contains("install -m"),
+        "uninstall.sh 不应注册新命令"
+    );
 }
 
 #[test]
@@ -220,4 +253,76 @@ fn change_help_includes_answers_option() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("--answers"));
+}
+
+#[test]
+fn text_mode_omits_long_data() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    let out = sdd()
+        .current_dir(dir.path())
+        .args(["init", "--host-adapter", "omp"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    // 完整需求生成的规格模型（约 1200 字符）远超 512：文本模式应提示省略而非倾倒 JSON
+    let requirement = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+    let out = sdd()
+        .current_dir(dir.path())
+        .args(["new", requirement])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("SPEC_READY"),
+        "完整需求应直接生成规格"
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("数据：<JSON 过长，已省略"),
+        "应提示长数据已省略: {stdout}"
+    );
+    assert!(
+        stdout.contains("使用 --json 查看完整内容"),
+        "应提示使用 --json: {stdout}"
+    );
+}
+
+#[test]
+fn text_mode_error_contains_error_code() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = sdd()
+        .current_dir(dir.path())
+        .args(["build", "next"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("错误（E_NOT_INITIALIZED）"),
+        "文本错误应包含错误码: {stderr}"
+    );
+}
+
+#[test]
+fn auto_tail_without_events_is_rejected() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    let init = sdd()
+        .current_dir(dir.path())
+        .args(["init", "--host-adapter", "omp"])
+        .output()
+        .unwrap();
+    assert_eq!(init.status.code(), Some(0));
+    let out = sdd()
+        .current_dir(dir.path())
+        .args(["auto", "--tail", "5"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("--tail 必须与 --events 一起使用"),
+        "缺少 --events 时应报错: {stderr}"
+    );
 }

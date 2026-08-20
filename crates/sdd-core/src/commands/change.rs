@@ -179,7 +179,9 @@ pub fn run_change(
             codebase_summary,
             answers: answers.clone(),
         })
-        .map_err(|error| SddError::new("E_STATE_CORRUPTED", &format!("生成新规格失败：{error}")))?;
+        .map_err(|error| {
+            SddError::new("E_GENERATION_FAILED", &format!("生成新规格失败：{error}"))
+        })?;
 
     let old_documents = read_documents(&change_dir)?;
     if !old_documents.contains_key("spec.md") {
