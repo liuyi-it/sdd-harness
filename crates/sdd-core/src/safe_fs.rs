@@ -1,6 +1,8 @@
 //! 受管文件的安全读写原语：拒绝符号链接，并以唯一临时文件原子提交。
 
-use std::fs::{self, File, OpenOptions};
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 

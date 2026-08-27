@@ -354,6 +354,7 @@ impl OcrExecutor for SystemOcrExecutor {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::time::Instant;
 
     use super::*;
