@@ -27,7 +27,7 @@ Core 是唯一推进状态机的入口，外部 Agent 或工具不能绕过 Core
 init → new → design → plan → build → verify → review → archive
 ```
 
-每个会修改 `.sdd/` 的公开命令先获取 `.sdd/lock`，再读取最新 Runtime 并执行 auto/活动变更/阶段门禁，检查与写入处于同一临界区，不存在 check-then-wait 竞态；调度器不再为门禁额外解析一次 Runtime。未初始化项目使用只检查现存 `.sdd` 的锁入口，失败不会创建状态目录。锁路径先规范化，同一线程的嵌套命令通过弱引用登记复用句柄，最后一个 guard 显式释放 OS 锁。`RuntimeStore::try_update` 自身也持有同一把可重入 OS 锁，任何内部调用都不能绕过串行化。`auto` 遵循统一锁序，先持有普通写锁，再持有 `.sdd/auto.lock` 覆盖整条同步推进；内部步骤通过当前线程持锁身份安全复用锁与门禁。命令在真实失败或中断时成对持久化 `failedCommand` / `failedReason` 以及 `previousPhase`、`inProgressPhase` 与建议命令；成功推进会清除陈旧失败信息。
+每个会修改 `.sdd/` 的公开命令先获取 `.sdd/lock`，再读取最新 Runtime 并执行 auto/活动变更/阶段门禁，检查与写入处于同一临界区，不存在 check-then-wait 竞态；调度器不再为门禁额外解析一次 Runtime。未初始化项目使用只检查现存 `.sdd` 的锁入口，失败不会创建状态目录。锁路径先规范化，同一线程的嵌套命令通过弱引用登记复用句柄，最后一个 guard 显式释放 OS 锁。锁哨兵仅承担排他性，当前持有者写入独立的 `.owner.json` 旁路文件，使 Windows 竞争进程也能读取诊断信息。`RuntimeStore::try_update` 自身持有同一把可重入 OS 锁，任何内部调用都不能绕过串行化。`auto` 遵循统一锁序，先持有普通写锁，再持有 `.sdd/auto.lock` 覆盖整条同步推进；内部步骤通过当前线程持锁身份安全复用锁与门禁。命令在真实失败或中断时成对持久化 `failedCommand` / `failedReason` 以及 `previousPhase`、`inProgressPhase` 与建议命令；成功推进会清除陈旧失败信息。
 
 所有公开命令在进入业务逻辑前按命令白名单严格校验参数；未知参数、已经删除的兼容参数和错误子命令不会被忽略。`auto` 只把对应阶段支持的参数传给内部公开命令。
 

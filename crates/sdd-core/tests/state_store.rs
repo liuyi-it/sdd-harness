@@ -58,6 +58,7 @@ fn lock_is_exclusive() {
         .join()
         .unwrap();
     assert_eq!(err.code, "E_CONCURRENT_RUN");
+    assert!(err.message.contains("sdd test"));
 }
 
 #[test]
@@ -118,7 +119,7 @@ fn lock_metadata_identifies_the_current_holder() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
     let _guard = lock_sdd(&cwd, "sdd test", Some("change-a"), None).unwrap();
-    let lock_path = dir.path().join(".sdd/lock");
+    let lock_path = dir.path().join(".sdd/lock.owner.json");
     let metadata: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&lock_path).unwrap()).unwrap();
     assert_eq!(metadata["command"], "sdd test");
@@ -133,8 +134,9 @@ fn lock_releases_on_drop() {
     {
         let _guard = lock_sdd(&cwd, "sdd test", None, None).unwrap();
     }
-    // 锁文件保留诊断信息，但文件描述符释放后可再次获取。
+    // 锁哨兵和诊断信息保留，但文件描述符释放后可再次获取。
     assert!(dir.path().join(".sdd/lock").exists());
+    assert!(dir.path().join(".sdd/lock.owner.json").exists());
     let _guard = lock_sdd(&cwd, "sdd test", None, None).unwrap();
 }
 
@@ -143,7 +145,7 @@ fn orphaned_lock_metadata_does_not_block_new_owner() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
     std::fs::create_dir_all(dir.path().join(".sdd")).unwrap();
-    let path = dir.path().join(".sdd/lock");
+    let path = dir.path().join(".sdd/lock.owner.json");
     std::fs::write(
         &path,
         r#"{"pid":999999,"command":"abandoned command","created_at":"2000-01-01T00:00:00Z"}"#,

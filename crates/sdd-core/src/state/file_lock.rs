@@ -1,12 +1,13 @@
 //! 基于操作系统独占锁的 `.sdd` 写锁。
 //!
-//! 锁文件只保存当前持有者的诊断元数据；排他性由保持打开的文件描述符保证。
-//! 因此进程异常退出会由操作系统自动释放锁，也不需要“过期抢占”或删除锁文件。
+//! 锁哨兵只承担 OS 排他锁，旁路 JSON 保存当前持有者的诊断元数据。
+//! 因此进程异常退出会由操作系统自动释放锁，也不需要“过期抢占”或删除锁文件；
+//! 竞争进程在 Windows 上也能读取诊断信息，不受独占字节锁影响。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
@@ -117,7 +118,9 @@ fn lock_named(
         })?
     };
     let path = dir.join(file_name);
+    let owner_path = dir.join(format!("{file_name}.owner.json"));
     crate::safe_fs::reject_symlink(&path, "SDD 锁文件")?;
+    crate::safe_fs::reject_symlink(&owner_path, "SDD 锁持有者信息")?;
     if let Some(guard) = reentrant_guard(&path) {
         return Ok(guard);
     }
@@ -130,12 +133,14 @@ fn lock_named(
         .transpose()?;
 
     loop {
-        match try_acquire(&path, command, change_id) {
+        match try_acquire(&path, &owner_path, command, change_id) {
             Ok(guard) => return Ok(guard),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if deadline.is_none() {
-                    return Err(SddError::new("E_CONCURRENT_RUN", &holder_message(&path))
-                        .with_next("sdd status"));
+                    return Err(
+                        SddError::new("E_CONCURRENT_RUN", &holder_message(&owner_path))
+                            .with_next("sdd status"),
+                    );
                 }
                 if let Some(at) = deadline {
                     let now = std::time::Instant::now();
@@ -148,7 +153,7 @@ fn lock_named(
                 }
                 return Err(SddError::new(
                     "E_LOCK_TIMEOUT",
-                    &format!("{}，无法在限定时间内获取写锁", holder_message(&path)),
+                    &format!("{}，无法在限定时间内获取写锁", holder_message(&owner_path)),
                 )
                 .with_next("sdd status"));
             }
@@ -164,15 +169,14 @@ fn lock_named(
 
 fn try_acquire(
     path: &Path,
+    owner_path: &Path,
     command: &str,
     change_id: Option<&str>,
 ) -> Result<SddLockGuard, std::io::Error> {
-    let mut file = OpenOptions::new()
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
-        // 先取得 OS 锁，再由 write_lock_data 截断并写入诊断元数据。
-        // 打开时不可截断，否则竞争进程会抹掉当前持锁者的信息。
         .truncate(false)
         .open(path)?;
     file.try_lock()?;
@@ -183,7 +187,7 @@ fn try_acquire(
         change_id: change_id.map(str::to_string),
         created_at: now_iso(),
     };
-    if let Err(error) = write_lock_data(&mut file, &owner) {
+    if let Err(error) = write_lock_data(owner_path, &owner) {
         drop(file.unlock());
         return Err(error);
     }
@@ -213,13 +217,12 @@ fn reentrant_guard(path: &Path) -> Option<SddLockGuard> {
     })
 }
 
-fn write_lock_data(file: &mut File, owner: &LockData) -> Result<(), std::io::Error> {
-    let content = serde_json::to_string(owner)
+fn write_lock_data(path: &Path, owner: &LockData) -> Result<(), std::io::Error> {
+    let mut content = serde_json::to_vec(owner)
         .map_err(|error| std::io::Error::other(format!("序列化锁信息失败：{error}")))?;
-    file.set_len(0)?;
-    file.seek(SeekFrom::Start(0))?;
-    file.write_all(format!("{content}\n").as_bytes())?;
-    file.sync_all()
+    content.push(b'\n');
+    crate::safe_fs::atomic_write(path, &content, "SDD 锁持有者信息")
+        .map_err(|error| std::io::Error::other(error.message))
 }
 
 fn holder_message(path: &Path) -> String {
