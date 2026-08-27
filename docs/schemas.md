@@ -1,18 +1,19 @@
 # Schema 说明
 
-正式 JSON Schema 位于仓库根目录 `schemas/`，Rust Core 在编译时内嵌并执行校验。当前保留七个事实模型：
+正式 JSON Schema 位于仓库根目录 `schemas/`，Rust Core 在编译时内嵌并执行校验。当前保留八个事实模型：
 
 | Schema | 对应数据 |
 | --- | --- |
 | `state.schema.json` | `.sdd/runtime.json` 的 `state` 节点 |
 | `runtime.schema.json` | `.sdd/runtime.json` 顶层统一运行数据 |
 | `config.schema.json` | `.sdd/runtime.json` 的当前配置节点 |
+| `spec.schema.json` | runtime 中的澄清中或就绪规格记录及项目原生需求模型 |
 | `task.schema.json` | runtime 计划中的任务定义 |
 | `task-result.schema.json` | runtime 运行级任务结果 |
 | `report.schema.json` | runtime 中的 verify/review 报告 |
 | `artifact.schema.json` | runtime 中的制品条目 |
 
-runtime 内的规格、设计、计划和归档模型沿用各自的 `schemaVersion` 字段。状态、runtime、config、任务、任务结果和报告会在关键读写边界执行结构校验（required/type/enum/const/pattern/minLength/minItems/minimum/uniqueItems/propertyNames/additionalProperties/$ref/oneOf/anyOf）；数组元素也按 `items` 递归校验。runtime 读取还会校验 state、config、artifacts、index、changes、runs、reports、loop 与归档之间的引用和阶段不变量，拒绝未知顶层字段、悬空 ID、重复诊断和错误聚合形状。任务定义在读取计划时执行 `task.schema.json` 校验。
+当前 runtime、state、config 的整数版本分别为 `5`、`3`、`3`；规格、计划和归档模型版本分别为 `3.0.0`、`2.0.0`、`2.0.0`，设计以 Markdown 字符串存储。状态、runtime、config、规格、任务、任务结果和报告会在关键读写边界执行结构校验（required/type/enum/const/pattern/minLength/minItems/minimum/uniqueItems/propertyNames/additionalProperties/$ref/oneOf/anyOf）；数组元素也按 `items` 递归校验。runtime 读取还会校验 state、config、artifacts、index、changes、runs、reports、loop 与归档之间的引用和阶段不变量，拒绝未知顶层字段、悬空 ID、重复诊断和错误聚合形状。就绪规格只接受当前 Requirement/Scenario 模型；任务定义在读取计划时执行 `task.schema.json` 校验。
 
 索引节点固定为一条 CodeGraph 诊断、摘要和更新时间。诊断中的 `installed`/`version`、`indexed`/`degraded`/`reason` 必须彼此一致；降级原因还必须与工作流状态完全相同，provider、索引状态和摘要首行来源标记也必须对应。
 
@@ -23,7 +24,6 @@ runtime 内的规格、设计、计划和归档模型沿用各自的 `schemaVers
 `state.pendingAgentTask` 与 `state.workspace` 使用精确嵌套 schema，不接受未知或缺失字段。可用 Git 基线必须包含 40/64 位十六进制 OID、唯一文件列表和同键 SHA-256 表；不可用基线只能包含 `available=false`。workspace 的 branch/worktree 必须同时为空或同时为非空字符串，任务状态对象的键必须符合当前 `TASK-000-PHASE` 格式；Core 还会交叉校验文件与哈希键集合及阶段关系。
 
 `config` 只接受 `schemaVersion`、`hostAdapter`、`workflow.gitIsolation`（以及可选的 `structurePolicy`）、`quality.ocr`、`contextPack.maxSizeKb` 和 `audit`。`maxSizeKb` 是代码库摘要的 UTF-8 字节上限。所有必填值必须存在且类型、枚举和正整数约束正确；未知字段、旧版本和旧配置位置会在读写边界直接返回 `E_STATE_CORRUPTED`，不迁移、不忽略、也不回退默认值。
-
 
 ## 报告字段
 

@@ -8,14 +8,13 @@ use serde_json::json;
 
 use crate::contracts::CommandResult;
 use crate::engines::spec::spec_engine::{GenerateSpecInput, SpecEngine};
+use crate::engines::spec::SpecDocument;
 use crate::error::SddError;
 use crate::git::GitInspector;
 use crate::state::artifact_store::ArtifactRecord;
 use crate::state::file_lock::lock_initialized_sdd;
 use crate::state::WorkflowState;
 
-/// runtime 中规格对象的当前 schema 版本。
-const SPEC_SCHEMA_VERSION: &str = "2.0.0";
 const MAX_REQUIREMENT_CHARS: usize = 32_768;
 
 pub(crate) fn validate_requirement_length(requirement: &str) -> Result<(), SddError> {
@@ -357,7 +356,7 @@ pub fn run_new(
     if !unanswered.is_empty() {
         let spec_markdown = render_clarifying_spec(&requirement, &unanswered);
         let spec_json = json!({
-            "schemaVersion": SPEC_SCHEMA_VERSION,
+            "schemaVersion": crate::engines::spec::SPEC_SCHEMA_VERSION,
             "status": "CLARIFYING",
             "requirement": requirement,
             "questions": unanswered.iter().map(|q| json!({
@@ -448,9 +447,9 @@ pub fn run_new(
         .generate(&input)
         .map_err(|e| SddError::new("E_GENERATION_FAILED", &format!("生成规格失败：{e}")))?;
 
-    let spec_markdown = render_spec_document(&requirement, &answers, &artifacts.spec);
+    let spec_markdown = render_spec_document(&requirement, &answers, &artifacts.model)?;
     let spec_json = json!({
-        "schemaVersion": SPEC_SCHEMA_VERSION,
+        "schemaVersion": crate::engines::spec::SPEC_SCHEMA_VERSION,
         "status": "READY",
         "requirement": requirement,
         "impact": artifacts.impact,
@@ -565,11 +564,9 @@ fn render_clarifying_spec(
         String::new(),
         "## 当前需求".to_string(),
         String::new(),
-        crate::engines::openspec::escape_spec_text(requirement),
-        String::new(),
-        "## 待澄清问题".to_string(),
-        String::new(),
     ];
+    push_quote(&mut lines, requirement);
+    lines.extend([String::new(), "## 待澄清问题".to_string(), String::new()]);
     if let Some(round) = questions.first().map(|question| question.round) {
         lines.extend([format!("### 第 {round} 轮前沿"), String::new()]);
     }
@@ -585,19 +582,20 @@ fn render_clarifying_spec(
 pub(crate) fn render_spec_document(
     requirement: &str,
     answers: &HashMap<String, String>,
-    structured_spec: &str,
-) -> String {
-    let structured_body = structured_spec
-        .lines()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .join("\n");
+    specification: &SpecDocument,
+) -> Result<String, SddError> {
+    let acceptance =
+        crate::engines::spec::renderer::render_spec(specification).map_err(|error| {
+            SddError::new("E_GENERATION_FAILED", &format!("渲染规格文档失败：{error}"))
+        })?;
     let mut lines = vec![
         "# 需求规格".to_string(),
         String::new(),
         "## 目标与价值".to_string(),
         String::new(),
-        crate::engines::openspec::escape_spec_text(requirement),
+    ];
+    push_quote(&mut lines, requirement);
+    lines.extend([
         String::new(),
         "## 范围".to_string(),
         String::new(),
@@ -612,27 +610,33 @@ pub(crate) fn render_spec_document(
         "## 约束".to_string(),
         String::new(),
         "- 变更必须覆盖安全边界、必要审计和自动化测试。".to_string(),
-    ];
+    ]);
     if !answers.is_empty() {
         lines.push(String::new());
         lines.push("### 已确认约束".to_string());
         let mut answer_ids: Vec<&String> = answers.keys().collect();
         answer_ids.sort();
         for id in answer_ids {
-            // 答案同样转义结构行，避免澄清回答注入规格结构。
-            lines.push(format!(
-                "- {}：{}",
-                id,
-                crate::engines::openspec::escape_spec_text(&answers[id])
-            ));
+            lines.push(format!("- {id}："));
+            for line in answers[id].lines() {
+                lines.push(format!("  > {line}"));
+            }
         }
     }
     lines.extend([
         String::new(),
         "## 验收标准".to_string(),
         String::new(),
-        structured_body,
+        acceptance.trim_end().to_string(),
         String::new(),
     ]);
-    lines.join("\n")
+    Ok(lines.join("\n"))
+}
+
+fn push_quote(lines: &mut Vec<String>, text: &str) {
+    if text.is_empty() {
+        lines.push(">".to_string());
+    } else {
+        lines.extend(text.lines().map(|line| format!("> {line}")));
+    }
 }

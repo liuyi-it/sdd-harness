@@ -13,7 +13,7 @@ Codex / OMP Adapter ──> sdd-cli (bin) ──> sdd-core (lib)
 - `crates/sdd-cli`：clap 解析参数、路由命令并渲染 `CommandResult`。
 - `crates/sdd-core`：唯一状态机与质量门禁执行层。
 - `crates/sdd-core/src/protocol`：定义 Agent 行动要求、结果和约束结构。
-- `crates/sdd-core/src/policies`：按阶段解析 Policy，并生成可校验摘要。
+- `crates/sdd-core/src/policies`：编译期内嵌 build Policy，并生成可校验摘要。
 - `crates/sdd-core/src/knowledge`：CodeGraph 探测、索引、查询与降级。
 - `crates/sdd-core/src/subprocess.rs`：Git、CodeGraph 和 OCR 共用的有界子进程执行器，统一超时、进程组清理、输出上限和管道错误语义。
 - `assets/adapters/codex/*`：生成 Codex 仓库级 Skill，以及 explorer、普通/复杂 worker、reviewer、architect 五类专用 subagent，不直接修改状态（编译期嵌入二进制）。
@@ -40,15 +40,15 @@ requirement + codebase
   → SpecEngine
   → spec.md + runtime.changes.<changeId>.spec
   → runtime.changes.<changeId>.design + design.md
-  → TddEngine / 受控任务规划器（只复用设计理念）
+  → 项目原生 TddEngine / 任务规划器
   → plan.md + tasks.md + runtime.changes.<changeId>.plan
   → build next
   → 内联 Context Pack
 ```
 
-`spec.md`、`design.md`、`plan.md`、`tasks.md` 是需求生命周期内供人审核的文档，分别回答做什么、怎么设计、怎么实施和做哪些事。机器规格、设计、计划、任务状态和依赖决策统一写入 `.sdd/runtime.json`。
+`spec.md`、`design.md`、`plan.md`、`tasks.md` 是需求生命周期内供人审核的文档，分别回答做什么、怎么设计、怎么实施和做哪些事。机器规格、设计、计划、任务状态和依赖决策统一写入 `.sdd/runtime.json`。结构化规格模型是后续阶段的唯一权威来源；`spec.md` 只作为可读视图，`design`、`plan` 和 `verify` 不会再反向解析 Markdown。
 
-Context Pack 不在 `plan` 阶段批量生成。`build next` 先验证 `spec`、`design`、机器计划和两份计划文档的制品哈希，再只为当前任务生成内联 Context Pack；代码库摘要严格按 `contextPack.maxSizeKb` 的 UTF-8 字节上限截断。设计与规划输入通过借用传递；同一份代码库摘要不会复制成多份兼容字段或重复嵌入设计文档。
+Context Pack 不在 `plan` 阶段批量生成或持久化。`build next` 先验证 `spec`、`design`、机器计划和两份计划文档的制品哈希，再只为当前任务生成内联 Context Pack；代码库摘要严格按 `contextPack.maxSizeKb` 的 UTF-8 字节上限截断。
 
 ## 构建与质量门禁
 
@@ -59,17 +59,17 @@ Context Pack 不在 `plan` 阶段批量生成。`build next` 先验证 `spec`、
 3. 校验 TDD evidence（RED 失败证据 / GREEN 通过证据 / VERIFY 完整验证）。
 4. 写入运行级结果并更新任务状态。
 
-`verify` 检查 Requirement/Scenario、任务和证据覆盖；`review` 追加确定性审查、范围检查与敏感信息扫描。`archive` 在同一写锁内重新验证报告摘要，归档收敛为 `archive.md` 与 runtime 中的归档模型。
+`verify` 检查 Requirement/Scenario、任务和证据覆盖；`review` 追加范围、依赖计划与敏感信息的确定性审查，并按配置调用可选 OCR 后端。`archive` 在同一写锁内重新验证报告摘要，归档收敛为 `archive.md` 与 runtime 中的归档模型。
 
 ## 制品与原子写入
 
 所有运行事实写入 `.sdd/runtime.json`；`changes/<change-id>/` 只保留供人审核的 Markdown 文档。Runtime、Agent 模板和所有受管 Markdown 共用安全写入原语：拒绝目标符号链接，以同目录唯一临时文件 `create_new`，同步文件，原子重命名并同步目录。Runtime 额外维护 `runtime.json.bak`；主文件和备份都必须通过各自校验和及完整聚合校验。`.sdd`、变更目录、runtime 文件和受管文档都拒绝符号链接。
 
-- `.sdd/runtime.json`：工作流状态、配置、制品清单、规格/设计/计划/任务、报告、任务结果、Context Pack、auto loop、知识索引和归档模型。
+- `.sdd/runtime.json`：工作流状态、配置、制品清单、规格/设计/计划/任务、报告、任务结果、auto loop、知识索引和归档模型。
 - `.sdd/runtime.json.bak`：runtime 原子替换前的可恢复备份。
 - `.sdd/runtime.json.sha256`：runtime 内容的 SHA-256 校验和，用于检测损坏。
 - `.sdd/runtime.json.bak.sha256`：恢复备份的校验和；备份同样必须通过校验才会被读取。
-- `.sdd/changes/<change-id>/`：当前变更的 `spec.md`、`proposal.md`、`design.md`、`plan.md`、`tasks.md`、`verify-report.md`、`review-report.md` 或归档后的 `archive.md`。
+- `.sdd/changes/<change-id>/`：当前变更的 `spec.md`、可选 `proposal.md`、`design.md`、`plan.md`、`tasks.md`、`verify-report.md`、`review-report.md`，或归档后的单一 `archive.md`。
 
 ## 归档
 
@@ -97,7 +97,3 @@ Git、CodeGraph 与 OCR 不通过 shell 执行。共享执行器为每次调用�
 `workflow.gitIsolation`（`.sdd/runtime.json` 的 `config` 节点）启用后，`new` 只在受管的真实 `.sdd/worktrees` 目录中创建或验证 `sdd/<change-id>` 分支与 `.sdd/worktrees/<change-id>`。runtime 每次读写都会把持久化分支/路径与控制根目录、配置和当前 `changeId` 交叉验证。`build`、`review` 和归档 Git 快照使用该业务工作区，状态与制品仍保留在控制根目录。系统不会自动 merge、push、reset、clean 或删除 worktree。
 
 Git 状态和 worktree 列表使用 NUL 分隔 porcelain 严格解析；畸形或非 UTF-8 路径直接失败。文件指纹流式计算 SHA-256，符号链接按 Git 记录的链接文本计算而不读取目标内容；审查把删除文件视为无内容的已处理条目，不会误报读取失败。
-
-## 上游快照
-
-`vendor/openspec/` 和 `vendor/superpowers/` 是固定版本的审计快照，不作为外部 CLI 执行。运行时只复用受控规则的语义，流程编排、状态、安全和质量门禁仍由 sdd-harness 实现。

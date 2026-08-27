@@ -265,7 +265,7 @@ pub(crate) fn validate_state(state: &WorkflowState) -> Result<(), SddError> {
         .filter(|(_, status)| status.as_str() == TASK_STATUS_BUILDING)
         .map(|(task_id, _)| task_id.as_str());
     for task_id in state.tasks.keys() {
-        if !crate::engines::superpowers::protocol::valid_task_id(task_id) {
+        if !crate::engines::tdd::valid_task_id(task_id) {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("工作流包含无效任务 ID：{task_id}"),
@@ -340,7 +340,7 @@ fn validate_pending_agent_task(pending: &serde_json::Value) -> Result<&str, SddE
     let task_id = fields
         .get("taskId")
         .and_then(serde_json::Value::as_str)
-        .filter(|task_id| crate::engines::superpowers::protocol::valid_task_id(task_id))
+        .filter(|task_id| crate::engines::tdd::valid_task_id(task_id))
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentTask.taskId 无效"))?;
     if !fields
         .get("since")

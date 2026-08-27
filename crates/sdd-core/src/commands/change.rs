@@ -159,7 +159,7 @@ pub fn run_change(
     if !old_documents.contains_key("spec.md") {
         return Err(SddError::new("E_MISSING_ARTIFACT", "变更目录缺少 spec.md"));
     }
-    let spec_document = render_spec_document(&parsed.requirement, &answers, &artifacts.spec);
+    let spec_document = render_spec_document(&parsed.requirement, &answers, &artifacts.model)?;
     let mut new_documents = old_documents.clone();
     for name in DERIVED_DOCUMENTS {
         new_documents.remove(name);
@@ -169,7 +169,7 @@ pub fn run_change(
 
     let mut next_change = current_change;
     let next_spec = json!({
-        "schemaVersion": "2.0.0",
+        "schemaVersion": crate::engines::spec::SPEC_SCHEMA_VERSION,
         "status": "READY",
         "requirement": parsed.requirement,
         "impact": artifacts.impact,

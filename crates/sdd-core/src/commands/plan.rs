@@ -6,8 +6,8 @@ use serde_json::json;
 
 use crate::commands::new::current_change_id;
 use crate::contracts::CommandResult;
-use crate::engines::superpowers::protocol::{PlanningInput, TaskDefinition};
 use crate::engines::tdd::tdd_engine::TddEngine;
+use crate::engines::tdd::{PlanningInput, TaskDefinition};
 use crate::error::SddError;
 use crate::state::artifact_store::ArtifactRecord;
 use crate::state::file_lock::lock_initialized_sdd;
@@ -43,36 +43,33 @@ pub fn run_plan(
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少当前变更"))?;
     let spec_value = change
         .get("spec")
-        .cloned()
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
+    let specification = crate::engines::spec::model_from_record(spec_value)?;
     let spec_path = change_dir.join("spec.md");
     crate::safe_fs::reject_symlink(&spec_path, "spec.md")?;
     let spec = fs::read_to_string(spec_path)
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
     let design = change
         .get("design")
-        .cloned()
-        .and_then(|value| value.as_str().map(String::from))
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 design 字段"))?;
     let impact = spec_value
         .get("impact")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 的 spec 缺少 impact"))?
-        .to_string();
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 的 spec 缺少 impact"))?;
     let codebase_summary = runtime
         .index
         .get("summary")
         .and_then(serde_json::Value::as_str)
-        .map(String::from)
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?;
     let spec_digest = crate::policies::digest::digest(&spec);
-    let design_digest = crate::policies::digest::digest(&design);
+    let design_digest = crate::policies::digest::digest(design);
 
     let artifacts = engine.generate_plan(&PlanningInput {
-        spec: &spec,
-        design: &design,
-        impact: &impact,
-        codebase_summary: &codebase_summary,
+        specification: &specification,
+        design,
+        impact,
+        codebase_summary,
     })?;
 
     // 写任务前校验每条验证命令：任务进入 build 派发后不再拦截，
@@ -83,7 +80,7 @@ pub fn run_plan(
         }
     }
 
-    let plan_markdown = render_plan_document(&design, &artifacts.test_plan, &dependencies);
+    let plan_markdown = render_plan_document(design, &artifacts.test_plan, &dependencies);
     let tasks_markdown = artifacts.tasks_markdown.clone();
     let plan_value = json!({
         "schemaVersion": "2.0.0",
@@ -325,7 +322,7 @@ pub(crate) fn plan_tasks(value: &serde_json::Value) -> Result<Vec<TaskDefinition
     }
     let parsed: Vec<TaskDefinition> = serde_json::from_value(tasks.clone())
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("tasks 解析失败：{e}")))?;
-    crate::engines::superpowers::planner::validate_task_graph(&parsed)?;
+    crate::engines::tdd::planner::validate_task_graph(&parsed)?;
     for task in &parsed {
         let allowed: std::collections::HashSet<&str> =
             task.allowed_files.iter().map(String::as_str).collect();

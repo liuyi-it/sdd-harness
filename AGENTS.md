@@ -2,14 +2,14 @@
 
 ## 项目结构与模块划分
 
-本仓库是一个 Rust Cargo workspace 项目。核心领域逻辑在 `crates/sdd-core/src`，包括状态机、命令实现、安全校验、知识图谱适配与引擎；对应测试在 `crates/sdd-core/tests`。CLI 入口在 `crates/sdd-cli`，提供 `sdd` 命令。`assets/adapters/codex/` 生成 Codex 原生仓库级 Skill 和 subagent，`assets/adapters/omp/` 生成 OMP 原生 Skill、命令和 subagent profile；二者编译期嵌入二进制，`sdd init` 默认写入 Codex 资产。`crates/sdd-core/src/knowledge/` 负责 CodeGraph 探测、索引、查询与降级文件扫描。`docs/` 存放架构、命令契约和安全说明，`fixtures/` 提供测试样例项目，`vendor/` 存放上游快照（openspec/superpowers）。
+本仓库是一个 Rust Cargo workspace 项目。核心领域逻辑在 `crates/sdd-core/src`，包括状态机、命令实现、安全校验、知识图谱适配与引擎；对应测试在 `crates/sdd-core/tests`。CLI 入口在 `crates/sdd-cli`，提供 `sdd` 命令。`assets/adapters/codex/` 生成 Codex 原生仓库级 Skill 和 subagent，`assets/adapters/omp/` 生成 OMP 原生 Skill、命令和 subagent profile；二者编译期嵌入二进制，`sdd init` 默认写入 Codex 资产。`assets/policies/` 存放构建阶段下发的受控 Policy，`schemas/` 存放 JSON Schema，`crates/sdd-core/src/knowledge/` 负责 CodeGraph 探测、索引、查询与降级文件扫描。`docs/` 存放当前架构、CLI、状态机、安全、Schema 与 Agent 接入说明，`fixtures/` 提供测试样例项目。
 
-## Karpathy 风格执行规则
+## 执行规则
 
 1. 先思考再编码 —— 先说明假设、边界、歧义与取舍，不靠猜测推进。
-2. 简单优先 —— 只写解决当前问题所需的最小代码，不提前抽象。
-3. 手术式修改 —— 只改当前任务需要的文件和代码行，不顺手重构无关内容。
-4. 目标驱动执行 —— 先定义验证动作，优先用检查和测试证明结果，再声明完成。
+2. 目标驱动执行 —— 先定义验证动作，优先用检查和测试证明结果，再声明完成。
+3. 本项目中禁止打补丁式修改，直接以最优方法重构即可；
+4. 本项目中不需要兼容旧版本，旧版本兼容代码需要清除；
 
 ## 构建、测试与开发命令
 
@@ -23,7 +23,7 @@
 
 ## 编码风格与命名约定
 
-默认使用 Rust edition 2021、4 空格缩进（cargo fmt 默认），遵循现有文件风格。优先做小而集中的改动，不重写无关代码。文件名保持小写短横线，如 `state-store.rs`、`task-executor.rs`。新增注释以中文为主，重点解释约束、边界和原因，不写空洞注释。错误码（`E_*`）、命令字面量（`sdd xxx`）、schema 键保持英文。
+默认使用 Rust edition 2021、4 空格缩进（cargo fmt 默认），遵循现有文件风格。优先做小而集中的改动，不重写无关代码。Rust 文件名保持小写 snake_case，如 `state_store.rs`、`task_executor.rs`。新增注释以中文为主，重点解释约束、边界和原因，不写空洞注释。错误码（`E_*`）、命令字面量（`sdd xxx`）、schema 键保持英文。
 
 ## 测试要求
 
@@ -39,7 +39,7 @@
 
 ## 其他规则
 
-1. 项目文档入口见 README「文档」章节（docs/ 下的 CLI、架构、命令契约、状态机、安全与 Schema 说明）；
+1. 项目文档入口见 README「文档」章节（`docs/` 下的 CLI、架构、状态机、安全、Schema 与 Agent 接入说明）；
 2. git commit 中的内容，请使用中文说明；
 3. 当前项目是**中文项目**，除给 AI 的 Prompt（skill、commands/\_.md 提示词）和代码中必要的英文（错误码 `E\__`、命令字面量 `sdd xxx`、schema 键、标识符）外，全项目中文化；
 4. AI Agent 需要自行安装或更新 `sdd` 时，先读 `docs/agent-install.md`，从 GitHub Releases 下载最新预编译二进制并放入 PATH，不要要求用户预装 Rust；

@@ -12,8 +12,8 @@ use regex::Regex;
 
 use crate::error::SddError;
 
-/// 已注册的 7 个 schema（内嵌编译期内容）
-pub const SCHEMAS: [(&str, &str); 7] = [
+/// 已注册的 8 个 schema（内嵌编译期内容）
+pub const SCHEMAS: [(&str, &str); 8] = [
     (
         "state",
         include_str!("../../../../schemas/state.schema.json"),
@@ -39,6 +39,7 @@ pub const SCHEMAS: [(&str, &str); 7] = [
         "config",
         include_str!("../../../../schemas/config.schema.json"),
     ),
+    ("spec", include_str!("../../../../schemas/spec.schema.json")),
 ];
 
 fn parsed_schemas() -> &'static [serde_json::Value; SCHEMAS.len()] {

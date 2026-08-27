@@ -1,4 +1,4 @@
-//! SpecEngine：从需求文本生成 OpenSpec 规格制品。
+//! SpecEngine：从需求文本生成项目原生规格制品。
 //!
 //! 规格生成包含：
 //! - analyze：语义槽缺失检测（BLOCKER 澄清问题）
@@ -12,12 +12,11 @@ use std::sync::LazyLock;
 use regex::Regex;
 use regex::RegexBuilder;
 
+use super::model::{SpecDocument, SpecRequirement, SpecScenario};
 use super::semantic_lexicon::{
     action_detector, action_extractor_en, action_extractor_zh, is_chinese,
 };
-use crate::engines::openspec::model::{SpecDocument, SpecRequirement, SpecScenario};
-use crate::engines::openspec::renderer::render_spec;
-use crate::engines::openspec::validator::validate_spec;
+use super::validator::validate_spec;
 
 // —— 正则预编译：均为编译期常量，进程内只编译一次 ——
 
@@ -250,11 +249,6 @@ pub struct GenerateSpecInput {
 pub struct SpecArtifacts {
     pub proposal: String,
     pub impact: String,
-    pub questions: String,
-    pub answers: String,
-    pub assumptions: String,
-    pub spec: String,
-    pub delta: String,
     pub model: SpecDocument,
 }
 
@@ -487,12 +481,11 @@ impl SpecEngine {
     /// 生成规格制品
     pub fn generate(&self, input: &GenerateSpecInput) -> Result<SpecArtifacts, String> {
         let effective = compose_effective_requirement(&input.requirement, &input.answers);
-        let analysis = self.analyze(&input.requirement, &input.answers);
         let model = build_model(&effective)?;
         let failures = validate_spec(&model);
         if !failures.is_empty() {
             return Err(format!(
-                "生成的 OpenSpec 无效：{}",
+                "生成的规格模型无效：{}",
                 failures
                     .iter()
                     .map(|f| f.message.as_str())
@@ -500,28 +493,6 @@ impl SpecEngine {
                     .join("；")
             ));
         }
-        let spec = render_spec(&model)?;
-        let questions = if analysis.questions.is_empty() {
-            "# Questions\n\nNo blocker questions.".to_string()
-        } else {
-            let mut lines = vec!["# Questions".to_string(), String::new()];
-            for q in &analysis.questions {
-                lines.push(format!(
-                    "## {}｜{} [{}]\n\n{}\n\n建议：{}",
-                    q.id, q.title, q.severity, q.question, q.recommendation
-                ));
-            }
-            lines.join("\n")
-        };
-        let answers_doc = if input.answers.is_empty() {
-            "# Answers\n\nNo answers supplied.".to_string()
-        } else {
-            let mut lines = vec!["# Answers".to_string(), String::new()];
-            for (id, answer) in &input.answers {
-                lines.push(format!("## {id}\n\n{answer}"));
-            }
-            lines.join("\n")
-        };
         let impact = [
             "# Impact".to_string(),
             String::new(),
@@ -548,22 +519,9 @@ impl SpecEngine {
             "Deliver the requested behavior through the controlled SDD workflow.".to_string(),
         ]
         .join("\n");
-        let assumptions = [
-            "# Assumptions".to_string(),
-            String::new(),
-            "- The new specification is authoritative; remove superseded interfaces and compatibility layers."
-                .to_string(),
-            "- Security, audit, and tests are required for changed behavior.".to_string(),
-        ]
-        .join("\n");
         Ok(SpecArtifacts {
             proposal,
             impact,
-            questions,
-            answers: answers_doc,
-            assumptions,
-            spec: spec.clone(),
-            delta: spec,
             model,
         })
     }
@@ -626,17 +584,14 @@ fn compose_effective_requirement(
     }
 }
 
-/// 从需求构建 OpenSpec 文档。
+/// 从需求构建项目原生规格模型。
 fn build_model(requirement: &str) -> Result<SpecDocument, String> {
     let behaviors = split_behaviors(requirement);
     let mut requirements = Vec::new();
     for (index, behavior) in behaviors.iter().enumerate() {
         requirements.push(build_requirement(behavior, index, requirement)?);
     }
-    Ok(SpecDocument {
-        title: "Requested Change".to_string(),
-        requirements,
-    })
+    Ok(SpecDocument { requirements })
 }
 
 /// 行为分割：JS lookahead 用手动方式替代（语义一致）。
@@ -766,8 +721,7 @@ fn build_requirement(
     Ok(SpecRequirement {
         id: format!("REQ-{number}"),
         title: title_for(kind, index),
-        statement: format!("The system SHALL {}.", normalize_statement(behavior)),
-        operation: "ADDED".to_string(),
+        statement: normalize_statement(behavior),
         scenarios: vec![SpecScenario {
             id: format!("REQ-{number}-SC-001"),
             title: details.title,
@@ -796,10 +750,10 @@ fn classify_behavior(behavior: &str) -> BehaviorKind {
 
 fn title_for(kind: BehaviorKind, index: usize) -> String {
     let title = match kind {
-        BehaviorKind::Success => "Successful API behavior",
-        BehaviorKind::Rejection => "Rejected or conflicting request",
-        BehaviorKind::Audit => "Successful operation audit",
-        BehaviorKind::Test => "Automated behavior verification",
+        BehaviorKind::Success => "成功行为",
+        BehaviorKind::Rejection => "拒绝或冲突行为",
+        BehaviorKind::Audit => "操作审计",
+        BehaviorKind::Test => "自动化行为验证",
     };
     format!("{title} {}", index + 1)
 }

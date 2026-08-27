@@ -65,7 +65,7 @@ fn tdd_plan_has_red_green_refactor_verify() {
         .unwrap();
     let artifacts = engine
         .generate_plan(&sdd_core::engines::tdd::PlanningInput {
-            spec: &spec.spec,
+            specification: &spec.model,
             design: "# Design\n\n## Target Design\n\norder cancellation",
             impact: &spec.impact,
             codebase_summary: "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
@@ -152,7 +152,7 @@ fn plan_requires_source_and_test_files() {
         })
         .unwrap();
     let result = engine.generate_plan(&sdd_core::engines::tdd::PlanningInput {
-        spec: &spec.spec,
+        specification: &spec.model,
         design: "# Design",
         impact: &spec.impact,
         codebase_summary: "（无文件信息）",

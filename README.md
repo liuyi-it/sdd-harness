@@ -10,7 +10,7 @@
 - 代码库理解：自动探测并索引 CodeGraph 知识图谱，按 intent 查询；不可用时显式降级到受限文件扫描。
 - 安全可追溯：受管文件原子写入且拒绝符号链接，严格校验路径、命令、Git delta、TDD 证据和敏感信息。
 - 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
-- 精简制品：活动需求只保留人工审核的 `spec.md`、`design.md`、`plan.md`、`tasks.md` 与质量报告，机器状态写入统一 runtime；归档后整合为一个 `archive.md`。
+- 精简制品：活动需求只保留人工审核的 `spec.md`、可选 `proposal.md`、`design.md`、`plan.md`、`tasks.md` 与质量报告，机器状态写入统一 runtime；归档后整合为一个 `archive.md`。
 
 ## 环境要求
 
@@ -31,6 +31,7 @@
 | 平台 | 文件 |
 | --- | --- |
 | Linux x64 | `sdd-linux-x64` |
+| Linux x64（musl/Alpine） | `sdd-linux-x64-musl` |
 | macOS Intel | `sdd-macos-x64` |
 | macOS Apple Silicon | `sdd-macos-arm64` |
 | Windows x64 | `sdd-windows-x64.exe` |
@@ -38,8 +39,12 @@
 macOS 示例：
 
 ```bash
-curl -L -o /usr/local/bin/sdd https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-macos-arm64
-chmod +x /usr/local/bin/sdd
+install_dir="$HOME/.local/bin"
+mkdir -p "$install_dir"
+curl -fL -o "$install_dir/sdd" https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-macos-arm64
+chmod +x "$install_dir/sdd"
+export PATH="$install_dir:$PATH"
+sdd --version
 ```
 
 ### 从源码安装
@@ -105,10 +110,9 @@ Core 会验证任务状态、允许/禁止文件、实际 Git delta、TDD eviden
 ## 工作流程
 
 ```text
-init → new → design → plan → build → verify → review → archive
-
-NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
-                → BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
+NOT_INITIALIZED → INITIALIZING → INDEX_READY → NEW_STARTED → [CLARIFYING]
+→ SPEC_READY → DESIGN_READY → PLAN_READY → BUILD_WAITING_AGENT
+↔ BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
 ```
 
 主要命令：
@@ -118,6 +122,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 | `sdd init`                | 默认接入 Codex，初始化 `.sdd`、代码库索引和接入文件 |
 | `sdd status`              | 查看当前阶段、错误和下一步建议              |
 | `sdd new <需求>`          | 澄清需求并生成规格                          |
+| `sdd change <id> <需求>`  | 修订当前需求并清除旧的派生设计与计划        |
 | `sdd design`              | 生成技术设计                                |
 | `sdd plan`                | 生成任务、测试计划和上下文摘要              |
 | `sdd build next/complete` | 获取任务或提交 Agent 结果                   |
@@ -127,7 +132,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 | `sdd auto <需求>`         | 按状态机自动推进流程                        |
 | `sdd codebase ...`        | 查看、诊断、查询或重建代码库索引            |
 
-完整参数见 [CLI 命令参考](docs/CLI.md)。
+完整参数见 [CLI 命令参考](docs/cli-reference.md)。
 
 ## 代码库理解与降级
 
@@ -138,8 +143,6 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 | 全部 intent | CodeGraph | 文件扫描 |
 
 CodeGraph 不可用、未建立真实索引或返回空/非法文本时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；查询不会在索引缺失时启动外部进程，索引成功还要通过目录后置条件。降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
-
-CodeGraph 当前以 MIT 许可证发布。
 
 ## 制品结构
 
@@ -172,19 +175,21 @@ CodeGraph 当前以 MIT 许可证发布。
 | `crates/sdd-core`             | 状态机、制品、Git、安全与质量门禁 |
 | `crates/sdd-core/src/knowledge` | CodeGraph 探测、路由与降级 |
 | `assets/adapters/omp` / `codex` | OMP / Codex 的原生 Skill、命令和 subagent 模板（编译期嵌入） |
-| `vendor`                      | 上游快照（openspec/superpowers）  |
+| `assets/policies`             | 构建阶段按需下发的受控 Policy |
+| `schemas`                     | Runtime、状态、规格、任务和报告的 JSON Schema |
+| `docs`                        | 当前架构、CLI、状态机、安全与接入文档 |
 | `fixtures`                    | 测试样例项目                       |
 
 ## 文档
 
-- [CLI 命令参考](docs/CLI.md)
+- [CLI 命令参考](docs/cli-reference.md)
 - [架构说明](docs/architecture.md)
-- [命令与制品契约](docs/command-contract.md)
 - [状态机](docs/state-machine.md)
 - [安全策略](docs/security.md)
 - [Schema](docs/schemas.md)
 - [Agent 接入](docs/adapters.md)
 - [AI Agent 自举安装](docs/agent-install.md)
+- [第三方来源声明](THIRD_PARTY_NOTICES.md)
 
 ## 开发与验证
 

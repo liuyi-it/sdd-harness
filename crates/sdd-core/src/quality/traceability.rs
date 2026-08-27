@@ -3,7 +3,8 @@
 //! 规格、设计、任务和验证证据的可追踪性检查：
 //! verify 检查规格中的每个 Requirement/Scenario 都有对应任务与完成证据。
 
-use crate::engines::superpowers::protocol::TaskDefinition;
+use crate::engines::spec::SpecDocument;
+use crate::engines::tdd::TaskDefinition;
 
 /// 检查任务覆盖是否完整；返回缺失列表
 pub fn coverage_gaps(
@@ -31,25 +32,18 @@ pub fn coverage_gaps(
     gaps
 }
 
-/// 从 runtime 中的规格模型提取需求与场景 id
-pub fn extract_spec_ids(spec_json: &serde_json::Value) -> (Vec<String>, Vec<String>) {
-    let mut requirements = Vec::new();
-    let mut scenarios = Vec::new();
-    if let Some(model) = spec_json.get("model").and_then(|m| m.as_object()) {
-        if let Some(reqs) = model.get("requirements").and_then(|r| r.as_array()) {
-            for req in reqs {
-                if let Some(id) = req.get("id").and_then(|v| v.as_str()) {
-                    requirements.push(id.to_string());
-                }
-                if let Some(scs) = req.get("scenarios").and_then(|s| s.as_array()) {
-                    for sc in scs {
-                        if let Some(sc_id) = sc.get("id").and_then(|v| v.as_str()) {
-                            scenarios.push(sc_id.to_string());
-                        }
-                    }
-                }
-            }
-        }
-    }
+/// 从权威规格模型提取需求与场景 ID。
+pub fn extract_spec_ids(specification: &SpecDocument) -> (Vec<String>, Vec<String>) {
+    let requirements = specification
+        .requirements
+        .iter()
+        .map(|requirement| requirement.id.clone())
+        .collect();
+    let scenarios = specification
+        .requirements
+        .iter()
+        .flat_map(|requirement| requirement.scenarios.iter())
+        .map(|scenario| scenario.id.clone())
+        .collect();
     (requirements, scenarios)
 }

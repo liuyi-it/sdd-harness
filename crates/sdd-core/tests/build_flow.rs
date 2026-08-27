@@ -129,9 +129,14 @@ fn context_pack_limits_multibyte_codebase_summary_by_utf8_bytes() {
         .split_once("\nEND_UNTRUSTED_CODEBASE_CONTEXT")
         .unwrap()
         .0;
+    let multibyte_payload = summary
+        .split_once('\n')
+        .expect("代码库摘要应包含 provider 前缀与正文")
+        .1;
 
     assert!(summary.len() <= 1024);
-    assert_eq!(summary.len() % "界".len(), 0);
+    assert_eq!(multibyte_payload.len() % "界".len(), 0);
+    assert!(multibyte_payload.chars().all(|character| character == '界'));
 }
 
 #[test]

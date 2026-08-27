@@ -15,7 +15,7 @@ use crate::commands::plan::plan_tasks;
 use crate::contracts::{
     AgentActionRequired, CliWarning, CodebaseProviderInfo, CommandResult, VerificationCommand,
 };
-use crate::engines::superpowers::protocol::TaskDefinition;
+use crate::engines::tdd::TaskDefinition;
 use crate::error::SddError;
 use crate::git::GitInspector;
 use crate::protocol::{validate_task_result, TaskExecutionResult};
@@ -693,7 +693,7 @@ fn render_context_pack(
     }
     Ok(format!(
         "{}\n\n## References\n\n{}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n## Policy Bundle\n\n{}",
-        crate::engines::superpowers::planner::render_context_pack(task),
+        crate::engines::tdd::planner::render_context_pack(task),
         references,
         codebase,
         policy_summary

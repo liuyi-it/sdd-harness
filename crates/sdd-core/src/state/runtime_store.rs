@@ -731,6 +731,12 @@ fn validate_change(change_id: &str, change: &Value) -> Result<(), SddError> {
             &format!("change {change_id} 字段类型无效"),
         ));
     }
+    if let Some(spec) = fields.get("spec") {
+        crate::schema::validate_json("spec", spec)?;
+        if spec.get("status").and_then(Value::as_str) == Some("READY") {
+            crate::engines::spec::model_from_record(spec)?;
+        }
+    }
     if let Some(reports) = fields.get("reports").and_then(Value::as_object) {
         for (kind, report) in reports {
             if !matches!(kind.as_str(), "verify" | "review") {

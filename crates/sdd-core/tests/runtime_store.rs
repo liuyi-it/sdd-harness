@@ -65,7 +65,27 @@ fn batched_field_writes_persist_related_runtime_data_together() {
             runtime.changes.insert(
                 "change-1".to_string(),
                 serde_json::json!({
-                    "spec": { "status": "READY" },
+                    "spec": {
+                        "schemaVersion": "3.0.0",
+                        "status": "READY",
+                        "requirement": "实现批量写入",
+                        "impact": "# 影响分析",
+                        "answers": { "Q-GOAL": "验证" },
+                        "model": {
+                            "requirements": [{
+                                "id": "REQ-001",
+                                "title": "成功行为 1",
+                                "statement": "批量写入保持原子性",
+                                "scenarios": [{
+                                    "id": "REQ-001-SC-001",
+                                    "title": "批量写入成功",
+                                    "given": ["输入有效"],
+                                    "when": ["执行批量写入"],
+                                    "then": ["全部数据写入成功"]
+                                }]
+                            }]
+                        }
+                    },
                     "design": "设计"
                 }),
             );

@@ -1,6 +1,7 @@
 //! sdd change 命令的端到端契约测试。
 
 use sdd_core::contracts::CommandRequest;
+use sdd_core::engines::spec::SpecDocument;
 use sdd_core::run;
 use serde_json::json;
 
@@ -129,8 +130,11 @@ fn change_rewrites_current_documents_without_revision_history() {
         1
     );
     let spec = std::fs::read_to_string(change_dir.join("spec.md")).unwrap();
-    let parsed = sdd_core::engines::openspec::parser::parse_spec(&spec).unwrap();
-    assert_eq!(parsed.requirements.len(), 3);
+    assert!(spec.contains("### REQ-001："));
+    assert!(!spec.contains("ADDED Requirements"));
+    let specification: SpecDocument =
+        serde_json::from_value(change["spec"]["model"].clone()).unwrap();
+    assert_eq!(specification.requirements.len(), 3);
 }
 
 #[test]

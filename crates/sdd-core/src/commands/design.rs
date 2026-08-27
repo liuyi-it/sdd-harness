@@ -38,6 +38,7 @@ pub fn run_design(
         .get(&change_id)
         .and_then(|change| change.get("spec"))
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
+    let specification = crate::engines::spec::model_from_record(spec_json)?;
     let spec_path = change_dir.join("spec.md");
     crate::safe_fs::reject_symlink(&spec_path, "spec.md")?;
     let spec = fs::read_to_string(spec_path)
@@ -64,10 +65,10 @@ pub fn run_design(
     let wrapped_summary =
         format!("BEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{safe_summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT");
     let design = engine.generate_design(&DesignInput {
-        spec: &spec,
+        specification: &specification,
         impact,
         codebase_context: &wrapped_summary,
-    });
+    })?;
     crate::safe_fs::atomic_write(
         &change_dir.join("design.md"),
         design.as_bytes(),

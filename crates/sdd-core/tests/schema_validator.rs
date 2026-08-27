@@ -46,6 +46,30 @@ fn valid_task(id: &str, phase: &str) -> serde_json::Value {
     })
 }
 
+fn valid_spec() -> serde_json::Value {
+    json!({
+        "schemaVersion": "3.0.0",
+        "status": "READY",
+        "requirement": "实现可验证行为",
+        "impact": "# 影响分析",
+        "answers": {},
+        "model": {
+            "requirements": [{
+                "id": "REQ-001",
+                "title": "成功行为 1",
+                "statement": "授权用户执行操作并看到成功结果",
+                "scenarios": [{
+                    "id": "REQ-001-SC-001",
+                    "title": "授权用户操作成功",
+                    "given": ["用户已授权"],
+                    "when": ["用户执行操作"],
+                    "then": ["系统返回成功结果"]
+                }]
+            }]
+        }
+    })
+}
+
 #[test]
 fn valid_state_passes() {
     let doc = valid_state();
@@ -69,8 +93,18 @@ fn invalid_codebase_provider_rejected() {
 }
 
 #[test]
-fn all_seven_schemas_registered() {
-    assert_eq!(SCHEMAS.len(), 7);
+fn all_eight_schemas_registered() {
+    assert_eq!(SCHEMAS.len(), 8);
+}
+
+#[test]
+fn spec_schema_accepts_native_model_and_rejects_obsolete_dialect_fields() {
+    let current = valid_spec();
+    assert!(validate_json("spec", &current).is_ok());
+
+    let mut obsolete = current;
+    obsolete["model"]["requirements"][0]["operation"] = json!("ADDED");
+    assert!(validate_json("spec", &obsolete).is_err());
 }
 
 #[test]

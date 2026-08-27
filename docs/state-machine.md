@@ -4,10 +4,9 @@ Core 是唯一允许推进状态的组件。稳定主路径为：
 
 ```text
 NOT_INITIALIZED → INITIALIZING → INDEX_READY → NEW_STARTED → [CLARIFYING]
-→ SPEC_READY → DESIGN_READY → PLAN_READY ↔ BUILD_WAITING_AGENT
-→ BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
+→ SPEC_READY → DESIGN_READY → PLAN_READY → BUILD_WAITING_AGENT
+↔ BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
 ```
-
 
 ## 过程状态
 
@@ -19,7 +18,6 @@ NOT_INITIALIZED → INITIALIZING → INDEX_READY → NEW_STARTED → [CLARIFYING
 状态枚举只包含真实持久化路径，不保留未实现的过程状态或预留兼容值。命令内部正在执行的动作由 `inProgressPhase` 表示，不伪造额外工作流阶段。
 
 信息不足时 `new` 进入 `CLARIFYING`；`NEW_STARTED` 表示 `new` 已记录当前 `changeId`/`runId` 但尚未完成规格生成，恢复建议为 `sdd auto --resume`。用户可用 `sdd new --answers '<JSON>'` 或 `sdd auto --resume --answers '<JSON>'` 继续，不得新建第二个变更或直接编辑 `.sdd/`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；auto 步骤失败或用户 `--stop` 时进入 `PAUSED`（保留 `failedCommand` / `failedReason` / `suggestedCommand`，`sdd auto --resume` 恢复）。
-
 ## 恢复信息
 
 `.sdd/runtime.json` 的 `state` 节点提供以下恢复字段；命令只在对应失败或中断信息存在时写入：
@@ -34,7 +32,6 @@ NOT_INITIALIZED → INITIALIZING → INDEX_READY → NEW_STARTED → [CLARIFYING
 任务状态只允许 `PENDING` / `BUILDING` / `DONE` / `FAILED`。`BUILDING` 必须且只能对应 `pendingAgentTask.taskId`；pending 中的 Git 基线文件、哈希和 HEAD 必须结构完整且互相一致，离开 Agent 等待阶段后不得残留 BUILDING 任务。
 
 命令重试必须通过相同的状态校验，不能直接编辑 runtime 文件绕过前置条件。`initialized`、阶段、索引状态、活动 ID、任务状态和失败字段必须彼此一致；需要活动变更的阶段若缺少对应 `changeId`、`runId` 或聚合数据，runtime 在读取边界直接返回 `E_STATE_CORRUPTED`。
-
 
 ## Loop 状态
 

@@ -15,6 +15,7 @@ https://github.com/liuyi-it/sdd-harness/releases/latest/download/<asset>
 | 平台 | 资产 |
 | --- | --- |
 | Linux x86_64 | `sdd-linux-x64` |
+| Linux x86_64（musl/Alpine） | `sdd-linux-x64-musl` |
 | macOS x86_64（Intel） | `sdd-macos-x64` |
 | macOS arm64（Apple Silicon） | `sdd-macos-arm64` |
 | Windows x86_64 | `sdd-windows-x64.exe` |
@@ -27,16 +28,29 @@ arch="$(uname -m)"
 case "${os}-${arch}" in
   Darwin-arm64) asset="sdd-macos-arm64" ;;
   Darwin-x86_64) asset="sdd-macos-x64" ;;
-  Linux-x86_64) asset="sdd-linux-x64" ;;
+  Linux-x86_64)
+    if ldd --version 2>&1 | grep -qi musl; then
+      asset="sdd-linux-x64-musl"
+    else
+      asset="sdd-linux-x64"
+    fi
+    ;;
   *) echo "不支持的平台: ${os}-${arch}" >&2; exit 1 ;;
 esac
-install_dir="${PREFIX:-/usr/local/bin}"
+if [ -n "${PREFIX:-}" ]; then
+  install_dir="$PREFIX"
+elif [ -d "$HOME/.local/bin" ] || [ ! -w /usr/local/bin ]; then
+  install_dir="$HOME/.local/bin"
+else
+  install_dir="/usr/local/bin"
+fi
+mkdir -p "$install_dir"
 curl -fL -o "${install_dir}/sdd" "https://github.com/liuyi-it/sdd-harness/releases/latest/download/${asset}"
 chmod +x "${install_dir}/sdd"
-sdd --version
+"${install_dir}/sdd" --version
 ```
 
-`/usr/local/bin` 不可写或不在 PATH 时，改用 `PREFIX=$HOME/.local/bin`，并确保该目录在 PATH 中。
+若实际安装目录不在 PATH 中，将它加入当前 shell 和持久化配置后再使用 `sdd`。
 
 ## Windows 安装（PowerShell）
 
@@ -56,15 +70,27 @@ sdd --version
 
 ```bash
 asset="sdd-macos-arm64" # 按平台替换
-curl -fL -o "/tmp/$asset.sha256" "https://github.com/liuyi-it/sdd-harness/releases/latest/download/$asset.sha256"
-echo "$(cat "/tmp/$asset.sha256")  ${install_dir}/sdd" | shasum -a 256 -c -
+checksum_file="/tmp/$asset.sha256"
+sdd_path="$(command -v sdd)"
+[ -n "$sdd_path" ] || { echo "PATH 中未找到 sdd" >&2; exit 1; }
+curl -fL -o "$checksum_file" "https://github.com/liuyi-it/sdd-harness/releases/latest/download/$asset.sha256"
+expected="$(awk '{print $1}' "$checksum_file")"
+if command -v sha256sum >/dev/null 2>&1; then
+  actual="$(sha256sum "$sdd_path" | awk '{print $1}')"
+else
+  actual="$(shasum -a 256 "$sdd_path" | awk '{print $1}')"
+fi
+[ "$actual" = "$expected" ] || { echo "SHA-256 校验失败" >&2; exit 1; }
 ```
 
 Windows（PowerShell）：
 
 ```powershell
-(Get-FileHash "$installDir\sdd.exe" -Algorithm SHA256).Hash.ToLower()
-# 与 release 资产 sdd-windows-x64.exe.sha256 中的值比对
+$checksumFile = "$env:TEMP\sdd-windows-x64.exe.sha256"
+Invoke-WebRequest -Uri "https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-windows-x64.exe.sha256" -OutFile $checksumFile
+$expected = ((Get-Content $checksumFile).Trim() -split '\s+')[0].ToLower()
+$actual = (Get-FileHash "$installDir\sdd.exe" -Algorithm SHA256).Hash.ToLower()
+if ($actual -ne $expected) { throw "SHA-256 校验失败" }
 ```
 
 - 升级：重新执行对应平台的下载命令即可覆盖旧版本；Windows 升级前先结束运行中的 `sdd.exe`。

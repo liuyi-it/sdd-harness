@@ -51,8 +51,8 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少当前变更"))?;
     let spec = change
         .get("spec")
-        .cloned()
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
+    let specification = crate::engines::spec::model_from_record(spec)?;
     let plan = change
         .get("plan")
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
@@ -71,7 +71,7 @@ pub fn run_verify(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
         })
         .map(|task| task.id.clone())
         .collect();
-    let (requirement_ids, scenario_ids) = extract_spec_ids(&spec);
+    let (requirement_ids, scenario_ids) = extract_spec_ids(&specification);
     let gaps = coverage_gaps(&requirement_ids, &scenario_ids, &tasks, &done_ids);
 
     let mut issues: Vec<Issue> = gaps

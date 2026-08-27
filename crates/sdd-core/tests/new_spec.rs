@@ -2,9 +2,8 @@
 
 use sdd_core::commands::new::run_new;
 use sdd_core::contracts::CommandRequest;
-use sdd_core::engines::openspec::model::SpecDocument;
 use sdd_core::engines::spec::spec_engine::SpecEngine;
-use sdd_core::engines::tdd::{PlanningInput, TddEngine};
+use sdd_core::engines::spec::SpecDocument;
 use sdd_core::run;
 use serde_json::json;
 
@@ -130,6 +129,10 @@ fn new_with_full_requirement_writes_spec() {
     let spec_markdown = std::fs::read_to_string(change_dir.join("spec.md")).unwrap();
     assert!(spec_markdown.contains("## 目标与价值"));
     assert!(spec_markdown.contains("## 验收标准"));
+    assert!(spec_markdown.contains("### REQ-001："));
+    assert!(spec_markdown.contains("- 前提："));
+    assert!(!spec_markdown.contains("ADDED Requirements"));
+    assert!(!spec_markdown.contains("SHALL"));
     let cwd = dir.path().to_string_lossy().to_string();
     let change_id = sdd_core::state::StateStore::new(cwd.clone())
         .read()
@@ -138,6 +141,7 @@ fn new_with_full_requirement_writes_spec() {
         .unwrap();
     let spec_json = spec_value(&cwd, &change_id);
     assert_eq!(spec_json.get("status").unwrap(), "READY");
+    assert_eq!(spec_json.get("schemaVersion").unwrap(), "3.0.0");
     assert!(spec_json.get("spec").is_none());
     let model: SpecDocument =
         serde_json::from_value(spec_json.get("model").unwrap().clone()).unwrap();
@@ -203,7 +207,7 @@ fn dispatcher_accepts_explicit_change_id_when_starting_a_change() {
 }
 
 #[test]
-fn spec_parse_render_roundtrip() {
+fn generated_model_renders_project_native_acceptance_criteria() {
     let engine = SpecEngine::new();
     let artifacts = engine
         .generate(&sdd_core::engines::spec::spec_engine::GenerateSpecInput {
@@ -212,30 +216,20 @@ fn spec_parse_render_roundtrip() {
             answers: Default::default(),
         })
         .unwrap();
-    let parsed = sdd_core::engines::openspec::parser::parse_spec(&artifacts.spec).unwrap();
-    assert_eq!(
-        parsed.requirements.len(),
-        artifacts.model.requirements.len()
-    );
-    assert_eq!(parsed.requirements[0].id, "REQ-001");
-    assert!(parsed.requirements.iter().any(|requirement| {
+    let rendered = sdd_core::engines::spec::renderer::render_spec(&artifacts.model).unwrap();
+    assert_eq!(artifacts.model.requirements[0].id, "REQ-001");
+    assert!(rendered.contains("### REQ-001："));
+    assert!(rendered.contains("#### REQ-001-SC-001："));
+    assert!(artifacts.model.requirements.iter().any(|requirement| {
         requirement.scenarios.iter().any(|scenario| {
             !scenario.given.is_empty() && !scenario.when.is_empty() && !scenario.then.is_empty()
         })
     }));
-}
-
-#[test]
-fn planner_rejects_removed_req_heading_format() {
-    let err = TddEngine::new()
-        .generate_plan(&PlanningInput {
-            spec: "# Requested Change\n\n## ADDED Requirements\n\n### REQ-001: Old format\n\n#### Scenario: legacy\n- GIVEN a resource\n- WHEN it changes\n- THEN it succeeds\n",
-            design: "",
-            impact: "",
-            codebase_summary: "",
-        })
-        .unwrap_err();
-    assert_eq!(err.code, "E_UNRESOLVED_BLOCKER");
+    assert!(artifacts
+        .model
+        .requirements
+        .iter()
+        .all(|requirement| !requirement.statement.contains("SHALL")));
 }
 
 #[test]

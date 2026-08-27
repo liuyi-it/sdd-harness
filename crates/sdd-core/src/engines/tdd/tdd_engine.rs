@@ -2,12 +2,14 @@
 //!
 //! TDD 设计与计划生成：拼接当前规格对应的设计文档，并经受控规划器生成原子任务链。
 
-use super::super::superpowers::planner::{build_plan_artifacts, extract_paths};
-use super::super::superpowers::protocol::{PlanArtifacts, PlanningInput};
+use super::planner::{build_plan_artifacts, extract_paths};
+use super::{PlanArtifacts, PlanningInput};
+use crate::engines::spec::renderer::render_spec;
+use crate::engines::spec::SpecDocument;
 use crate::error::SddError;
 
 pub struct DesignInput<'a> {
-    pub spec: &'a str,
+    pub specification: &'a SpecDocument,
     pub impact: &'a str,
     pub codebase_context: &'a str,
 }
@@ -20,10 +22,13 @@ impl TddEngine {
     }
 
     /// 生成当前设计文档的固定章节结构。
-    pub fn generate_design(&self, input: &DesignInput<'_>) -> String {
+    pub fn generate_design(&self, input: &DesignInput<'_>) -> Result<String, SddError> {
         let affected_files =
             extract_paths(&format!("{}\n{}", input.impact, input.codebase_context));
-        let requirement_lines = structured_requirement_lines(input.spec);
+        let requirement_lines = structured_requirement_lines(input.specification);
+        let specification = render_spec(input.specification).map_err(|error| {
+            SddError::new("E_STATE_CORRUPTED", &format!("规格模型无法渲染：{error}"))
+        })?;
         let affected_modules = if affected_files.is_empty() {
             "- 未从索引上下文解析到具体路径。".to_string()
         } else {
@@ -33,7 +38,7 @@ impl TddEngine {
                 .collect::<Vec<_>>()
                 .join("\n")
         };
-        [
+        Ok([
             "# Design",
             "",
             "## Current Code Structure",
@@ -90,13 +95,13 @@ impl TddEngine {
             "",
             "## Specification Reference",
             "",
-            input.spec,
+            &specification,
             "",
             "## Impact Reference",
             "",
             input.impact,
         ]
-        .join("\n")
+        .join("\n"))
     }
 
     /// 生成计划、任务文档与测试计划制品。
@@ -111,15 +116,18 @@ impl Default for TddEngine {
     }
 }
 
-fn structured_requirement_lines(spec: &str) -> String {
-    let lines = spec
-        .split('\n')
-        .filter(|line| line.starts_with("### Requirement:") || line.starts_with("#### Scenario:"))
-        .map(|line| format!("- {}", line.trim_start_matches(['#', ' '])))
-        .collect::<Vec<_>>();
-    if lines.is_empty() {
-        "- 规格未包含结构化 Requirement。".to_string()
-    } else {
-        lines.join("\n")
-    }
+fn structured_requirement_lines(specification: &SpecDocument) -> String {
+    specification
+        .requirements
+        .iter()
+        .flat_map(|requirement| {
+            std::iter::once(format!("- {}：{}", requirement.id, requirement.title)).chain(
+                requirement
+                    .scenarios
+                    .iter()
+                    .map(|scenario| format!("  - {}：{}", scenario.id, scenario.title)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

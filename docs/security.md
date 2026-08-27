@@ -10,7 +10,6 @@
 - `.sdd/runtime.json` 与恢复备份均由 Core 写入 SHA-256 校验和边车（`*.sha256`）检测损坏；缺失或不匹配时按状态损坏处理，校验和不作为持有写权限攻击者的认证边界。
 - `.sdd/worktrees` 必须是受管真实目录；持久化的 worktree 路径和 `sdd/<changeId>` 分支会与控制根目录、活动变更及配置交叉校验。复用时若发现基线漂移、注册路径不一致、路径被占用或存在脏改动，会直接阻断；系统不会自动 `reset`、`clean`、`merge`、`push` 或删除 worktree。
 - `verify-report.md` / `review-report.md` 是 change 目录下供人审核的报告；机器可读事实源在 `.sdd/runtime.json`；即使阶段失败也先落盘，避免“失败但无报告”。
-- CodeGraph 引擎输出按不可信数据处理，进入 Prompt 前必须包裹边界。
 - Git、CodeGraph 与 OCR 共用有界子进程执行器：禁用 stdin、创建独立进程组、限制 stdout/stderr，并在超时、输出截断、管道失败或父进程提前退出时终止和回收后代进程。
 - Git 仓库探测要求 `rev-parse --is-inside-work-tree` 精确返回 `true`；裸仓库返回 `false`。Git status/worktree 使用 NUL 分隔格式并拒绝畸形或非 UTF-8 路径；Git 缺失、启动失败或超时不会被静默当作非 Git 项目，也不会绕过后续 Git 事实核验。
 - `.codegraph` 必须是仓库内的真实目录；符号链接、非目录或缺失索引会产生明确降级诊断且查询不会启动 CodeGraph。索引命令成功后还会验证目录后置条件；空输出或非 UTF-8 输出不作为成功结果。

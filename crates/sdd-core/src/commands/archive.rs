@@ -277,7 +277,7 @@ fn parse_report(reports: &serde_json::Value, kind: &str) -> Result<Report, SddEr
 fn validated_task_results(
     runtime: &crate::state::RuntimeDocument,
     run_id: Option<&str>,
-    planned_tasks: &[crate::engines::superpowers::protocol::TaskDefinition],
+    planned_tasks: &[crate::engines::tdd::TaskDefinition],
 ) -> Result<Vec<serde_json::Value>, SddError> {
     let run_id =
         run_id.ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "状态缺少 currentRunId"))?;

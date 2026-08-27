@@ -10,7 +10,7 @@ description: 在软件实现、修复、重构、测试或代码审查任务中�
 ## 工作原则
 
 - 通过 `sdd` CLI 推进所有 SDD 阶段，不从源码入口绕过状态机，也不直接修改 `.sdd/` 内部文件。
-- 首次 `sdd new` 或 `sdd auto` 必须携带非空需求；遇到 `CLARIFYING` 时只询问当前最关键的阻塞问题，并使用 `--answers` 继续。
+- 首次 `sdd new` 或 `sdd auto` 必须携带非空需求；遇到 `CLARIFYING` 时一次询问 Core 返回的当前 round 问题，并使用 `--answers` 继续。
 - 对用户只汇报目标、变更、验证、风险和下一步；CLI JSON、任务 ID、Context Pack、状态码和内部路径只在内部处理。
 - 需求、架构、安全边界、不可逆外部操作和最终验收由主 Agent 决定；subagent 不能自行扩大任务范围或替代最终验收。
 

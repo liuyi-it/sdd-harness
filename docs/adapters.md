@@ -1,6 +1,6 @@
 # Agent 接入
 
-sdd-harness 让 Agent 负责对话和编码，Core 负责状态、文件范围、验证、审查和归档。`sdd init` 默认接入 Codex；OMP 作为另一原生宿主由其 Skill 注入 `hostAdapter=omp`。OpenCode 已不再受支持。
+sdd-harness 让 Agent 负责对话和编码，Core 负责状态、文件范围、验证、审查和归档。`sdd init` 默认接入 Codex；OMP 作为另一原生宿主，由其 Skill 通过隐藏的 `hostAdapter=omp` 标记选择对应资产。
 
 ## Codex Adapter（默认）
 
@@ -24,7 +24,7 @@ OMP 接入内容位于 `.omp/skills/`、`.omp/commands/` 和 `.omp/agents/`；�
 `sdd init` 写入三类短资源：
 
 - `sdd-harness` Skill：自然语言静默触发 SDD；只在必要时向用户提问。
-- `/sdd`：自然语言显式调用入口，以及 8 个 `/sdd.<command>` 阶段控制入口。
+- `/sdd`：自然语言显式调用入口，以及 `init`、`new`、`change`、`status`、`plan`、`verify`、`review`、`archive` 八个阶段控制入口。
 - `sdd-worker-simple`、`sdd-worker`、`sdd-worker-complex`：项目级 subagent profile，分别使用 `@smol`、`@task`、`@slow`；前两者映射 `gpt-5.6-luna` + `max`，复杂任务映射 `gpt-5.6-terra` + `max`。指定模型不可用时停止并报告，不降级到 GPT-5.6 之前的模型。
 
-主 Agent 必须检查 subagent 的 diff、文件范围和验证结果，再提交 Core 的任务结果并执行最终 `verify` / `review`。不要直接修改 `.sdd/runtime.json`，不要把 JSON、Context Pack 或 Policy Bundle 原样展示给用户。`vendor/superpowers/` 仅是审计快照；其原始运行时提示词不会被安装或注入。
+主 Agent 必须检查 subagent 的 diff、文件范围和验证结果，再提交 Core 的任务结果并执行最终 `verify` / `review`。不要直接修改 `.sdd/runtime.json`，不要把 JSON、Context Pack 或 Policy Bundle 原样展示给用户。项目只安装自身的宿主适配资产，不安装或注入第三方工作流框架。

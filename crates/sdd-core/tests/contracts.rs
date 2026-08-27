@@ -110,7 +110,7 @@ fn workflow_state_serializes_camel_case() {
 
 #[test]
 fn task_definition_serializes_camel_case() {
-    let task = sdd_core::engines::superpowers::protocol::TaskDefinition {
+    let task = sdd_core::engines::tdd::TaskDefinition {
         id: "TASK-001-RED".to_string(),
         title: "先写失败测试：x".to_string(),
         phase: "RED".to_string(),
