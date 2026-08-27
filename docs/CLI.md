@@ -26,10 +26,8 @@ bash scripts/install.sh
 | ------------------- | ------------------------------------------------------------------------------- |
 | `--json`            | 输出稳定的 `CommandResult` JSON                                                 |
 | `--cwd <path>`      | 指定项目根目录，默认当前目录                                                    |
-| `--change <id>`     | 新建时指定变更 ID；后续命令必须与当前活动变更一致                               |
+| `--change <id>`     | `new` 时指定变更 ID，或为无位置 ID 的后续命令声明当前变更；`change` 使用位置 ID |
 | `--timeout <s>`     | 锁等待与子进程执行超时（秒）                                                  |
-| `--non-interactive` | 仅用于允许需求不完整时直接失败的无人值守流程；遇到未回答的 BLOCKER 返回退出码 6 |
-| `--verbose`         | 输出详细信息                                                                    |
 | `--help`            | 显示帮助                                                                        |
 | `--version`         | 显示版本                                                                        |
 
@@ -53,12 +51,11 @@ sdd init --structurePolicy free-design
 
 ```bash
 sdd status
-sdd status --loop --json
 ```
 
 ### `sdd new <需求>`
 
-创建变更并生成供人工审核的 `spec.md`，以及写入 `.sdd/runtime.json` 的机器规格模型。首次在 `INDEX_READY` 调用必须传入非空需求；信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。若进程在 `NEW_STARTED` 中断，Core 会复用当前 `changeId`/`runId`，`sdd new --answers` 只恢复该变更，不会创建新变更。当前变更已进入 `SPEC_READY` 时需要修改需求时，请使用 `sdd change`，直接 `sdd new` 会返回 `E_ACTIVE_CHANGE_EXISTS`。
+创建变更并生成供人工审核的 `spec.md`，以及写入 `.sdd/runtime.json` 的机器规格模型。首次在 `INDEX_READY` 调用必须传入非空需求；`new`、`change` 的需求正文统一限制为 32768 个 Unicode 字符。信息不足时进入 `CLARIFYING`，此时应收集用户回答，而不是重试空命令或默认改用 `--non-interactive`。`--non-interactive` 只属于 `new`/`auto`，用于允许需求不完整时直接失败的无人值守流程。若进程在 `NEW_STARTED` 中断，Core 会复用当前 `changeId`/`runId`，`sdd new --answers` 只恢复该变更，不会创建新变更。当前变更已进入 `SPEC_READY` 时需要修改需求时，请使用 `sdd change`，直接 `sdd new` 会返回 `E_ACTIVE_CHANGE_EXISTS`。
 
 ```bash
 sdd new "实现订单取消功能"
@@ -71,6 +68,8 @@ sdd new "为待处理订单提供取消 API，包含权限、冲突响应、审�
 ### `sdd change <change-id> <新需求>`
 
 修改当前活动且未归档的变更。命令直接重写 `spec.md` 和 `proposal.md`，删除旧需求派生的 `design.md`、`plan.md`、`tasks.md`，并把工作流退回 `SPEC_READY`，因此修改后必须重新执行 `design` 和 `plan`。不生成需求级备份或修订历史；runtime 的崩溃恢复备份不属于需求历史，Git 是唯一需求历史来源。
+
+变更 ID 只允许由位置参数提供；同时传入全局 `--change` 会返回参数冲突，不会静默覆盖任一值。
 
 ```bash
 sdd change cancel-pending-order "授权用户通过 PATCH /orders/{id} 更新待处理订单，返回 status 和 error_code" --json
@@ -104,17 +103,14 @@ sdd plan --dependencies '[{"name":"serde","manifest":"Cargo.toml","action":"ADD"
 # 获取下一个任务，并为该任务按需生成 Context Pack
 sdd build next --json
 
-# 提交 Agent 写出的 TaskExecutionResult；支持结果文件或内联 JSON
-sdd build complete \
-  --task TASK-001-RED \
-  --result /tmp/task-result.json \
-  --json
-
+# 以内联 JSON 提交 Agent 的 TaskExecutionResult
 sdd build complete \
   --task TASK-001-RED \
   --result-json '<TaskExecutionResult JSON>' \
   --json
 ```
+
+`--result-json` 上限为 4 MiB；verification 必须不重不漏地覆盖 Context Pack 声明的全部验证命令。
 
 ### `sdd verify`
 
@@ -134,7 +130,7 @@ sdd verify --json
 - `off`：不启动 OCR；
 - `required`：找不到 `ocr` 命令时返回 `E_REVIEW_BACKEND_UNAVAILABLE` 硬失败。
 
-OCR 已启动后的超时、非零退出、失败状态或非法 JSON/finding 一律硬失败并持久化 `passed=false` 报告，使用稳定错误码：`E_REVIEW_BACKEND_TIMEOUT`（超时）、`E_REVIEW_BACKEND_FAILED`（非零退出或失败状态）、`E_REVIEW_BACKEND_INVALID_OUTPUT`（非法 JSON/finding）、`E_REVIEW_BACKEND_UNAVAILABLE`（启动失败）。OCR 子进程默认 120 秒超时，可用 `--timeout` 调整。OCR 的 prompt、thinking、API key 与完整 stderr 不会被持久化。
+Core 固定以 `ocr review --format json --audience agent` 和 `OCR_NO_UPDATE=1` 启动后端。只接受当前 `ocr.run-manifest/v1` 完整输出；旧版 `success` / `session_id`、未知字段、覆盖统计不一致、失败 coverage、越界路径或非法行号都会拒绝。OCR 已启动后的超时、非零退出、失败状态或非法 JSON/finding 一律硬失败并持久化 `passed=false` 报告，使用稳定错误码：`E_REVIEW_BACKEND_TIMEOUT`（超时）、`E_REVIEW_BACKEND_FAILED`（非零退出或失败状态）、`E_REVIEW_BACKEND_INVALID_OUTPUT`（非法 JSON/finding）、`E_REVIEW_BACKEND_UNAVAILABLE`（启动失败）。OCR 子进程默认 120 秒超时，可用 `--timeout` 调整。OCR 的 prompt、thinking、API key 与完整 stderr 不会被持久化。
 
 ```bash
 sdd review --json
@@ -181,4 +177,4 @@ sdd auto --loop-status --json
 sdd codebase query "order cancellation" --intent impact --json
 ```
 
-CodeGraph 不可用时，命令会返回显式 warning 并降级到 `fallback-file-scan`；使用 `sdd codebase doctor` 查看原因。
+CodeGraph 不可用、尚未建立真实 `.codegraph` 索引、输出为空/非 UTF-8 或命令失败时，会返回显式 warning 并降级到 `fallback-file-scan`；查询不会为缺失索引启动外部进程。`index`/`rebuild` 即使退出码为 0，也必须验证索引目录存在。使用 `sdd codebase doctor` 查看原因。

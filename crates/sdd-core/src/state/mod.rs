@@ -3,6 +3,7 @@
 pub mod artifact_store;
 pub mod checksum;
 pub mod file_lock;
+pub(crate) mod paths;
 pub mod runtime_store;
 pub mod state_store;
 

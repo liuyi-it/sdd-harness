@@ -2,16 +2,12 @@
 //!
 //! - 未初始化时返回 NOT_INITIALIZED
 //! - 已初始化时原样回报当前持久化状态和建议下一步命令
-//!
-//! 翻译自 早期 Node 实现。
 
-use serde_json::json;
-
-use crate::contracts::CommandResult;
+use crate::contracts::{CliWarning, CommandResult};
 use crate::error::SddError;
-use crate::state::{StateStore, WorkflowState};
+use crate::state::StateStore;
 
-/// 各阶段建议的下一步命令（与 Node 版 NEXT_BY_PHASE 一致）
+/// 各稳定阶段建议的下一步命令。
 pub fn next_command(phase: &str) -> Option<String> {
     let next = match phase {
         "NOT_INITIALIZED" => "sdd init",
@@ -30,8 +26,10 @@ pub fn next_command(phase: &str) -> Option<String> {
 }
 
 pub fn run_status(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
+    super::validate_args(args, &[])?;
     let store = StateStore::new(cwd.to_string());
-    if !store.state_path().exists() {
+    let state = store.read()?;
+    if !state.initialized {
         return Ok(CommandResult {
             ok: true,
             state: "NOT_INITIALIZED".to_string(),
@@ -45,45 +43,38 @@ pub fn run_status(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
             error: None,
         });
     }
-    let state = store.read()?;
-    let next = if state.current_phase == "FAILED" || state.current_phase == "PAUSED" {
+    let next = if state.current_phase == "PAUSED" {
         state.suggested_command.clone()
     } else {
         next_command(&state.current_phase)
     };
 
-    let mut warnings: Vec<serde_json::Value> = Vec::new();
+    let mut warnings = Vec::new();
     if state.degraded {
-        warnings.push(json!({
-            "code": "W_KNOWLEDGE_UNAVAILABLE",
-            "message": format!("当前处于降级模式（degraded mode）：{}",
-                state.degraded_reason.as_deref().unwrap_or("知识图谱引擎不可用")),
-            "next": "sdd codebase doctor",
-        }));
+        warnings.push(
+            CliWarning::new(
+                "W_KNOWLEDGE_UNAVAILABLE",
+                format!(
+                    "当前处于降级模式（degraded mode）：{}",
+                    state
+                        .degraded_reason
+                        .as_deref()
+                        .expect("降级状态必须包含原因")
+                ),
+            )
+            .with_next("sdd codebase doctor"),
+        );
     }
 
     // 序列化失败说明状态损坏，直接传播错误而不是静默降级为空对象。
-    let mut data = serde_json::to_value(&state)
+    let data = serde_json::to_value(&state)
         .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化工作流状态失败：{e}")))?;
-    // --loop 时返回 activeLoop 摘要
-    if args
-        .and_then(|a| a.get("loopStatus").or_else(|| a.get("loop")))
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-        && state.active_loop.is_some()
-    {
-        if let Some(loop_value) = &state.active_loop {
-            let mut obj = data.as_object().cloned().unwrap_or_default();
-            obj.insert("activeLoop".to_string(), loop_value.clone());
-            data = serde_json::Value::Object(obj);
-        }
-    }
 
     Ok(CommandResult {
         ok: true,
-        state: state.current_phase.clone(),
+        state: state.current_phase,
         exit_code: 0,
-        change_id: state.current_change_id.clone(),
+        change_id: state.current_change_id,
         next,
         data: Some(data),
         rendered: None,
@@ -100,9 +91,5 @@ pub fn run_status(cwd: &str, args: Option<&serde_json::Value>) -> Result<Command
 /// 供其他命令使用的纯状态查询
 pub fn read_phase(cwd: &str) -> Result<String, SddError> {
     let store = StateStore::new(cwd.to_string());
-    if !store.state_path().exists() {
-        return Ok("NOT_INITIALIZED".to_string());
-    }
-    let state: WorkflowState = store.read()?;
-    Ok(state.current_phase)
+    Ok(store.read()?.current_phase)
 }

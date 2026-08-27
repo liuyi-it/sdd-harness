@@ -1,10 +1,9 @@
 //! 可追溯性矩阵：Requirement/Scenario → 任务 → 证据覆盖。
 //!
-//! 翻译自 早期 Node 实现：
+//! 规格、设计、任务和验证证据的可追踪性检查：
 //! verify 检查规格中的每个 Requirement/Scenario 都有对应任务与完成证据。
 
 use crate::engines::superpowers::protocol::TaskDefinition;
-use crate::error::SddError;
 
 /// 检查任务覆盖是否完整；返回缺失列表
 pub fn coverage_gaps(
@@ -53,13 +52,4 @@ pub fn extract_spec_ids(spec_json: &serde_json::Value) -> (Vec<String>, Vec<Stri
         }
     }
     (requirements, scenarios)
-}
-
-/// 转换为标准错误（供 verify 命令使用）
-pub fn to_verify_error(gaps: &[String]) -> SddError {
-    SddError::new(
-        "E_VERIFY_REQUIRED",
-        &format!("规格覆盖不完整：{}", gaps.join("；")),
-    )
-    .with_next("sdd build next")
 }

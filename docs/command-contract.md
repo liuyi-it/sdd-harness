@@ -30,7 +30,9 @@ CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
 ## 需求修改契约
 
-`change` 只接受当前活动且未归档的 `changeId`，并要求非空的新需求。成功时直接重写当前 `spec.md` 和 `proposal.md`，删除由旧需求生成的 `design.md`、`plan.md`、`tasks.md` 及其机器状态，工作流回到 `SPEC_READY`，`CommandResult.next` 为 `sdd design`。不生成需求级备份文件、修订目录或修订 ID；runtime 的崩溃恢复备份不属于需求历史，需求历史由 Git 提供。
+`change` 只接受当前活动且未归档的 `changeId`，并要求非空且不超过 32768 个 Unicode 字符的新需求；`new` 使用相同上限。成功时直接重写当前 `spec.md` 和 `proposal.md`，删除由旧需求生成的 `design.md`、`plan.md`、`tasks.md` 及其机器状态，工作流回到 `SPEC_READY`，`CommandResult.next` 为 `sdd design`。不生成需求级备份文件、修订目录或修订 ID；runtime 的崩溃恢复备份不属于需求历史，需求历史由 Git 提供。
+
+CLI 的 `sdd change` 只使用位置 `change-id`；若同时提供全局 `--change`，在构造 Core 请求前直接失败。`build` 与 `codebase` 子命令只接受当前枚举值，未知值不会进入 Core。
 
 文档写入失败时只使用进程内的旧内容恢复当前目录，不留下额外制品；拒绝事件仍记录稳定错误原因。
 
@@ -38,11 +40,11 @@ CLI 进程退出码必须等于 `CommandResult.exitCode`。
 
 `actionRequired` 至少包含任务 ID、变更 ID、完整 Context Pack 内容、允许/期望新增/禁止文件、结构化 verification、`resultTransport: "inline-json"`、codebase 状态和可选 Policy Bundle。
 
-`build complete` 接受 `--result-json` 内联 JSON 或 `--result <path>` 文件；两者都解析为同一个 `TaskExecutionResult`，实际文件范围仍以 Git delta 为事实源。
+`build complete` 只接受不超过 4 MiB 的 `--result-json` 内联 `TaskExecutionResult`；文件路径传输已删除，实际文件范围始终以 Git delta 为事实源。
 
 TaskExecutionResult 必须带有任务状态、文件变化、命令证据和 TDD evidence：
 
-- 所有阶段（RED/GREEN/REFACTOR/VERIFY）都必须提供非空 verification 结果，且每条命令与计划完全一致。
+- 所有阶段（RED/GREEN/REFACTOR/VERIFY）都必须提供非空 verification 结果，且不重不漏地覆盖计划中的全部命令。
 - RED 至少包含一条 `passed=false`、`expectedFailure=true` 的证据，且 verification 中至少一条 `passed=false`。
 - GREEN、REFACTOR 的阶段证据必须通过，且不能声明预期失败。
 - VERIFY 的所有 verification 必须 `passed=true`。
@@ -58,7 +60,7 @@ TaskExecutionResult 必须带有任务状态、文件变化、命令证据和 TD
 
 新增依赖必须在 runtime 计划的 `dependencies` 中以 `ADD` 声明，否则返回 `E_UNPLANNED_DEPENDENCY`（Rust 版依赖事实源为 `Cargo.toml`）。改动规模和债务 finding 默认不阻断；安全、Spec、文件范围和 TDD 门禁优先级不变。
 
-`review` 还支持可选的 OCR 后端（Alibaba Open Code Review），由 `quality.ocr.mode` 控制：`auto`（默认）在确定性审查通过且存在变更文件时尝试调用 `quality.ocr.command`（默认 `ocr`），找不到时仅返回 `W_OCR_NOT_FOUND` 警告并保留确定性结论；`off` 不启动；`required` 找不到时返回 `E_REVIEW_BACKEND_UNAVAILABLE`。确定性扫描未通过或存在安全/范围阻断时不启动 OCR。OCR 已启动后的超时、非零退出、失败状态或非法 JSON/finding 使用稳定错误码 `E_REVIEW_BACKEND_TIMEOUT`、`E_REVIEW_BACKEND_FAILED`、`E_REVIEW_BACKEND_INVALID_OUTPUT`、`E_REVIEW_BACKEND_UNAVAILABLE` 硬失败，并持久化 `passed=false` 报告、回到 `VERIFY_READY`。OCR 发现的每条 finding 以 `origin="ocr"`、`category`、`startLine`/`endLine`、`suggestionCode` 合并进报告；OCR 的 prompt、thinking、API key 与完整 stderr 不会被持久化。
+`review` 还支持可选的 OCR 后端（Alibaba Open Code Review），由 `quality.ocr.mode` 控制：`auto`（默认）在确定性审查通过且存在变更文件时尝试调用 `quality.ocr.command`（默认 `ocr`），找不到时仅返回 `W_OCR_NOT_FOUND` 警告并保留确定性结论；`off` 不启动；`required` 找不到时返回 `E_REVIEW_BACKEND_UNAVAILABLE`。确定性扫描未通过或存在安全/范围阻断时不启动 OCR。Core 固定使用 `ocr review --format json --audience agent`、禁用工具自更新，并严格校验当前 `ocr.run-manifest/v1`、覆盖统计、finding 路径和行号；旧版输出不兼容。OCR 已启动后的超时、非零退出、失败状态或非法 JSON/finding 使用稳定错误码 `E_REVIEW_BACKEND_TIMEOUT`、`E_REVIEW_BACKEND_FAILED`、`E_REVIEW_BACKEND_INVALID_OUTPUT`、`E_REVIEW_BACKEND_UNAVAILABLE` 硬失败，并持久化 `passed=false` 报告、回到 `VERIFY_READY`。OCR 发现的每条 finding 以 `origin="ocr"`、`category`、`startLine`/`endLine`、`suggestionCode` 合并进报告；OCR 的 prompt、thinking、API key 与完整 stderr 不会被持久化。
 
 verify/review 失败会保留失败报告：证据或验证快照失效时回到 `BUILD_READY`，可直接重试的审查问题保留在 `VERIFY_READY`。
 
@@ -69,4 +71,4 @@ verify/review 失败会保留失败报告：证据或验证快照失效时回到
 - `runtime.changes.<changeId>.archive`：完整机器归档，含规格、设计、计划、任务结果、质量报告和 Git 摘要。
 - `archive.md`：合并后的人工归档文档，包含规格、计划、任务、验证和审查结果。
 
-归档完成后变更目录只保留 `archive.md`；其他制品、状态、配置、报告、loop、索引和机器归档均保留在 `.sdd/runtime.json`。`runtime.json` 通过临时文件、原子替换和 `runtime.json.bak` 恢复。
+归档完成后变更目录只保留 `archive.md`；其他制品、状态、配置、报告、loop、索引和机器归档均保留在 `.sdd/runtime.json`。所有受管文档与 runtime 都使用唯一临时文件、文件同步、原子替换和目录同步；runtime 另通过 `runtime.json.bak` 恢复。

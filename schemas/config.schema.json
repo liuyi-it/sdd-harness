@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/config.schema.json",
+  "title": "SDD 当前运行配置",
+  "type": "object",
+  "required": ["schemaVersion", "hostAdapter", "workflow", "quality", "contextPack", "audit"],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [3]
+    },
+    "hostAdapter": {
+      "type": "string",
+      "enum": ["codex", "omp"]
+    },
+    "workflow": {
+      "type": "object",
+      "required": ["gitIsolation"],
+      "properties": {
+        "gitIsolation": { "type": "boolean" },
+        "structurePolicy": {
+          "type": "string",
+          "enum": ["free-design", "user-defined"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "quality": {
+      "type": "object",
+      "required": ["ocr"],
+      "properties": {
+        "ocr": {
+          "type": "object",
+          "required": ["mode", "command"],
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": ["auto", "off", "required"]
+            },
+            "command": {
+              "type": "string",
+              "pattern": "\\S"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "contextPack": {
+      "type": "object",
+      "required": ["maxSizeKb"],
+      "properties": {
+        "maxSizeKb": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "audit": {
+      "type": "object",
+      "required": ["maxSizeMb", "maxFiles"],
+      "properties": {
+        "maxSizeMb": { "type": "integer", "minimum": 1 },
+        "maxFiles": { "type": "integer", "minimum": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

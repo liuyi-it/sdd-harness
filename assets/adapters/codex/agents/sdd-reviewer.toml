@@ -1,7 +1,7 @@
 name = "sdd-reviewer"
 description = "只读 SDD 审查员：独立检查实现正确性、回归风险、任务范围和验证缺口。"
 model = "gpt-5.6-terra"
-model_reasoning_effort = "high"
+model_reasoning_effort = "max"
 sandbox_mode = "read-only"
 developer_instructions = """
 像代码所有者一样进行只读审查。基于真实调用路径、diff、测试和契约验证正确性、回归、安全、并发和测试覆盖。

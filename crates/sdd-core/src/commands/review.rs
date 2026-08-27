@@ -1,21 +1,20 @@
 //! review 命令：确定性审查、范围检查与敏感信息扫描。
 //!
-//! 翻译自 早期 Node 实现 + quality/deterministic-review.ts：
+//! 审查链包含：
 //! - 敏感信息扫描（E_SECURITY_BLOCKED）
 //! - 变更文件范围/数量指标（记录，不阻断）
 //! - 写 report(kind=review)，状态推进 REVIEW_READY
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Read;
-use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
 use crate::commands::new::current_change_id;
-use crate::commands::plan::read_plan_tasks;
-use crate::contracts::CommandResult;
+use crate::commands::plan::plan_tasks;
+use crate::contracts::{CliWarning, CommandResult};
 use crate::error::SddError;
+use crate::git::inspector::RepoEntryContent;
 use crate::git::GitInspector;
 use crate::quality::ocr::{
     validate_output, OcrComment, OcrConfig, OcrExecution, OcrExecutor, OcrMode, OcrOutput,
@@ -25,15 +24,13 @@ use crate::quality::report::{render_report_markdown, Issue, Report};
 use crate::schema::validate_json;
 use crate::security::secrets_scanner::validate_no_secrets;
 use crate::security::task_scope::validate_file_change;
-use crate::state::file_lock::lock_sdd;
-use crate::state::StateStore;
+use crate::state::artifact_store::ArtifactRecord;
+use crate::state::file_lock::lock_initialized_sdd;
 
 pub fn run_review(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
-    let timeout_ms = args
-        .and_then(|a| a.get("timeout"))
-        .and_then(|v| v.as_f64())
-        .map(|s| (s * 1000.0) as u64);
-    let _guard = lock_sdd(cwd, "sdd review", None, timeout_ms)?;
+    super::validate_args(args, &["timeout", "changeId"])?;
+    let timeout_ms = super::timeout_ms(args)?;
+    let _guard = lock_initialized_sdd(cwd, "sdd review", None, timeout_ms)?;
     run_review_with_executor(cwd, args, &SystemOcrExecutor)
 }
 
@@ -42,38 +39,54 @@ fn run_review_with_executor<E: OcrExecutor>(
     args: Option<&serde_json::Value>,
     executor: &E,
 ) -> Result<CommandResult, SddError> {
-    let store = StateStore::new(cwd.to_string());
-    let state = store.read()?;
+    let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    let state = runtime.state.clone();
+    super::ensure_phase(cwd, &state, "review", args)?;
     let business_cwd = state
         .workspace
         .as_ref()
         .and_then(|workspace| workspace.worktree_path.clone())
         .unwrap_or_else(|| cwd.to_string());
     let change_id = current_change_id(&state)?;
-    let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
+    let change_dir = crate::state::paths::change_dir(cwd, &change_id, false)?;
+    let config = &runtime.config;
 
     let mut issues: Vec<Issue> = Vec::new();
     let mut debt_files = Vec::new();
-    let mut warnings: Vec<serde_json::Value> = Vec::new();
-    let is_git = GitInspector::is_git_repo(&business_cwd);
+    let mut warnings = Vec::new();
+    let is_git = GitInspector::is_git_repo(&business_cwd)?;
+    let workspace =
+        if is_git {
+            Some(state.workspace.as_ref().ok_or_else(|| {
+                SddError::new("E_STATE_CORRUPTED", "Git 工作流缺少基线 workspace")
+            })?)
+        } else {
+            None
+        };
 
-    for key in [
-        format!("{change_id}:plan"),
-        format!("{change_id}:plan-md"),
-        format!("{change_id}:tasks-md"),
-        format!("{change_id}:verify-report"),
-    ] {
-        crate::state::artifact_store::verify_artifact(cwd, &key)?;
-    }
-    let verify_report: Report =
-        crate::state::runtime_store::read_change_field(cwd, &change_id, "reports")?
-            .and_then(|reports| reports.get("verify").cloned())
-            .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 verify 报告"))
-            .and_then(|value| {
-                serde_json::from_value(value).map_err(|e| {
-                    SddError::new("E_STATE_CORRUPTED", &format!("验证报告解析失败：{e}"))
-                })
-            })?;
+    crate::state::artifact_store::verify_artifacts_in(
+        cwd,
+        &runtime,
+        [
+            format!("{change_id}:plan"),
+            format!("{change_id}:plan-md"),
+            format!("{change_id}:tasks-md"),
+            format!("{change_id}:verify-report"),
+        ],
+    )?;
+    let change = runtime
+        .changes
+        .get(&change_id)
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少当前变更"))?;
+    let verify_report: Report = change
+        .get("reports")
+        .and_then(|reports| reports.get("verify"))
+        .cloned()
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 verify 报告"))
+        .and_then(|value| {
+            serde_json::from_value(value)
+                .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("验证报告解析失败：{e}")))
+        })?;
     if is_git {
         let expected = verify_report
             .minimality
@@ -97,27 +110,33 @@ fn run_review_with_executor<E: OcrExecutor>(
         }
     } else {
         // 非 git 仓库：跳过 git 类扫描时明确提示，避免静默缺少事实校验
-        warnings.push(json!({
-            "code": "W_NO_GIT_SCOPE_CHECK",
-            "message": "当前目录不是 git 仓库，未执行 git 事实校验（文件范围、依赖增量、工作区指纹）",
-        }));
+        warnings.push(CliWarning::new(
+            "W_NO_GIT_SCOPE_CHECK",
+            "当前目录不是 git 仓库，未执行 git 事实校验（文件范围、依赖增量、工作区指纹）",
+        ));
     }
 
     // 1. 变更文件扫描（git 可用时）
     let mut changed_files: Vec<String> = Vec::new();
-    if is_git {
-        changed_files = if let Some(workspace) = &state.workspace {
-            GitInspector::changes_since(
-                &business_cwd,
-                &workspace.baseline_changed_files,
-                &workspace.baseline_file_hashes,
-            )?
-        } else {
-            GitInspector::business_changes(&business_cwd)?
-        };
+    if let Some(workspace) = workspace {
+        changed_files = GitInspector::changes_since(
+            &business_cwd,
+            &workspace.baseline_changed_files,
+            &workspace.baseline_file_hashes,
+        )?;
     }
 
-    let tasks = read_plan_tasks(cwd, &change_id)?;
+    let plan = change
+        .get("plan")
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
+    let tasks = plan_tasks(plan)?;
+    crate::commands::plan::validate_dependencies(plan.get("dependencies").ok_or_else(|| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            "runtime.json 的 plan 缺少 dependencies",
+        )
+    })?)
+    .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.message))?;
     let allowed: Vec<String> = tasks
         .iter()
         .flat_map(|task| task.allowed_files.iter().cloned())
@@ -142,17 +161,23 @@ fn run_review_with_executor<E: OcrExecutor>(
     }
 
     let added_dependencies = if changed_files.iter().any(|path| path == "Cargo.toml") {
-        let current =
-            fs::read_to_string(PathBuf::from(&business_cwd).join("Cargo.toml")).map_err(|e| {
-                SddError::new("E_PATH_OUTSIDE_REPO", &format!("读取 Cargo.toml 失败：{e}"))
-            })?;
-        let baseline = state
-            .workspace
-            .as_ref()
-            .and_then(|workspace| workspace.baseline_cargo_manifest.clone())
-            .or(GitInspector::file_at_head(&business_cwd, "Cargo.toml")?)
-            .unwrap_or_default();
-        let before = cargo_dependency_names(&baseline);
+        let manifest = GitInspector::resolve_repo_path(&business_cwd, "Cargo.toml")?;
+        let current = match fs::read_to_string(manifest) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => {
+                return Err(SddError::new(
+                    "E_PATH_OUTSIDE_REPO",
+                    &format!("读取 Cargo.toml 失败：{error}"),
+                ));
+            }
+        };
+        let baseline = workspace
+            .expect("Git 工作流已验证 workspace")
+            .baseline_cargo_manifest
+            .as_deref()
+            .unwrap_or("");
+        let before = cargo_dependency_names(baseline);
         cargo_dependency_names(&current)
             .difference(&before)
             .cloned()
@@ -161,9 +186,7 @@ fn run_review_with_executor<E: OcrExecutor>(
         Vec::new()
     };
     if !added_dependencies.is_empty() {
-        let plan = crate::state::runtime_store::read_change_field(cwd, &change_id, "plan")?
-            .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
-        let declared = planned_dependency_additions(&plan);
+        let declared = planned_dependency_additions(plan);
         let unplanned: Vec<String> = added_dependencies
             .iter()
             .filter(|name| !declared.contains(name.as_str()))
@@ -190,23 +213,26 @@ fn run_review_with_executor<E: OcrExecutor>(
     // 2. 敏感信息扫描：读取变更文件内容检查。
     //    路径先经 resolve_repo_path 解析（防 symlink 逃逸，与 ocr.rs 一致）；
     //    扫描受 config audit.maxSizeMb/maxFiles 限额约束（默认 5MB/200 文件）。
-    let (audit_max_files, audit_max_bytes) =
-        audit_limits(&crate::state::runtime_store::read_config(cwd)?);
+    let (audit_max_files, audit_max_bytes) = audit_limits(config)?;
     let mut scanned_count = 0usize;
     let mut scanned_bytes = 0usize;
     let mut scan_limited = false;
+    let mut scanned_line_counts = BTreeMap::new();
     for file in &changed_files {
         if scanned_count >= audit_max_files || scanned_bytes >= audit_max_bytes {
             scan_limited = true;
             break;
         }
-        let path = GitInspector::resolve_repo_path(&business_cwd, file)?;
-        let remaining = audit_max_bytes.saturating_sub(scanned_bytes);
-        match read_text_with_limit(&path, remaining) {
-            Ok(Some(content)) => {
+        let remaining = audit_max_bytes - scanned_bytes;
+        match GitInspector::read_entry_with_limit(&business_cwd, file, remaining)? {
+            RepoEntryContent::Content(bytes) => {
                 scanned_count += 1;
-                scanned_bytes = scanned_bytes.saturating_add(content.len());
-                if let Err(error) = validate_no_secrets([(file.as_str(), content.as_str())]) {
+                scanned_bytes += bytes.len();
+                if let Ok(content) = std::str::from_utf8(&bytes) {
+                    scanned_line_counts.insert(file.clone(), content.lines().count());
+                }
+                let content = String::from_utf8_lossy(&bytes);
+                if let Err(error) = validate_no_secrets([(file.as_str(), content.as_ref())]) {
                     issues.push(Issue {
                         code: error.code,
                         severity: "critical".to_string(),
@@ -236,17 +262,13 @@ fn run_review_with_executor<E: OcrExecutor>(
                     });
                 }
             }
-            Ok(None) => {
+            RepoEntryContent::Missing => {
+                // 删除文件没有内容可扫描，但仍计入已处理文件范围。
+                scanned_count += 1;
+            }
+            RepoEntryContent::TooLarge => {
                 scan_limited = true;
                 break;
-            }
-            Err(error) => {
-                // 二进制/不可读文件不静默跳过：记录诊断警告
-                warnings.push(json!({
-                    "code": "W_FILE_UNREADABLE",
-                    "message": format!("变更文件 {file} 无法按文本读取（可能是二进制文件）：{error}"),
-                    "details": json!({ "file": file }),
-                }));
             }
         }
     }
@@ -286,7 +308,7 @@ fn run_review_with_executor<E: OcrExecutor>(
         });
     }
 
-    let mut report = Report::new("review", Some(change_id.clone()));
+    let mut report = Report::new("review", change_id.clone());
     report.passed = !issues
         .iter()
         .any(|issue| issue.severity == "critical" || issue.severity == "high");
@@ -319,13 +341,13 @@ fn run_review_with_executor<E: OcrExecutor>(
             json!({ "status": "skipped", "reason": "no-changes" }),
         );
     } else {
-        let ocr_config = OcrConfig::from_config(&crate::state::runtime_store::read_config(cwd)?)?;
+        let ocr_config = OcrConfig::from_config(config)?;
         match ocr_config.mode {
             OcrMode::Off => {
                 set_ocr_status(&mut report, json!({ "status": "off" }));
             }
             OcrMode::Auto | OcrMode::Required => {
-                let timeout = ocr_timeout(args);
+                let timeout = ocr_timeout(args)?;
                 let changed_set = changed_files.iter().cloned().collect::<BTreeSet<_>>();
                 match executor.execute(
                     std::path::Path::new(&business_cwd),
@@ -333,10 +355,10 @@ fn run_review_with_executor<E: OcrExecutor>(
                     timeout,
                 ) {
                     Ok(OcrExecution::NotFound) if ocr_config.mode == OcrMode::Auto => {
-                        warnings.push(json!({
-                            "code": "W_OCR_NOT_FOUND",
-                            "message": "未找到 OCR 命令，已返回确定性审查结果",
-                        }));
+                        warnings.push(CliWarning::new(
+                            "W_OCR_NOT_FOUND",
+                            "未找到 OCR 命令，已返回确定性审查结果",
+                        ));
                         set_ocr_status(
                             &mut report,
                             json!({
@@ -354,20 +376,21 @@ fn run_review_with_executor<E: OcrExecutor>(
                         ocr_error = Some(error);
                     }
                     Ok(OcrExecution::Completed(output)) => {
-                        match validate_output(
-                            output,
-                            std::path::Path::new(&business_cwd),
-                            &changed_set,
-                        ) {
+                        match validate_output(*output, &changed_set, &scanned_line_counts) {
                             Ok(output) => {
-                                let metadata = ocr_metadata(&output, changed_files.len());
+                                let metadata = ocr_metadata(&output);
                                 for comment in &output.comments {
                                     issues.push(merge_ocr_comment(comment));
                                 }
                                 set_ocr_status(&mut report, metadata);
                             }
                             Err(error) => {
-                                set_ocr_status(&mut report, json!({ "status": "invalid-output" }));
+                                let status = if error.code == "E_REVIEW_BACKEND_FAILED" {
+                                    "failed"
+                                } else {
+                                    "invalid-output"
+                                };
+                                set_ocr_status(&mut report, json!({ "status": status }));
                                 record_ocr_error(&mut report, &mut issues, &error);
                                 ocr_error = Some(error);
                             }
@@ -392,34 +415,55 @@ fn run_review_with_executor<E: OcrExecutor>(
         format!("发现 {} 个审查发现", issues.len())
     };
 
-    let report_value = persist_review_report(cwd, &change_id, &change_dir, &report)?;
-
-    let report_text = serde_json::to_string_pretty(&report_value)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("格式化报告失败：{e}")))?;
-    crate::state::artifact_store::record_artifact(
-        cwd,
-        &format!("{change_id}:review-report"),
-        "report",
-        &format!("runtime://changes/{change_id}/reports/review"),
-        &report_text,
-        json!({ "changedFiles": changed_files }),
+    let report_value = serde_json::to_value(&report)
+        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化报告失败：{e}")))?;
+    validate_json("report", &report_value)?;
+    let report_markdown = render_report_markdown(&report);
+    crate::safe_fs::atomic_write(
+        &change_dir.join("review-report.md"),
+        report_markdown.as_bytes(),
+        "review-report.md",
     )?;
+    let requires_verify = issues.iter().any(|issue| issue.code == "E_VERIFY_REQUIRED");
+    let (phase, next) = if report.passed {
+        ("REVIEW_READY", "sdd archive")
+    } else if requires_verify {
+        ("BUILD_READY", "sdd verify")
+    } else {
+        ("VERIFY_READY", "sdd review")
+    };
+    let artifact_key = format!("{change_id}:review-report");
+    let content_path = format!("runtime://changes/{change_id}/reports/review");
+    let report_summary = report.summary.clone();
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        let reports = super::reports_mut(super::change_mut(document, &change_id)?)?;
+        reports.insert("review".to_string(), report_value);
+        crate::state::artifact_store::record_artifacts_in(
+            cwd,
+            document,
+            vec![ArtifactRecord {
+                key: &artifact_key,
+                artifact_type: "report",
+                content_path: &content_path,
+                inputs: json!({ "changedFiles": &changed_files }),
+            }],
+        )?;
+        crate::state::state_store::apply_state_update(&mut document.state, |state| {
+            state.current_phase = phase.to_string();
+            state.suggested_command = Some(next.to_string());
+            state.last_command = Some("sdd review".to_string());
+            if report.passed {
+                state.in_progress_phase = None;
+                state.clear_failure();
+            } else {
+                state.record_failure("sdd review", report_summary);
+            }
+        })?;
+        Ok(())
+    })?;
 
     // 阻断性发现（critical）→ E_SECURITY_BLOCKED
     if !report.passed {
-        let requires_verify = issues.iter().any(|issue| issue.code == "E_VERIFY_REQUIRED");
-        let (phase, next) = if requires_verify {
-            ("BUILD_READY", "sdd verify")
-        } else {
-            ("VERIFY_READY", "sdd review")
-        };
-        store.update(|s| {
-            s.current_phase = phase.to_string();
-            s.failed_command = Some("sdd review".to_string());
-            s.failed_reason = Some(report.summary.clone());
-            s.suggested_command = Some(next.to_string());
-            s.last_command = Some("sdd review".to_string());
-        })?;
         if let Some(error) = ocr_error {
             return Err(error.with_next(next));
         }
@@ -434,14 +478,6 @@ fn run_review_with_executor<E: OcrExecutor>(
             .unwrap_or("E_REVIEW_FAILED");
         return Err(SddError::new(code, "审查发现阻断性问题").with_next(next));
     }
-
-    store.update(|s| {
-        s.current_phase = "REVIEW_READY".to_string();
-        s.in_progress_phase = None;
-        s.suggested_command = Some("sdd archive".to_string());
-        s.last_command = Some("sdd review".to_string());
-        s.last_error = None;
-    })?;
 
     Ok(CommandResult {
         ok: true,
@@ -461,55 +497,51 @@ fn run_review_with_executor<E: OcrExecutor>(
     })
 }
 
-/// 以字节上限读取 UTF-8 文本；超限时不返回内容，避免大文件进入内存。
-fn read_text_with_limit(path: &Path, maximum: usize) -> Result<Option<String>, std::io::Error> {
-    if fs::metadata(path)?.len() > maximum as u64 {
-        return Ok(None);
-    }
-    let mut content = String::new();
-    let mut reader = fs::File::open(path)?.take((maximum as u64).saturating_add(1));
-    let bytes = reader.read_to_string(&mut content)?;
-    Ok((bytes <= maximum).then_some(content))
+fn ocr_timeout(args: Option<&serde_json::Value>) -> Result<std::time::Duration, SddError> {
+    Ok(super::timeout_ms(args)?
+        .map(std::time::Duration::from_millis)
+        .unwrap_or_else(|| std::time::Duration::from_secs(120)))
 }
 
-fn ocr_timeout(args: Option<&serde_json::Value>) -> std::time::Duration {
-    args.and_then(|value| value.get("timeout"))
-        .and_then(serde_json::Value::as_f64)
-        .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-        .and_then(|seconds| std::time::Duration::try_from_secs_f64(seconds).ok())
-        .unwrap_or_else(|| std::time::Duration::from_secs(120))
-}
-
-/// 审计扫描限额：config 的 audit.maxSizeMb（默认 5MB）与 audit.maxFiles（默认 200）。
-/// 缺省或非法值回退默认，避免把扫描上限压到 0。
-fn audit_limits(config: &serde_json::Value) -> (usize, usize) {
+/// 读取当前 config 中的审计扫描限额。
+fn audit_limits(config: &serde_json::Value) -> Result<(usize, usize), SddError> {
     let max_files = config
         .pointer("/audit/maxFiles")
         .and_then(|value| value.as_u64())
         .filter(|count| *count > 0)
-        .unwrap_or(200) as usize;
-    let max_mb = config
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "audit.maxFiles 必须是正整数"))?;
+    let max_bytes = config
         .pointer("/audit/maxSizeMb")
         .and_then(|value| value.as_u64())
         .filter(|mb| *mb > 0)
-        .unwrap_or(5);
-    (max_files, (max_mb as usize) * 1024 * 1024)
+        .and_then(|mb| usize::try_from(mb).ok())
+        .and_then(|mb| mb.checked_mul(1024 * 1024))
+        .ok_or_else(|| {
+            SddError::new("E_STATE_CORRUPTED", "audit.maxSizeMb 必须是可表示的正整数")
+        })?;
+    Ok((max_files, max_bytes))
 }
 
 fn set_ocr_status(report: &mut Report, status: serde_json::Value) {
-    let minimality = report.minimality.get_or_insert_with(|| json!({}));
-    if !minimality.is_object() {
-        *minimality = json!({});
-    }
-    minimality["ocr"] = status;
+    report
+        .minimality
+        .as_mut()
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("review 在 OCR 阶段前已初始化 minimality")
+        .insert("ocr".to_string(), status);
 }
 
-fn ocr_metadata(output: &OcrOutput, fallback_files: usize) -> serde_json::Value {
+fn ocr_metadata(output: &OcrOutput) -> serde_json::Value {
     json!({
-        "status": "completed",
-        "sessionId": output.session_id,
-        "filesReviewed": output.files_reviewed.unwrap_or(fallback_files as u32),
-        "commentCount": output.comments.len(),
+        "status": output.status,
+        "runId": output.manifest.run_id,
+        "provider": output.llm.provider,
+        "model": output.llm.model,
+        "filesReviewed": output.summary.files_reviewed,
+        "commentCount": output.summary.comments,
+        "totalTokens": output.summary.total_tokens,
+        "toolCalls": output.tool_calls.total,
     })
 }
 
@@ -542,32 +574,6 @@ fn record_ocr_error(report: &mut Report, issues: &mut Vec<Issue>, error: &SddErr
         origin: Some("ocr".to_string()),
     });
     report.passed = false;
-}
-
-fn persist_review_report(
-    cwd: &str,
-    change_id: &str,
-    change_dir: &std::path::Path,
-    report: &Report,
-) -> Result<serde_json::Value, SddError> {
-    let report_value = serde_json::to_value(report)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化报告失败：{e}")))?;
-    validate_json("report", &report_value)?;
-    fs::write(
-        change_dir.join("review-report.md"),
-        render_report_markdown(report),
-    )
-    .map_err(|e| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("写入 review-report.md 失败：{e}"),
-        )
-    })?;
-    let mut reports = crate::state::runtime_store::read_change_field(cwd, change_id, "reports")?
-        .unwrap_or_else(|| json!({}));
-    reports["review"] = report_value.clone();
-    crate::state::runtime_store::write_change_field(cwd, change_id, "reports", reports)?;
-    Ok(report_value)
 }
 
 fn cargo_dependency_names(content: &str) -> BTreeSet<String> {
@@ -612,40 +618,43 @@ fn dependency_subtable(section: &str) -> bool {
 }
 
 fn planned_dependency_additions(plan: &serde_json::Value) -> BTreeSet<String> {
-    plan.get("dependencies")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
+    plan["dependencies"]
+        .as_array()
+        .expect("validate_dependencies 已确认 dependencies 是数组")
+        .iter()
         .filter(|item| item.get("action").and_then(|value| value.as_str()) == Some("ADD"))
-        .filter_map(|item| item.get("name").and_then(|value| value.as_str()))
+        .map(|item| {
+            item["name"]
+                .as_str()
+                .expect("validate_dependencies 已确认 name 是字符串")
+        })
         .map(String::from)
         .collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        audit_limits, cargo_dependency_names, planned_dependency_additions, read_text_with_limit,
-    };
+    use super::{audit_limits, cargo_dependency_names, planned_dependency_additions};
+    use crate::git::inspector::RepoEntryContent;
+    use crate::git::GitInspector;
 
     #[test]
-    fn audit_limits_default_to_5mb_and_200_files() {
-        let (files, bytes) = audit_limits(&serde_json::json!({}));
-        assert_eq!(files, 200);
-        assert_eq!(bytes, 5 * 1024 * 1024);
-    }
-
-    #[test]
-    fn audit_limits_read_config_and_ignore_invalid() {
+    fn audit_limits_require_current_positive_values() {
         let config = serde_json::json!({
             "audit": { "maxSizeMb": 2, "maxFiles": 50 }
         });
-        let (files, bytes) = audit_limits(&config);
+        let (files, bytes) = audit_limits(&config).unwrap();
         assert_eq!(files, 50);
         assert_eq!(bytes, 2 * 1024 * 1024);
-        // 非法值（0/负数）回退默认
-        let (files, _) = audit_limits(&serde_json::json!({ "audit": { "maxFiles": 0 } }));
-        assert_eq!(files, 200);
+        assert!(audit_limits(&serde_json::json!({})).is_err());
+        assert!(audit_limits(&serde_json::json!({
+            "audit": { "maxSizeMb": 1, "maxFiles": 0 }
+        }))
+        .is_err());
+        assert!(audit_limits(&serde_json::json!({
+            "audit": { "maxSizeMb": u64::MAX, "maxFiles": 1 }
+        }))
+        .is_err());
     }
 
     #[test]
@@ -653,11 +662,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("large.txt");
         std::fs::write(&path, "0123456789").unwrap();
+        let cwd = dir.path().to_string_lossy();
 
-        assert_eq!(read_text_with_limit(&path, 9).unwrap(), None);
         assert_eq!(
-            read_text_with_limit(&path, 10).unwrap().as_deref(),
-            Some("0123456789")
+            GitInspector::read_entry_with_limit(&cwd, "large.txt", 9).unwrap(),
+            RepoEntryContent::TooLarge
+        );
+        assert_eq!(
+            GitInspector::read_entry_with_limit(&cwd, "large.txt", 10).unwrap(),
+            RepoEntryContent::Content(b"0123456789".to_vec())
         );
     }
 
@@ -685,8 +698,14 @@ version = "1"
     fn only_add_decisions_authorize_new_dependencies() {
         let plan = serde_json::json!({
             "dependencies": [
-                { "name": "serde", "action": "ADD" },
-                { "name": "regex", "action": "UPDATE" }
+                {
+                    "name": "serde", "manifest": "Cargo.toml", "action": "ADD",
+                    "reason": "序列化", "requirements": ["REQ-001"]
+                },
+                {
+                    "name": "regex", "manifest": "Cargo.toml", "action": "UPDATE",
+                    "reason": "升级", "requirements": ["REQ-001"]
+                }
             ]
         });
         assert_eq!(

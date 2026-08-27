@@ -3,43 +3,41 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Issue {
     pub code: String,
     pub severity: String,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub start_line: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub end_line: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub existing_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub suggestion_code: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub origin: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Report {
     pub kind: String, // verify | review
     pub summary: String,
     pub passed: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub change_id: Option<String>,
-    #[serde(default)]
+    pub change_id: String,
     pub issues: Vec<Issue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub minimality: Option<serde_json::Value>,
 }
 
 impl Report {
-    pub fn new(kind: &str, change_id: Option<String>) -> Self {
+    pub fn new(kind: &str, change_id: String) -> Self {
         Self {
             kind: kind.to_string(),
             summary: String::new(),
@@ -109,7 +107,7 @@ pub fn render_report_markdown(report: &Report) -> String {
             String::new(),
             format!(
                 "```json\n{}\n```",
-                serde_json::to_string_pretty(minimality).unwrap_or_default()
+                serde_json::to_string_pretty(minimality).expect("serde_json::Value 必须可序列化")
             ),
         ]);
     }
@@ -148,7 +146,7 @@ mod tests {
 
     #[test]
     fn report_with_ocr_fields_passes_schema_validation() {
-        let mut report = super::Report::new("review", Some("change-1".to_string()));
+        let mut report = super::Report::new("review", "change-1".to_string());
         report.summary = "发现 1 个审查发现".to_string();
         report.passed = false;
         report.issues = vec![Issue {
@@ -192,7 +190,7 @@ mod tests {
     }
     #[test]
     fn renders_ocr_location_and_metadata_in_same_finding() {
-        let mut report = super::Report::new("review", Some("change-1".to_string()));
+        let mut report = super::Report::new("review", "change-1".to_string());
         report.passed = false;
         report.issues.push(Issue {
             code: "OCR_FINDING".into(),

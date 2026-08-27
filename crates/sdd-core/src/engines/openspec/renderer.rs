@@ -1,4 +1,4 @@
-//! OpenSpec markdown 渲染器（翻译自 早期 Node 实现）。
+//! OpenSpec Markdown 渲染器。
 
 use super::model::{SpecDocument, SpecScenario};
 

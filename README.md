@@ -8,9 +8,9 @@
 - Agent 原生接入：默认生成 Codex 仓库级 Skill 与专用 subagent，另保留 OMP 的原生命令与角色配置。
 - 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
 - 代码库理解：自动探测并索引 CodeGraph 知识图谱，按 intent 查询；不可用时显式降级到受限文件扫描。
-- 安全可追溯：校验路径、命令、文件范围、Git delta、TDD 证据和敏感信息。
+- 安全可追溯：受管文件原子写入且拒绝符号链接，严格校验路径、命令、Git delta、TDD 证据和敏感信息。
 - 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
-- 精简制品：活动需求只保留人工审核的 `spec.md`、`plan.md`、`tasks.md`，机器状态写入 JSON；归档后整合为一个 `archive.md`。
+- 精简制品：活动需求只保留人工审核的 `spec.md`、`design.md`、`plan.md`、`tasks.md` 与质量报告，机器状态写入统一 runtime；归档后整合为一个 `archive.md`。
 
 ## 环境要求
 
@@ -69,7 +69,7 @@ sdd init
 sdd auto "实现订单取消功能"
 ```
 
-在 Codex 中可用 `$sdd-harness` 显式启用，也可直接描述软件任务让 Skill 自动匹配；主 Agent 会把只读调用链探索交给 `sdd-explorer`，把单个边界明确的 build 任务交给 `sdd-worker`，再用 `sdd-reviewer` 独立复核。OMP 中仍可直接描述需求静默触发，或使用 `/sdd 需求` 显式调用。
+在 Codex 中可用 `$sdd-harness` 显式启用，也可直接描述软件任务让 Skill 自动匹配；主 Agent 会把只读调用链探索交给 `sdd-explorer`，按复杂度把单个 build 任务交给 `sdd-worker` 或 `sdd-worker-complex`，将高风险架构与并发问题交给 `sdd-architect`，再用 `sdd-reviewer` 独立复核。OMP 中仍可直接描述需求静默触发，或使用 `/sdd 需求` 显式调用。
 
 也可以逐阶段推进：
 
@@ -93,19 +93,14 @@ sdd archive
 # 获取下一个任务及其按需生成的 Context Pack
 sdd build next --json
 
-# Agent 完成编码并写出 TaskExecutionResult 后可提交结果文件或内联 JSON
-sdd build complete \
-  --task TASK-001-RED \
-  --result /tmp/task-result.json \
-  --json
-
+# Agent 完成编码后以内联 JSON 提交 TaskExecutionResult
 sdd build complete \
   --task TASK-001-RED \
   --result-json '<TaskExecutionResult JSON>' \
   --json
 ```
 
-Core 会验证任务状态、允许/禁止文件、实际 Git delta、TDD evidence 和 verification。Agent 不应直接修改 `.sdd/runtime.json`。
+Core 会验证任务状态、允许/禁止文件、实际 Git delta、TDD evidence、verification 是否不重不漏、用户可见结果、验收条件和测试接缝；内联任务结果上限为 4 MiB。Agent 不应直接修改 `.sdd/runtime.json`。
 
 ## 工作流程
 
@@ -142,7 +137,7 @@ NOT_INITIALIZED → INDEX_READY → SPEC_READY → DESIGN_READY → PLAN_READY
 | ------ | ------ | ---- |
 | 全部 intent | CodeGraph | 文件扫描 |
 
-CodeGraph 不可用时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
+CodeGraph 不可用、未建立真实索引或返回空/非法文本时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；查询不会在索引缺失时启动外部进程，索引成功还要通过目录后置条件。降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
 
 CodeGraph 当前以 MIT 许可证发布。
 
@@ -167,7 +162,7 @@ CodeGraph 当前以 MIT 许可证发布。
     └── archive.md     # archive 后仅保留
 ```
 
-首次 `sdd new` 会从需求文本生成可读的需求词组 change ID；同名变更在已有目录后追加序号。英文词组使用 kebab-case，中文词组保留原文可读性。`sdd change` 直接更新当前 `spec.md`/`proposal.md`，不生成需求级备份或修订目录，Git 是历史来源。`build next` 返回内联 Context Pack，`build complete --result-json` 以内联 JSON 提交任务结果；不会生成 Context Pack 或结果文件路径。
+首次 `sdd new` 会从需求文本生成可读的需求词组 change ID；同名变更在已有目录后追加序号。英文词组使用 kebab-case，中文词组保留原文可读性。`sdd change` 直接更新当前 `spec.md`/`proposal.md`，不生成需求级备份或修订目录，Git 是历史来源；位置 change ID 与全局 `--change` 不得同时出现。`build next` 先验证全部 Context Pack 引用制品，再返回内联内容；`build complete --result-json` 以内联 JSON 提交任务结果，不生成结果文件路径。
 
 ## 项目结构
 

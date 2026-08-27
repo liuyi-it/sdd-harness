@@ -1,16 +1,27 @@
-//! 任务协议类型（翻译自 早期 Node 实现）。
+//! 任务协议类型。
 
 use serde::{Deserialize, Serialize};
 
 pub const PHASES: [&str; 4] = ["RED", "GREEN", "REFACTOR", "VERIFY"];
 
+pub(crate) fn valid_task_id(task_id: &str) -> bool {
+    let Some(rest) = task_id.strip_prefix("TASK-") else {
+        return false;
+    };
+    let Some((sequence, phase)) = rest.split_once('-') else {
+        return false;
+    };
+    sequence.len() == 3
+        && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        && PHASES.contains(&phase)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TaskDefinition {
     pub id: String,
     pub title: String,
     pub phase: String,
-    pub status: String,
     pub requirements: Vec<String>,
     pub scenarios: Vec<String>,
     pub depends_on: Vec<String>,
@@ -19,16 +30,10 @@ pub struct TaskDefinition {
     pub forbidden_files: Vec<String>,
     pub verification: Vec<String>,
     pub done_criteria: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub slice_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub user_visible_outcome: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acceptance_criteria: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test_seam: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub policy_refs: Option<Vec<serde_json::Value>>,
+    pub slice_type: String,
+    pub user_visible_outcome: String,
+    pub acceptance_criteria: Vec<String>,
+    pub test_seam: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -53,41 +58,40 @@ pub struct PlanArtifacts {
     pub tasks: Vec<TaskDefinition>,
     pub tasks_markdown: String,
     pub test_plan: String,
-    pub context: String,
 }
 
-#[derive(Debug, Clone)]
-pub struct PlanningInput {
-    pub spec: String,
-    pub design: String,
-    pub impact: String,
-    pub codebase_summary: String,
+#[derive(Debug, Clone, Copy)]
+pub struct PlanningInput<'a> {
+    pub spec: &'a str,
+    pub design: &'a str,
+    pub impact: &'a str,
+    pub codebase_summary: &'a str,
 }
 
-/// 阶段标题（与 phaseTitle 一致）
-pub fn phase_title(phase: &str) -> &'static str {
+/// 当前任务阶段标题。
+pub(crate) fn phase_title(phase: &str) -> &'static str {
     match phase {
         "RED" => "先写失败测试",
         "GREEN" => "最小实现",
         "REFACTOR" => "保持测试绿色并重构",
         "VERIFY" => "完整验证",
-        _ => "未知阶段",
+        _ => unreachable!("任务阶段已由当前 schema 校验"),
     }
 }
 
-/// 阶段指令（与 phaseInstruction 一致）
-pub fn phase_instruction(phase: &str) -> &'static str {
+/// 当前任务阶段执行指令。
+pub(crate) fn phase_instruction(phase: &str) -> &'static str {
     match phase {
         "RED" => "先写测试并观察其因目标行为缺失而预期失败。",
         "GREEN" => "编写最小实现使关联测试通过。",
         "REFACTOR" => "在重构过程中保持测试绿色。",
         "VERIFY" => "运行完整验证命令并确认全部通过。",
-        _ => "",
+        _ => unreachable!("任务阶段已由当前 schema 校验"),
     }
 }
 
-/// 完成标准（与 doneCriteria 一致）
-pub fn done_criteria(phase: &str, scenarios: &[String]) -> Vec<String> {
+/// 当前任务阶段完成标准。
+pub(crate) fn done_criteria(phase: &str, scenarios: &[String]) -> Vec<String> {
     let scenario_text = if scenarios.is_empty() {
         "关联需求".to_string()
     } else {
@@ -98,6 +102,6 @@ pub fn done_criteria(phase: &str, scenarios: &[String]) -> Vec<String> {
         "GREEN" => vec![format!("{scenario_text} 以最小实现通过测试")],
         "REFACTOR" => vec![format!("{scenario_text} 在重构后保持测试通过")],
         "VERIFY" => vec![format!("{scenario_text} 的完整验证命令全部通过")],
-        _ => vec![],
+        _ => unreachable!("任务阶段已由当前 schema 校验"),
     }
 }

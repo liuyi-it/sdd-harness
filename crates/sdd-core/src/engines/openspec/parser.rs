@@ -1,4 +1,4 @@
-//! OpenSpec markdown 解析器（翻译自早期 Node 实现）。
+//! OpenSpec Markdown 解析器。
 
 use std::sync::LazyLock;
 
@@ -22,7 +22,7 @@ static SCENARIO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(SCENARIO_HEADING).expect("scenario 正则必须合法"));
 static STEP_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(STEP).expect("step 正则必须合法"));
 
-/// 解析 OpenSpec markdown；格式非法时返回错误（语义对齐 parser.ts 的 throw）
+/// 解析当前 OpenSpec markdown；格式非法时返回结构化错误。
 pub fn parse_spec(markdown: &str) -> Result<SpecDocument, String> {
     if markdown.contains('\0') {
         return Err("OpenSpec 文档不可包含 NUL".to_string());

@@ -1,8 +1,6 @@
-//! 策略层：受控 Policy 的解析、编译与摘要。
+//! 策略层：编译期内嵌 Policy 及其摘要。
 
-pub mod compiler;
 pub mod digest;
 pub mod resolver;
 
-pub use compiler::{compile_policy, PolicyRule};
-pub use resolver::{builtin_build_policies, resolve_policies, PolicyBundle};
+pub use resolver::{builtin_build_policies, PolicyBundle};

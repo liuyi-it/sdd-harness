@@ -3,7 +3,6 @@
 //! 机器规格存储在 `.sdd/runtime.json`，change 目录只写可读的 spec.md。
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
 
 use serde_json::json;
 
@@ -11,11 +10,23 @@ use crate::contracts::CommandResult;
 use crate::engines::spec::spec_engine::{GenerateSpecInput, SpecEngine};
 use crate::error::SddError;
 use crate::git::GitInspector;
-use crate::state::file_lock::lock_sdd;
-use crate::state::{StateStore, WorkflowState};
+use crate::state::artifact_store::ArtifactRecord;
+use crate::state::file_lock::lock_initialized_sdd;
+use crate::state::WorkflowState;
 
-/// runtime 中规格对象的 schema 版本（与 Node 版一致）。
+/// runtime 中规格对象的当前 schema 版本。
 const SPEC_SCHEMA_VERSION: &str = "2.0.0";
+const MAX_REQUIREMENT_CHARS: usize = 32_768;
+
+pub(crate) fn validate_requirement_length(requirement: &str) -> Result<(), SddError> {
+    if requirement.chars().count() > MAX_REQUIREMENT_CHARS {
+        return Err(SddError::new(
+            "E_INVALID_REQUIREMENT",
+            &format!("需求文本超过 {MAX_REQUIREMENT_CHARS} 字符上限"),
+        ));
+    }
+    Ok(())
+}
 
 pub struct NewArgs {
     pub requirement: Option<String>,
@@ -25,8 +36,10 @@ pub struct NewArgs {
 }
 
 impl NewArgs {
-    pub fn from_json(args: Option<&serde_json::Value>) -> Result<Self, SddError> {
-        let args = args.cloned().unwrap_or(serde_json::Value::Null);
+    fn from_json(args: Option<&serde_json::Value>) -> Result<Self, SddError> {
+        let empty = serde_json::Value::Null;
+        let args = args.unwrap_or(&empty);
+        super::validate_string_map_arg(Some(args), "answers")?;
         let answers = match args.get("answers") {
             None => HashMap::new(),
             Some(value) => value
@@ -49,51 +62,30 @@ impl NewArgs {
                 .collect::<Result<HashMap<_, _>, _>>()?,
         };
         Ok(Self {
-            requirement: args
-                .get("requirement")
-                .and_then(|v| v.as_str())
+            requirement: super::string_arg(Some(args), "requirement")?
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty()),
-            change_id: args
-                .get("changeId")
-                .and_then(|v| v.as_str())
+            change_id: super::string_arg(Some(args), "changeId")?
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(String::from),
             answers,
-            non_interactive: args
-                .get("nonInteractive")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+            non_interactive: super::bool_arg(Some(args), "nonInteractive")?.unwrap_or(false),
         })
     }
 }
 
-fn can_resume_new(state: &WorkflowState) -> bool {
-    state.current_phase == "NEW_STARTED"
-        && state.current_change_id.is_some()
-        && state.current_run_id.is_some()
-}
-
 fn recovery_error(state: &WorkflowState) -> SddError {
-    if state.current_phase == "NEW_STARTED" && !can_resume_new(state) {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            "NEW_STARTED 状态缺少可恢复的当前 change/run",
-        )
-        .with_next("sdd status")
+    let code = if state.current_change_id.is_some() {
+        "E_ACTIVE_CHANGE_EXISTS"
     } else {
-        let code = if state.current_change_id.is_some() {
-            "E_ACTIVE_CHANGE_EXISTS"
-        } else {
-            "E_INVALID_PHASE_COMMAND"
-        };
-        SddError::new(
-            code,
-            &format!("无法在 {} 状态下开启新的变更", state.current_phase),
-        )
-        .with_next(state.suggested_command.as_deref().unwrap_or("sdd status"))
-    }
+        "E_INVALID_PHASE_COMMAND"
+    };
+    SddError::new(
+        code,
+        &format!("无法在 {} 状态下开启新的变更", state.current_phase),
+    )
+    .with_next(state.suggested_command.as_deref().unwrap_or("sdd status"))
 }
 
 pub fn run_new(
@@ -101,15 +93,23 @@ pub fn run_new(
     args: Option<&serde_json::Value>,
     engine: &SpecEngine,
 ) -> Result<CommandResult, SddError> {
+    super::validate_args(
+        args,
+        &[
+            "timeout",
+            "changeId",
+            "nonInteractive",
+            "requirement",
+            "answers",
+        ],
+    )?;
     let parsed = NewArgs::from_json(args)?;
-    let timeout_ms = args
-        .and_then(|a| a.get("timeout"))
-        .and_then(|v| v.as_f64())
-        .map(|s| (s * 1000.0) as u64);
-    let _guard = lock_sdd(cwd, "sdd new", parsed.change_id.as_deref(), timeout_ms)?;
+    let timeout_ms = super::timeout_ms(args)?;
+    let _guard = lock_initialized_sdd(cwd, "sdd new", parsed.change_id.as_deref(), timeout_ms)?;
 
-    let store = StateStore::new(cwd.to_string());
-    let state = store.read()?;
+    let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    let state = runtime.state.clone();
+    super::ensure_phase(cwd, &state, "new", args)?;
 
     if let (Some(requested), Some(active)) = (
         parsed.change_id.as_deref(),
@@ -137,8 +137,13 @@ pub fn run_new(
     // PAUSED/FAILED 由 auto --resume 先走 new 步骤恢复。
     let continuing = state.current_phase == "CLARIFYING"
         || state.current_phase == "PAUSED"
-        || state.current_phase == "FAILED"
-        || can_resume_new(&state);
+        || state.current_phase == "NEW_STARTED";
+    if state.current_phase == "NOT_INITIALIZED" {
+        return Err(
+            SddError::new("E_NOT_INITIALIZED", "请先运行 sdd init 再执行其他命令")
+                .with_next("sdd init"),
+        );
+    }
     if state.current_phase != "INDEX_READY"
         && state.current_phase != "CLARIFYING"
         && state.current_phase != "ARCHIVED"
@@ -146,25 +151,25 @@ pub fn run_new(
     {
         return Err(recovery_error(&state));
     }
-    if state.current_phase == "NOT_INITIALIZED" {
-        return Err(
-            SddError::new("E_NOT_INITIALIZED", "请先运行 sdd init 再执行其他命令")
-                .with_next("sdd init"),
-        );
-    }
 
     let run_id = if continuing {
-        state.current_run_id.clone().unwrap_or_else(make_run_id)
+        state
+            .current_run_id
+            .clone()
+            .expect("状态不变量保证恢复阶段存在 currentRunId")
     } else {
-        make_run_id()
+        crate::state::state_store::unique_id("run")?
     };
     crate::state::state_store::validate_run_id(&run_id)?;
 
     let requirement = if continuing && parsed.requirement.is_none() {
         Some(
-            crate::state::runtime_store::read_run_field(cwd, &run_id, "input")?
+            runtime
+                .runs
+                .get(&run_id)
+                .and_then(|run| run.get("input"))
                 .and_then(|value| value.as_str().map(String::from))
-                .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少需求输入"))?
+                .expect("runtime 不变量保证 run.input 存在")
                 .trim()
                 .to_string(),
         )
@@ -174,42 +179,58 @@ pub fn run_new(
     let Some(requirement) = requirement.filter(|s| !s.trim().is_empty()) else {
         return Err(SddError::new("E_INVALID_REQUIREMENT", "请提供非空需求文本"));
     };
-    if requirement.chars().count() > 32_768 {
-        return Err(SddError::new(
-            "E_INVALID_REQUIREMENT",
-            "需求文本超过 32768 字符上限",
-        ));
-    }
+    validate_requirement_length(&requirement)?;
 
+    let changes_dir = crate::state::paths::changes_dir(cwd, true)?;
     let change_id = if continuing {
-        state.current_change_id.clone().unwrap_or_else(|| {
-            make_change_id(&requirement, &PathBuf::from(cwd).join(".sdd/changes"))
-        })
+        state
+            .current_change_id
+            .clone()
+            .expect("状态不变量保证恢复阶段存在 currentChangeId")
     } else {
-        parsed.change_id.clone().unwrap_or_else(|| {
-            make_change_id(&requirement, &PathBuf::from(cwd).join(".sdd/changes"))
-        })
+        parsed
+            .change_id
+            .clone()
+            .unwrap_or_else(|| make_change_id(&requirement, &changes_dir))
     };
     crate::git::isolation::validate_change_id(&change_id)?;
-
-    let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
-    if !continuing
-        && change_dir
-            .read_dir()
-            .map(|mut entries| entries.next().is_some())
-            .unwrap_or(false)
-    {
+    if !continuing && runtime.changes.contains_key(&change_id) {
         return Err(SddError::new(
             "E_ACTIVE_CHANGE_EXISTS",
-            &format!("变更目录已存在且非空：{change_id}"),
+            &format!("变更标识已存在：{change_id}"),
         ));
     }
-    fs::create_dir_all(&change_dir)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("创建 change 目录失败：{e}")))?;
+
+    match crate::state::paths::change_dir(cwd, &change_id, false) {
+        Ok(existing) if !continuing => {
+            let mut entries = fs::read_dir(&existing).map_err(|error| {
+                SddError::new("E_STATE_CORRUPTED", &format!("读取变更目录失败：{error}"))
+            })?;
+            if entries
+                .next()
+                .transpose()
+                .map_err(|error| {
+                    SddError::new(
+                        "E_STATE_CORRUPTED",
+                        &format!("读取变更目录条目失败：{error}"),
+                    )
+                })?
+                .is_some()
+            {
+                return Err(SddError::new(
+                    "E_ACTIVE_CHANGE_EXISTS",
+                    &format!("变更目录已存在且非空：{change_id}"),
+                ));
+            }
+        }
+        Ok(_) => {}
+        Err(error) if error.code == "E_MISSING_CHANGE" => {}
+        Err(error) => return Err(error),
+    }
 
     let mut workspace = if continuing {
-        state.workspace.clone()
-    } else if crate::git::GitIsolationManager::enabled(cwd)? {
+        state.workspace
+    } else if crate::git::GitIsolationManager::enabled(&runtime.config)? {
         let handle = crate::git::GitIsolationManager::ensure_worktree(cwd, &change_id)?;
         Some(crate::state::state_store::WorkspaceInfo {
             branch_name: Some(handle.branch),
@@ -217,15 +238,13 @@ pub fn run_new(
             baseline_commit: handle.baseline_commit,
             ..Default::default()
         })
-    } else if GitInspector::is_git_repo(cwd) {
-        Some(GitInspector::snapshot(cwd).map(|snapshot| {
-            crate::state::state_store::WorkspaceInfo {
-                branch_name: None,
-                worktree_path: None,
-                baseline_commit: snapshot.head,
-                ..Default::default()
-            }
-        })?)
+    } else if GitInspector::is_git_repo(cwd)? {
+        Some(crate::state::state_store::WorkspaceInfo {
+            branch_name: None,
+            worktree_path: None,
+            baseline_commit: GitInspector::head(cwd)?,
+            ..Default::default()
+        })
     } else {
         None
     };
@@ -235,35 +254,42 @@ pub fn run_new(
             info.baseline_changed_files = GitInspector::business_changes(business_cwd)?;
             info.baseline_file_hashes =
                 GitInspector::file_hashes(business_cwd, &info.baseline_changed_files)?;
-            info.baseline_cargo_manifest =
-                match fs::read_to_string(PathBuf::from(business_cwd).join("Cargo.toml")) {
-                    Ok(content) => Some(content),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                    Err(error) => {
-                        return Err(SddError::new(
-                            "E_STATE_CORRUPTED",
-                            &format!("读取基线 Cargo.toml 失败：{error}"),
-                        ));
-                    }
-                };
+            let cargo_manifest = GitInspector::resolve_repo_path(business_cwd, "Cargo.toml")?;
+            info.baseline_cargo_manifest = match fs::read_to_string(cargo_manifest) {
+                Ok(content) => Some(content),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => {
+                    return Err(SddError::new(
+                        "E_STATE_CORRUPTED",
+                        &format!("读取基线 Cargo.toml 失败：{error}"),
+                    ));
+                }
+            };
         }
     }
 
     // 续跑时合并已保存答案，避免每次 `sdd new --answers` 丢失前一轮澄清。
     let mut answers = if continuing {
-        crate::state::runtime_store::read_run_field(cwd, &run_id, "answers")?
-            .and_then(|value| serde_json::from_value::<HashMap<String, String>>(value).ok())
-            .unwrap_or_default()
+        match runtime
+            .runs
+            .get(&run_id)
+            .and_then(|run| run.get("answers"))
+            .cloned()
+        {
+            Some(value) => {
+                serde_json::from_value::<HashMap<String, String>>(value).map_err(|error| {
+                    SddError::new(
+                        "E_STATE_CORRUPTED",
+                        &format!("runtime.json 的 answers 结构无效：{error}"),
+                    )
+                })?
+            }
+            None => HashMap::new(),
+        }
     } else {
         HashMap::new()
     };
     answers.extend(parsed.answers.clone());
-
-    crate::state::runtime_store::write_run_fields(
-        cwd,
-        &run_id,
-        [("input", json!(requirement)), ("answers", json!(answers))],
-    )?;
 
     // 需求分析先于状态提交，保证解析失败不会留下不可恢复的 NEW_STARTED。
     let analysis = engine.analyze(&requirement, &answers);
@@ -278,21 +304,55 @@ pub fn run_new(
         })
         .collect();
 
-    store.update(|s| {
-        s.current_change_id = Some(change_id.clone());
-        s.current_run_id = Some(run_id.clone());
-        s.current_phase = "NEW_STARTED".to_string();
-        s.in_progress_phase = Some("NEW_STARTED".to_string());
-        s.last_command = Some("sdd new".to_string());
-        s.last_error = None;
-        s.suggested_command = Some("sdd new".to_string());
-        s.workspace = workspace.clone();
-        if !continuing {
-            s.tasks.clear();
-            s.artifacts.clear();
-            s.pending_agent_task = None;
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        let run = if continuing {
+            document
+                .runs
+                .get_mut(&run_id)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "恢复的 run 必须是对象"))?
+        } else {
+            if document.runs.contains_key(&run_id) {
+                return Err(SddError::new("E_STATE_CORRUPTED", "新 runId 发生冲突"));
+            }
+            document.runs.insert(run_id.clone(), json!({}));
+            document
+                .runs
+                .get_mut(&run_id)
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("刚插入的 run 必须是对象")
+        };
+        run.insert("changeId".to_string(), json!(change_id));
+        run.insert("input".to_string(), json!(requirement));
+        run.insert("answers".to_string(), json!(answers));
+        if continuing {
+            document
+                .changes
+                .get(&change_id)
+                .and_then(serde_json::Value::as_object)
+                .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "恢复的 change 必须是对象"))?;
+        } else {
+            document.changes.insert(change_id.clone(), json!({}));
         }
+        crate::state::state_store::apply_state_update(&mut document.state, |state| {
+            state.current_change_id = Some(change_id.clone());
+            state.current_run_id = Some(run_id.clone());
+            state.current_phase = "NEW_STARTED".to_string();
+            state.in_progress_phase = Some("NEW_STARTED".to_string());
+            state.last_command = Some("sdd new".to_string());
+            state.suggested_command = Some("sdd new".to_string());
+            state.workspace = workspace.clone();
+            state.clear_failure();
+            if !continuing {
+                state.tasks.clear();
+                state.pending_agent_task = None;
+            }
+        })?;
+        Ok(())
     })?;
+    // 状态已记录 NEW_STARTED 后再创建文档目录；前置 Git/需求分析失败不会留下
+    // 占用 change ID 的空目录，目录创建失败则可由同一活动变更安全重试。
+    let change_dir = crate::state::paths::change_dir(cwd, &change_id, true)?;
 
     if !unanswered.is_empty() {
         let spec_markdown = render_clarifying_spec(&requirement, &unanswered);
@@ -309,17 +369,38 @@ pub fn run_new(
                 "recommendation": q.recommendation
             })).collect::<Vec<_>>(),
         });
-        fs::write(change_dir.join("spec.md"), &spec_markdown)
-            .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
-        crate::state::runtime_store::write_change_field(cwd, &change_id, "spec", spec_json)?;
-        crate::state::artifact_store::record_artifact(
-            cwd,
-            &format!("{change_id}:spec"),
-            "spec",
-            &format!(".sdd/changes/{change_id}/spec.md"),
-            &spec_markdown,
-            json!({ "requirement": requirement }),
+        crate::safe_fs::atomic_write(
+            &change_dir.join("spec.md"),
+            spec_markdown.as_bytes(),
+            "spec.md",
         )?;
+        let artifact_key = format!("{change_id}:spec");
+        let content_path = format!(".sdd/changes/{change_id}/spec.md");
+        crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+            let change = document
+                .changes
+                .get_mut(&change_id)
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "当前变更必须是对象"))?;
+            change.insert("spec".to_string(), spec_json);
+            crate::state::artifact_store::record_artifacts_in(
+                cwd,
+                document,
+                vec![ArtifactRecord {
+                    key: &artifact_key,
+                    artifact_type: "spec",
+                    content_path: &content_path,
+                    inputs: json!({ "requirement": &requirement }),
+                }],
+            )?;
+            crate::state::state_store::apply_state_update(&mut document.state, |state| {
+                state.current_phase = "CLARIFYING".to_string();
+                state.in_progress_phase = None;
+                state.clear_failure();
+                state.suggested_command = Some("sdd new".to_string());
+            })?;
+            Ok(())
+        })?;
         if parsed.non_interactive {
             return Err(SddError::new(
                 "E_UNRESOLVED_BLOCKER",
@@ -327,11 +408,6 @@ pub fn run_new(
             )
             .with_next("sdd new"));
         }
-        store.update(|s| {
-            s.current_phase = "CLARIFYING".to_string();
-            s.in_progress_phase = None;
-            s.suggested_command = Some("sdd new".to_string());
-        })?;
         return Ok(CommandResult {
             ok: true,
             state: "CLARIFYING".to_string(),
@@ -357,8 +433,11 @@ pub fn run_new(
     }
 
     // 需求充分：生成规格
-    let codebase_summary = crate::state::runtime_store::read_index_field(cwd, "summary")?
-        .and_then(|value| value.as_str().map(String::from))
+    let codebase_summary = runtime
+        .index
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
+        .map(String::from)
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?;
     let input = GenerateSpecInput {
         requirement: requirement.clone(),
@@ -378,26 +457,37 @@ pub fn run_new(
         "answers": answers,
         "model": artifacts.model,
     });
-    fs::write(change_dir.join("spec.md"), &spec_markdown)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 spec.md 失败：{e}")))?;
-    crate::state::runtime_store::write_change_field(cwd, &change_id, "spec", spec_json)?;
-    crate::state::artifact_store::record_artifact(
-        cwd,
-        &format!("{change_id}:spec"),
-        "spec",
-        &format!(".sdd/changes/{change_id}/spec.md"),
-        &spec_markdown,
-        json!({ "requirement": requirement }),
+    crate::safe_fs::atomic_write(
+        &change_dir.join("spec.md"),
+        spec_markdown.as_bytes(),
+        "spec.md",
     )?;
-
-    store.update(|s| {
-        s.current_phase = "SPEC_READY".to_string();
-        s.in_progress_phase = None;
-        s.suggested_command = Some("sdd design".to_string());
-        s.last_error = None;
-        s.failed_command = None;
-        s.interrupted_command = None;
-        s.recoverable = true;
+    let artifact_key = format!("{change_id}:spec");
+    let content_path = format!(".sdd/changes/{change_id}/spec.md");
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        let change = document
+            .changes
+            .get_mut(&change_id)
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "当前变更必须是对象"))?;
+        change.insert("spec".to_string(), spec_json);
+        crate::state::artifact_store::record_artifacts_in(
+            cwd,
+            document,
+            vec![ArtifactRecord {
+                key: &artifact_key,
+                artifact_type: "spec",
+                content_path: &content_path,
+                inputs: json!({ "requirement": &requirement }),
+            }],
+        )?;
+        crate::state::state_store::apply_state_update(&mut document.state, |state| {
+            state.current_phase = "SPEC_READY".to_string();
+            state.in_progress_phase = None;
+            state.suggested_command = Some("sdd design".to_string());
+            state.clear_failure();
+        })?;
+        Ok(())
     })?;
 
     Ok(CommandResult {
@@ -457,34 +547,8 @@ fn slugify(requirement: &str) -> String {
     }
 }
 
-/// 生成 run id：run-<epoch 纳秒>
-pub fn make_run_id() -> String {
-    format!("run-{}", epoch_nanos())
-}
-
-fn epoch_nanos() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0)
-}
-
-/// 读取当前 change 的 spec model（机器数据位于 runtime.json）。
-pub fn read_spec_model(
-    cwd: &str,
-    change_id: &str,
-) -> Result<crate::engines::openspec::model::SpecDocument, SddError> {
-    let value = crate::state::runtime_store::read_change_field(cwd, change_id, "spec")?
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
-    let model = value
-        .get("model")
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "spec 缺少 model 字段"))?;
-    serde_json::from_value(model.clone())
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("spec model 解析失败：{e}")))
-}
-
 /// 获取当前活动 change id（无则报 E_MISSING_CHANGE）。
-pub fn current_change_id(state: &WorkflowState) -> Result<String, SddError> {
+pub(crate) fn current_change_id(state: &WorkflowState) -> Result<String, SddError> {
     let change_id = state.current_change_id.clone().ok_or_else(|| {
         SddError::new("E_MISSING_CHANGE", "当前没有活动变更").with_next("sdd new")
     })?;

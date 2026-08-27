@@ -116,9 +116,9 @@ fn change_rewrites_current_documents_without_revision_history() {
     assert_eq!(runtime.state.current_phase, "SPEC_READY");
     assert_eq!(
         runtime
-            .loop_state
-            .get("events")
-            .and_then(|events| events.get(runtime.state.current_run_id.as_ref().unwrap()))
+            .runs
+            .get(runtime.state.current_run_id.as_ref().unwrap())
+            .and_then(|run| run.get("events"))
             .and_then(|events| events.as_array())
             .unwrap()
             .iter()
@@ -129,9 +129,7 @@ fn change_rewrites_current_documents_without_revision_history() {
         1
     );
     let spec = std::fs::read_to_string(change_dir.join("spec.md")).unwrap();
-    let parsed = sdd_core::engines::spec::spec_engine::SpecEngine::new()
-        .parse_spec_md(&spec)
-        .unwrap();
+    let parsed = sdd_core::engines::openspec::parser::parse_spec(&spec).unwrap();
     assert_eq!(parsed.requirements.len(), 3);
 }
 
@@ -149,9 +147,9 @@ fn change_event_does_not_contain_revision_id() {
         .read()
         .unwrap();
     let events = runtime
-        .loop_state
-        .get("events")
-        .and_then(|events| events.get(runtime.state.current_run_id.as_ref().unwrap()))
+        .runs
+        .get(runtime.state.current_run_id.as_ref().unwrap())
+        .and_then(|run| run.get("events"))
         .and_then(|events| events.as_array())
         .unwrap();
     let revised = events
@@ -175,4 +173,54 @@ fn change_rejects_empty_requirement_with_stable_error() {
     })
     .unwrap_err();
     assert_eq!(error.code, "E_INVALID_REQUIREMENT");
+}
+
+#[test]
+fn change_rejects_oversized_requirement_before_state_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = json!({
+        "changeId": "oversized-requirement",
+        "requirement": "需".repeat(32_769),
+    });
+    let error = sdd_core::commands::change::run_change(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&args),
+        &sdd_core::engines::spec::spec_engine::SpecEngine::new(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_INVALID_REQUIREMENT");
+}
+
+#[cfg(unix)]
+#[test]
+fn change_rejects_symlinked_managed_document() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let change_id = create_change(dir.path());
+    let spec_path = dir
+        .path()
+        .join(".sdd/changes")
+        .join(&change_id)
+        .join("spec.md");
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), "不得读取或改写").unwrap();
+    std::fs::remove_file(&spec_path).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &spec_path).unwrap();
+
+    let error = run(&CommandRequest {
+        command: "change".into(),
+        cwd: cwd(dir.path()),
+        args: Some(json!({
+            "changeId": change_id,
+            "requirement": REVISED_REQUIREMENT
+        })),
+    })
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_SYMLINK_BLOCKED");
+    assert_eq!(
+        std::fs::read_to_string(outside.path()).unwrap(),
+        "不得读取或改写"
+    );
 }

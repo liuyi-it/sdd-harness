@@ -52,12 +52,18 @@ fn complete_all_tasks(cwd: &str) {
                 "output": if is_red { "FAILED: expected" } else { "ok" },
                 "passed": !is_red, "expectedFailure": is_red }])
         };
-        // 全阶段强制 verification 非空；RED 必须带 passed=false 的失败验证
-        let verification = json!([{
-            "command": verify_command,
-            "args": [],
-            "passed": !is_red,
-        }]);
+        // 全阶段不重不漏地回传 actionRequired 声明的验证命令；RED 全部按预期失败记录。
+        let verification = action
+            .verification
+            .iter()
+            .map(|item| {
+                json!({
+                    "command": item.command,
+                    "args": item.args,
+                    "passed": !is_red,
+                })
+            })
+            .collect::<Vec<_>>();
         let result = json!({
             "taskId": action.task_id,
             "status": "completed",
@@ -126,12 +132,20 @@ fn assert_full_workflow(dir: &tempfile::TempDir) {
     assert!(new.ok);
     assert_eq!(new.state, "SPEC_READY");
 
-    sdd_core::state::runtime_store::write_index(
-        &cwd,
-        json!([]),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
-    )
-    .unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            let prefix = runtime.index["summary"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap();
+            runtime.index["summary"] = json!(format!(
+                "{prefix}\nsrc/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n"
+            ));
+            runtime.index["updatedAt"] = json!("2026-01-01T00:00:00Z");
+        })
+        .unwrap();
 
     // design → plan
     let design = run_command(&cwd, "design", None);
@@ -170,7 +184,7 @@ fn state_machine_rejects_wrong_phase() {
     // 未 new 时 design 应报 E_INVALID_PHASE_COMMAND
     let err = run(&CommandRequest {
         command: "design".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: None,
     })
     .unwrap_err();

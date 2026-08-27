@@ -4,15 +4,14 @@
 //! 子命令以 `--path <root>` 指定项目。
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde_json::json;
 
 use super::provider::{
-    degraded_result, find_on_path, run_command, IndexResult, KnowledgeIntent, KnowledgeProvider,
-    ProbeResult, QueryResult,
+    degraded_result, find_on_path, IndexResult, KnowledgeIntent, ProbeResult, QueryResult,
 };
-
-const QUERY_TIMEOUT_MS: u64 = 60_000;
+use crate::subprocess::run_command;
 
 pub struct CodeGraphProvider {
     pub bin: Option<PathBuf>,
@@ -26,12 +25,12 @@ impl Default for CodeGraphProvider {
     }
 }
 
-impl KnowledgeProvider for CodeGraphProvider {
-    fn name(&self) -> &'static str {
+impl CodeGraphProvider {
+    pub fn name(&self) -> &'static str {
         "codegraph"
     }
 
-    fn probe(&self) -> ProbeResult {
+    pub fn probe(&self, timeout: Duration) -> ProbeResult {
         let Some(bin) = &self.bin else {
             return ProbeResult {
                 available: false,
@@ -39,25 +38,42 @@ impl KnowledgeProvider for CodeGraphProvider {
                 message: Some("codegraph 未在 PATH 中找到".to_string()),
             };
         };
-        match run_command(bin, &["--version"], ".", 15_000) {
-            Ok(out) if out.status.success() => ProbeResult {
-                available: true,
-                version: Some(String::from_utf8_lossy(&out.stdout).trim().to_string()),
-                message: None,
+        match run_command(bin, &["--version"], std::path::Path::new("."), timeout, &[]) {
+            Ok(out) if out.status.success() => match String::from_utf8(out.stdout) {
+                Ok(version) if !version.trim().is_empty() => ProbeResult {
+                    available: true,
+                    version: Some(version.trim().to_string()),
+                    message: None,
+                },
+                Ok(_) => ProbeResult {
+                    available: false,
+                    version: None,
+                    message: Some("codegraph --version 返回空输出".to_string()),
+                },
+                Err(_) => ProbeResult {
+                    available: false,
+                    version: None,
+                    message: Some("codegraph --version 返回非 UTF-8 输出".to_string()),
+                },
             },
-            _ => ProbeResult {
+            Ok(out) => ProbeResult {
                 available: false,
                 version: None,
-                message: Some("codegraph 命令执行失败，可能未安装或版本不兼容".to_string()),
+                message: Some(command_failure_reason("codegraph --version", &out)),
+            },
+            Err(error) => ProbeResult {
+                available: false,
+                version: None,
+                message: Some(format!("codegraph --version 执行失败：{error}")),
             },
         }
     }
 
-    fn indexed(&self, root: &str) -> bool {
-        std::path::Path::new(root).join(".codegraph").exists()
+    pub fn indexed(&self, root: &str) -> Result<bool, String> {
+        safe_index_directory(root)
     }
 
-    fn index(&self, root: &str, timeout_ms: u64) -> IndexResult {
+    pub fn index(&self, root: &str, timeout_ms: u64) -> IndexResult {
         let Some(bin) = &self.bin else {
             return IndexResult {
                 ok: false,
@@ -65,21 +81,32 @@ impl KnowledgeProvider for CodeGraphProvider {
                 reason: Some("codegraph 不可用".to_string()),
             };
         };
-        let command = if std::path::Path::new(root).join(".codegraph").exists() {
-            "sync"
-        } else {
-            "init"
+        let indexed = match safe_index_directory(root) {
+            Ok(indexed) => indexed,
+            Err(reason) => {
+                return IndexResult {
+                    ok: false,
+                    degraded: true,
+                    reason: Some(reason),
+                };
+            }
         };
-        match run_command(bin, &[command], root, timeout_ms) {
-            Ok(out) if out.status.success() => IndexResult {
-                ok: true,
-                degraded: false,
-                reason: None,
-            },
+        let command = if indexed { "sync" } else { "init" };
+        match run_command(
+            bin,
+            &[command],
+            std::path::Path::new(root),
+            Duration::from_millis(timeout_ms),
+            &[],
+        ) {
+            Ok(out) if out.status.success() => verified_index_result(root),
             Ok(out) => IndexResult {
                 ok: false,
                 degraded: true,
-                reason: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+                reason: Some(command_failure_reason(
+                    &format!("codegraph {command}"),
+                    &out,
+                )),
             },
             Err(e) => IndexResult {
                 ok: false,
@@ -89,10 +116,27 @@ impl KnowledgeProvider for CodeGraphProvider {
         }
     }
 
-    fn query(&self, root: &str, intent: KnowledgeIntent, query: &str) -> QueryResult {
+    pub fn query(
+        &self,
+        root: &str,
+        intent: KnowledgeIntent,
+        query: &str,
+        timeout: Duration,
+    ) -> QueryResult {
         let Some(bin) = &self.bin else {
             return degraded_result("codegraph", "codegraph 未在 PATH 中找到", intent);
         };
+        match safe_index_directory(root) {
+            Ok(true) => {}
+            Ok(false) => {
+                return degraded_result(
+                    "codegraph",
+                    "CodeGraph 尚未建立索引，请先执行 sdd codebase index",
+                    intent,
+                );
+            }
+            Err(reason) => return degraded_result("codegraph", &reason, intent),
+        }
         let path_arg = "--path";
         let args: Vec<&str> = match intent {
             KnowledgeIntent::Explore | KnowledgeIntent::Context => {
@@ -103,9 +147,21 @@ impl KnowledgeProvider for CodeGraphProvider {
             KnowledgeIntent::Impact => vec!["impact", query, path_arg, root],
             _ => vec!["query", query, path_arg, root],
         };
-        match run_command(bin, &args, root, QUERY_TIMEOUT_MS) {
+        match run_command(bin, &args, std::path::Path::new(root), timeout, &[]) {
             Ok(out) if out.status.success() => {
-                let output = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                let output = match String::from_utf8(out.stdout) {
+                    Ok(output) if !output.trim().is_empty() => output.trim().to_string(),
+                    Ok(_) => {
+                        return degraded_result("codegraph", "CodeGraph 查询返回空输出", intent);
+                    }
+                    Err(_) => {
+                        return degraded_result(
+                            "codegraph",
+                            "CodeGraph 查询返回非 UTF-8 输出",
+                            intent,
+                        );
+                    }
+                };
                 QueryResult {
                     provider: "codegraph",
                     degraded: false,
@@ -120,14 +176,14 @@ impl KnowledgeProvider for CodeGraphProvider {
             }
             Ok(out) => degraded_result(
                 "codegraph",
-                String::from_utf8_lossy(&out.stderr).trim(),
+                &command_failure_reason("codegraph query", &out),
                 intent,
             ),
             Err(e) => degraded_result("codegraph", &e.to_string(), intent),
         }
     }
 
-    fn rebuild(&self, root: &str, timeout_ms: u64) -> IndexResult {
+    pub fn rebuild(&self, root: &str, timeout_ms: u64) -> IndexResult {
         let Some(bin) = &self.bin else {
             return IndexResult {
                 ok: false,
@@ -135,26 +191,78 @@ impl KnowledgeProvider for CodeGraphProvider {
                 reason: Some("codegraph 不可用".to_string()),
             };
         };
-        command_result(run_command(bin, &["index", "--force"], root, timeout_ms))
+        if let Err(reason) = safe_index_directory(root) {
+            return IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some(reason),
+            };
+        }
+        match run_command(
+            bin,
+            &["index", "--force"],
+            std::path::Path::new(root),
+            Duration::from_millis(timeout_ms),
+            &[],
+        ) {
+            Ok(out) if out.status.success() => verified_index_result(root),
+            Ok(out) => IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some(command_failure_reason("codegraph index --force", &out)),
+            },
+            Err(error) => IndexResult {
+                ok: false,
+                degraded: true,
+                reason: Some(error.to_string()),
+            },
+        }
     }
 }
 
-fn command_result(result: Result<std::process::Output, std::io::Error>) -> IndexResult {
-    match result {
-        Ok(out) if out.status.success() => IndexResult {
+fn safe_index_directory(root: &str) -> Result<bool, String> {
+    let path = std::path::Path::new(root).join(".codegraph");
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
+            "CodeGraph 索引路径 {} 是符号链接，已阻止外部读写",
+            path.display()
+        )),
+        Ok(metadata) if metadata.is_dir() => Ok(true),
+        Ok(_) => Err(format!("CodeGraph 索引路径 {} 不是目录", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!(
+            "检查 CodeGraph 索引路径 {} 失败：{error}",
+            path.display()
+        )),
+    }
+}
+
+fn verified_index_result(root: &str) -> IndexResult {
+    match safe_index_directory(root) {
+        Ok(true) => IndexResult {
             ok: true,
             degraded: false,
             reason: None,
         },
-        Ok(out) => IndexResult {
+        Ok(false) => IndexResult {
             ok: false,
             degraded: true,
-            reason: Some(String::from_utf8_lossy(&out.stderr).trim().to_string()),
+            reason: Some("CodeGraph 命令成功但未生成 .codegraph 索引目录".to_string()),
         },
-        Err(error) => IndexResult {
+        Err(reason) => IndexResult {
             ok: false,
             degraded: true,
-            reason: Some(error.to_string()),
+            reason: Some(reason),
         },
+    }
+}
+
+fn command_failure_reason(command: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        format!("{command} 返回非零退出状态：{}", output.status)
+    } else {
+        format!("{command} 执行失败：{stderr}")
     }
 }

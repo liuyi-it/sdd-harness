@@ -6,20 +6,21 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crate::error::SddError;
-use crate::state::state_store::{now_iso, SDD_DIR};
+use crate::state::state_store::now_iso;
 
 const LOCK_FILE: &str = "lock";
 const RETRY_DELAY_MS: u64 = 50;
+const MAX_LOCK_METADATA_BYTES: u64 = 8 * 1024;
 
 thread_local! {
     /// 同一线程中的组合命令复用持有中的文件描述符，避免内部状态写入产生自竞争。
-    /// 每个线程独立记录，其他线程和进程仍由 OS 独占锁阻断。
-    static HELD_LOCKS: RefCell<HashMap<PathBuf, Rc<LockHandle>>> = RefCell::new(HashMap::new());
+    /// 表中只存弱引用，不延长文件锁生命周期；其他线程和进程仍由 OS 独占锁阻断。
+    static HELD_LOCKS: RefCell<HashMap<PathBuf, Weak<LockHandle>>> = RefCell::new(HashMap::new());
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -33,28 +34,29 @@ struct LockData {
 
 #[derive(Debug)]
 struct LockHandle {
-    _file: File,
+    file: File,
+}
+
+impl Drop for LockHandle {
+    fn drop(&mut self) {
+        drop(self.file.unlock());
+    }
 }
 
 /// 持有文件描述符即持有独占锁；同一线程的嵌套调用复用句柄，最后一个 guard Drop 时释放。
 #[derive(Debug)]
 pub struct SddLockGuard {
     path: PathBuf,
-    handle: Rc<LockHandle>,
+    _handle: Rc<LockHandle>,
 }
 
 impl Drop for SddLockGuard {
     fn drop(&mut self) {
-        HELD_LOCKS.with(|locks| {
-            let mut locks = locks.borrow_mut();
-            let Some(held) = locks.get(&self.path) else {
-                return;
-            };
-            // map 与当前 guard 各持有一个 Rc；移除 map 后由当前 guard 的 Drop 释放 File。
-            if Rc::ptr_eq(held, &self.handle) && Rc::strong_count(&self.handle) == 2 {
-                locks.remove(&self.path);
-            }
-        });
+        if Rc::strong_count(&self._handle) == 1 {
+            HELD_LOCKS.with(|locks| {
+                locks.borrow_mut().remove(&self.path);
+            });
+        }
     }
 }
 
@@ -66,17 +68,35 @@ pub fn lock_sdd(
     change_id: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<SddLockGuard, SddError> {
-    lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms)
+    lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms, true)
 }
 
-/// auto 使用独立协调锁串行化整条 loop，同时允许内部命令继续获取 `.sdd/lock`。
-pub fn lock_auto(
+/// 获取已初始化项目的写锁；`.sdd` 不存在时直接失败且不创建任何状态目录。
+pub(crate) fn lock_initialized_sdd(
     cwd: &str,
     command: &str,
     change_id: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<SddLockGuard, SddError> {
-    lock_named(cwd, "auto.lock", command, change_id, timeout_ms)
+    lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms, false)
+}
+
+/// auto 使用独立协调锁串行化整条 loop，同时允许内部命令继续获取 `.sdd/lock`。
+pub(crate) fn lock_auto(
+    cwd: &str,
+    command: &str,
+    change_id: Option<&str>,
+    timeout_ms: Option<u64>,
+) -> Result<SddLockGuard, SddError> {
+    lock_named(cwd, "auto.lock", command, change_id, timeout_ms, false)
+}
+
+pub(crate) fn current_thread_holds_auto_lock(cwd: &str) -> Result<bool, SddError> {
+    let Some(dir) = crate::state::paths::existing_sdd_dir(Path::new(cwd))? else {
+        return Ok(false);
+    };
+    let path = dir.join("auto.lock");
+    Ok(HELD_LOCKS.with(|locks| locks.borrow().get(&path).and_then(Weak::upgrade).is_some()))
 }
 
 fn lock_named(
@@ -85,17 +105,29 @@ fn lock_named(
     command: &str,
     change_id: Option<&str>,
     timeout_ms: Option<u64>,
+    create_sdd: bool,
 ) -> Result<SddLockGuard, SddError> {
-    let dir = PathBuf::from(cwd).join(SDD_DIR);
-    fs::create_dir_all(&dir).map_err(|error| {
-        SddError::new("E_STATE_CORRUPTED", &format!("创建 .sdd 目录失败：{error}"))
-    })?;
+    let root = Path::new(cwd);
+    let dir = if create_sdd {
+        crate::state::paths::ensure_sdd_dir(root)?
+    } else {
+        crate::state::paths::existing_sdd_dir(root)?.ok_or_else(|| {
+            SddError::new("E_NOT_INITIALIZED", "请先运行 sdd init 再执行其他命令")
+                .with_next("sdd init")
+        })?
+    };
     let path = dir.join(file_name);
+    crate::safe_fs::reject_symlink(&path, "SDD 锁文件")?;
     if let Some(guard) = reentrant_guard(&path) {
         return Ok(guard);
     }
-    let deadline =
-        timeout_ms.map(|ms| std::time::Instant::now() + std::time::Duration::from_millis(ms));
+    let deadline = timeout_ms
+        .map(|milliseconds| {
+            std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(milliseconds))
+                .ok_or_else(|| SddError::new("E_INVALID_PHASE_COMMAND", "锁等待时间超出支持范围"))
+        })
+        .transpose()?;
 
     loop {
         match try_acquire(&path, command, change_id) {
@@ -105,9 +137,14 @@ fn lock_named(
                     return Err(SddError::new("E_CONCURRENT_RUN", &holder_message(&path))
                         .with_next("sdd status"));
                 }
-                if deadline.is_some_and(|at| std::time::Instant::now() < at) {
-                    std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
-                    continue;
+                if let Some(at) = deadline {
+                    let now = std::time::Instant::now();
+                    if now < at {
+                        std::thread::sleep(
+                            (at - now).min(std::time::Duration::from_millis(RETRY_DELAY_MS)),
+                        );
+                        continue;
+                    }
                 }
                 return Err(SddError::new(
                     "E_LOCK_TIMEOUT",
@@ -147,27 +184,32 @@ fn try_acquire(
         created_at: now_iso(),
     };
     if let Err(error) = write_lock_data(&mut file, &owner) {
-        let _ = file.unlock();
+        drop(file.unlock());
         return Err(error);
     }
-    let path = path.to_path_buf();
-    let handle = Rc::new(LockHandle { _file: file });
+    let handle = Rc::new(LockHandle { file });
     HELD_LOCKS.with(|locks| {
-        locks.borrow_mut().insert(path.clone(), Rc::clone(&handle));
+        locks
+            .borrow_mut()
+            .insert(path.to_path_buf(), Rc::downgrade(&handle));
     });
-    Ok(SddLockGuard { path, handle })
+    Ok(SddLockGuard {
+        path: path.to_path_buf(),
+        _handle: handle,
+    })
 }
 
 fn reentrant_guard(path: &Path) -> Option<SddLockGuard> {
     HELD_LOCKS.with(|locks| {
-        locks
-            .borrow()
-            .get(path)
-            .cloned()
-            .map(|handle| SddLockGuard {
-                path: path.to_path_buf(),
-                handle,
-            })
+        let mut locks = locks.borrow_mut();
+        let handle = locks.get(path).and_then(Weak::upgrade);
+        if handle.is_none() {
+            locks.remove(path);
+        }
+        handle.map(|handle| SddLockGuard {
+            path: path.to_path_buf(),
+            _handle: handle,
+        })
     })
 }
 
@@ -188,6 +230,33 @@ fn holder_message(path: &Path) -> String {
 }
 
 fn read_lock_data(path: &Path) -> Option<LockData> {
-    let raw = fs::read_to_string(path).ok()?;
+    if fs::symlink_metadata(path).ok()?.file_type().is_symlink() {
+        return None;
+    }
+    let file = File::open(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_LOCK_METADATA_BYTES {
+        return None;
+    }
+    let mut raw = String::new();
+    file.take(MAX_LOCK_METADATA_BYTES + 1)
+        .read_to_string(&mut raw)
+        .ok()?;
+    if u64::try_from(raw.len()).ok()? > MAX_LOCK_METADATA_BYTES {
+        return None;
+    }
     serde_json::from_str(&raw).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_lock_metadata_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lock");
+        fs::write(&path, vec![b'x'; MAX_LOCK_METADATA_BYTES as usize + 1]).unwrap();
+
+        assert!(read_lock_data(&path).is_none());
+    }
 }

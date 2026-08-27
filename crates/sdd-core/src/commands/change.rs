@@ -2,19 +2,18 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Value};
 
-use crate::commands::new::render_spec_document;
+use crate::commands::new::{render_spec_document, validate_requirement_length};
 use crate::contracts::CommandResult;
 use crate::engines::spec::spec_engine::{GenerateSpecInput, SpecEngine};
 use crate::error::SddError;
 use crate::git::isolation::validate_change_id;
-use crate::policies::digest::digest;
-use crate::state::file_lock::lock_sdd;
+use crate::state::artifact_store::ArtifactRecord;
+use crate::state::file_lock::lock_initialized_sdd;
 use crate::state::runtime_store::RuntimeStore;
-use crate::state::state_store::{now_iso, StateStore};
 
 const DERIVED_DOCUMENTS: [&str; 4] = ["design.md", "plan.md", "tasks.md", "archive.md"];
 
@@ -23,12 +22,12 @@ struct ChangeArgs {
     change_id: String,
     requirement: String,
     answers: HashMap<String, String>,
-    timeout_ms: Option<u64>,
 }
 
 impl ChangeArgs {
-    fn from_json(args: Option<&Value>) -> Result<Self, SddError> {
-        let args = args.cloned().unwrap_or_else(|| json!({}));
+    fn from_json(args: Option<&Value>, requirement: Option<String>) -> Result<Self, SddError> {
+        let empty = Value::Null;
+        let args = args.unwrap_or(&empty);
         let change_id = args
             .get("changeId")
             .and_then(Value::as_str)
@@ -38,28 +37,30 @@ impl ChangeArgs {
             .to_string();
         validate_change_id(&change_id)?;
 
-        let requirement = args
-            .get("requirement")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| SddError::new("E_INVALID_REQUIREMENT", "需求内容不能为空"))?
-            .to_string();
+        let requirement = requirement
+            .ok_or_else(|| SddError::new("E_INVALID_REQUIREMENT", "需求内容不能为空"))?;
 
         let answers = parse_answers(args.get("answers"))?;
-        let timeout_ms = args
-            .get("timeout")
-            .and_then(Value::as_f64)
-            .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
-            .map(|seconds| (seconds * 1000.0) as u64);
-
         Ok(Self {
             change_id,
             requirement,
             answers,
-            timeout_ms,
         })
     }
+}
+
+fn prevalidate_requirement(args: Option<&Value>) -> Result<Option<String>, SddError> {
+    let Some(value) = args.and_then(|args| args.get("requirement")) else {
+        return Ok(None);
+    };
+    let requirement = value
+        .as_str()
+        .map(str::trim)
+        .filter(|requirement| !requirement.is_empty())
+        .ok_or_else(|| SddError::new("E_INVALID_REQUIREMENT", "需求内容不能为空"))?
+        .to_string();
+    validate_requirement_length(&requirement)?;
+    Ok(Some(requirement))
 }
 
 fn parse_answers(value: Option<&Value>) -> Result<HashMap<String, String>, SddError> {
@@ -89,56 +90,30 @@ pub fn run_change(
     args: Option<&Value>,
     engine: &SpecEngine,
 ) -> Result<CommandResult, SddError> {
-    let parsed = ChangeArgs::from_json(args)?;
-    let _guard = lock_sdd(
-        cwd,
-        "sdd change",
-        Some(&parsed.change_id),
-        parsed.timeout_ms,
-    )?;
-    let state_store = StateStore::new(cwd.to_string());
-    let state_before = state_store.read()?;
+    super::validate_args(args, &["timeout", "changeId", "requirement", "answers"])?;
+    let requirement = prevalidate_requirement(args)?;
+    let timeout_ms = super::timeout_ms(args)?;
+    let requested_change_id = super::string_arg(args, "changeId")?;
+    let _guard = lock_initialized_sdd(cwd, "sdd change", requested_change_id, timeout_ms)?;
+    let runtime = RuntimeStore::new(cwd.to_string()).read()?;
+    let state_before = runtime.state.clone();
+    super::ensure_phase(cwd, &state_before, "change", args)?;
+    let parsed = ChangeArgs::from_json(args, requirement)?;
 
-    if state_before.current_change_id.as_deref() != Some(parsed.change_id.as_str()) {
-        return Err(reject(
-            cwd,
-            state_before.current_run_id.as_deref(),
-            &parsed.change_id,
-            "E_MISSING_CHANGE",
-            &format!("指定变更 {} 不是当前活动变更", parsed.change_id),
-        ));
-    }
-    if state_before.current_phase == "ARCHIVED" {
-        return Err(reject(
-            cwd,
-            state_before.current_run_id.as_deref(),
-            &parsed.change_id,
-            "E_ARCHIVED_READONLY",
-            "已归档的变更为只读状态",
-        ));
-    }
-
-    let change_dir = change_directory(cwd, &parsed.change_id);
+    let change_dir = crate::state::paths::change_dir(cwd, &parsed.change_id, false)?;
     if !change_dir.is_dir() {
         return Err(reject(
-            cwd,
-            state_before.current_run_id.as_deref(),
-            &parsed.change_id,
             "E_MISSING_CHANGE",
             &format!("变更目录不存在：{}", parsed.change_id),
         ));
     }
 
-    let mut runtime = RuntimeStore::new(cwd.to_string()).read()?;
     let current_change = runtime
         .changes
         .get(&parsed.change_id)
         .cloned()
         .ok_or_else(|| {
             reject(
-                cwd,
-                state_before.current_run_id.as_deref(),
-                &parsed.change_id,
                 "E_MISSING_CHANGE",
                 &format!("runtime.json 中不存在变更：{}", parsed.change_id),
             )
@@ -159,9 +134,6 @@ pub fn run_change(
         .collect();
     if !blockers.is_empty() {
         return Err(reject(
-            cwd,
-            state_before.current_run_id.as_deref(),
-            &parsed.change_id,
             "E_UNRESOLVED_BLOCKER",
             &format!("需求仍存在未回答阻塞问题：{}", blockers.join("；")),
         ));
@@ -192,7 +164,7 @@ pub fn run_change(
     for name in DERIVED_DOCUMENTS {
         new_documents.remove(name);
     }
-    new_documents.insert("spec.md".to_string(), spec_document.clone());
+    new_documents.insert("spec.md".to_string(), spec_document);
     new_documents.insert("proposal.md".to_string(), artifacts.proposal);
 
     let mut next_change = current_change;
@@ -211,38 +183,57 @@ pub fn run_change(
     for field in ["design", "plan", "reports", "archive"] {
         next_change_object.remove(field);
     }
-    runtime
-        .changes
-        .insert(parsed.change_id.clone(), next_change);
-    update_artifacts(&mut runtime.artifacts, &parsed.change_id, &spec_document)?;
-
-    let mut next_state = runtime.state.clone();
-    next_state.previous_phase = Some(next_state.current_phase.clone());
-    next_state.current_phase = "SPEC_READY".to_string();
-    next_state.in_progress_phase = None;
-    next_state.suggested_command = Some("sdd design".to_string());
-    next_state.last_command = Some("sdd change".to_string());
-    next_state.last_error = None;
-    next_state.failed_command = None;
-    next_state.failed_reason = None;
-    next_state.interrupted_command = None;
-    next_state.recoverable = true;
-    next_state.tasks.clear();
-    next_state.artifacts.clear();
-    next_state.pending_agent_task = None;
-    runtime.state = next_state;
-    append_event(
-        &mut runtime.loop_state,
-        runtime.state.current_run_id.as_deref(),
-        "REQUIREMENT_REVISED",
-        &parsed.change_id,
-        None,
-    );
-
     write_documents(&change_dir, &old_documents, &new_documents)?;
-    if let Err(error) = RuntimeStore::new(cwd.to_string()).write(&runtime) {
-        restore_documents(&change_dir, &old_documents);
-        return Err(error);
+    let run_id = state_before
+        .current_run_id
+        .as_deref()
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "活动变更缺少 currentRunId"))?;
+    let artifact_key = format!("{}:spec", parsed.change_id);
+    let content_path = format!(".sdd/changes/{}/spec.md", parsed.change_id);
+    let event = requirement_revised_event(run_id, &parsed.change_id)?;
+    let runtime_result = RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        document
+            .changes
+            .insert(parsed.change_id.clone(), next_change);
+        let entries = document
+            .artifacts
+            .get_mut("artifacts")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| {
+                SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "runtime artifacts.artifacts 必须是对象",
+                )
+            })?;
+        let prefix = format!("{}:", parsed.change_id);
+        entries.retain(|key, _| !key.starts_with(&prefix));
+        crate::state::artifact_store::record_artifacts_in(
+            cwd,
+            document,
+            vec![ArtifactRecord {
+                key: &artifact_key,
+                artifact_type: "spec",
+                content_path: &content_path,
+                inputs: json!({ "source": "sdd change" }),
+            }],
+        )?;
+        crate::state::state_store::apply_state_update(&mut document.state, |state| {
+            state.current_phase = "SPEC_READY".to_string();
+            state.in_progress_phase = None;
+            state.suggested_command = Some("sdd design".to_string());
+            state.last_command = Some("sdd change".to_string());
+            state.clear_failure();
+            state.tasks.clear();
+            state.pending_agent_task = None;
+        })?;
+        append_requirement_event(document, run_id, event)?;
+        Ok(())
+    });
+    if let Err(error) = runtime_result {
+        return Err(with_recovery(
+            error,
+            restore_documents(&change_dir, &old_documents),
+        ));
     }
 
     let removed_documents: Vec<String> = old_documents
@@ -269,13 +260,6 @@ pub fn run_change(
     })
 }
 
-fn change_directory(cwd: &str, change_id: &str) -> PathBuf {
-    PathBuf::from(cwd)
-        .join(".sdd")
-        .join("changes")
-        .join(change_id)
-}
-
 fn read_documents(change_dir: &Path) -> Result<BTreeMap<String, String>, SddError> {
     let mut documents = BTreeMap::new();
     let entries = fs::read_dir(change_dir).map_err(|error| {
@@ -294,6 +278,7 @@ fn read_documents(change_dir: &Path) -> Result<BTreeMap<String, String>, SddErro
             .and_then(|name| name.to_str())
             .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "变更文档名称不是有效 UTF-8"))?
             .to_string();
+        crate::safe_fs::reject_symlink(&path, &format!("变更文档 {name}"))?;
         let content = fs::read_to_string(&path).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
@@ -330,170 +315,109 @@ fn write_documents(
     before: &BTreeMap<String, String>,
     after: &BTreeMap<String, String>,
 ) -> Result<(), SddError> {
-    let suffix = format!("{}.tmp", std::process::id());
-    let mut temporary = Vec::new();
     for (name, content) in after {
-        let temp = change_dir.join(format!(".{name}.{suffix}"));
-        if let Err(error) = write_file(&temp, content) {
-            cleanup_temporary(&temporary);
-            let _ = fs::remove_file(temp);
-            return Err(error);
-        }
-        temporary.push((temp, change_dir.join(name)));
-    }
-    for (temp, path) in &temporary {
-        if let Err(error) = fs::rename(temp, path) {
-            cleanup_temporary(&temporary);
-            restore_documents(change_dir, before);
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("提交变更文档失败：{error}"),
-            ));
+        let path = change_dir.join(name);
+        if let Err(error) =
+            crate::safe_fs::atomic_write(&path, content.as_bytes(), &format!("变更文档 {name}"))
+        {
+            return Err(with_recovery(error, restore_documents(change_dir, before)));
         }
     }
     for name in before.keys().filter(|name| !after.contains_key(*name)) {
         if let Err(error) = fs::remove_file(change_dir.join(name)) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                restore_documents(change_dir, before);
-                return Err(SddError::new(
+                let cause = SddError::new(
                     "E_STATE_CORRUPTED",
                     &format!("删除过期文档 {name} 失败：{error}"),
-                ));
+                );
+                return Err(with_recovery(cause, restore_documents(change_dir, before)));
             }
         }
     }
     Ok(())
 }
 
-fn cleanup_temporary(temporary: &[(PathBuf, PathBuf)]) {
-    for (path, _) in temporary {
-        let _ = fs::remove_file(path);
-    }
-}
-
-fn restore_documents(change_dir: &Path, documents: &BTreeMap<String, String>) {
-    for (name, content) in documents {
-        let _ = fs::write(change_dir.join(name), content);
-    }
-    if let Ok(entries) = fs::read_dir(change_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("");
-            if name.ends_with(".md") && !documents.contains_key(name) {
-                let _ = fs::remove_file(path);
-            }
-        }
-    }
-}
-
-fn update_artifacts(
-    artifacts: &mut Value,
-    change_id: &str,
-    spec_content: &str,
+fn restore_documents(
+    change_dir: &Path,
+    documents: &BTreeMap<String, String>,
 ) -> Result<(), SddError> {
-    if !artifacts.is_object() {
-        *artifacts = json!({ "schemaVersion": "2.0.0", "artifacts": {} });
+    for (name, content) in documents {
+        crate::safe_fs::atomic_write(
+            &change_dir.join(name),
+            content.as_bytes(),
+            &format!("回滚文档 {name}"),
+        )?;
     }
-    let object = artifacts
-        .as_object_mut()
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime artifacts 必须是对象"))?;
-    let entries = object
-        .entry("artifacts".to_string())
-        .or_insert_with(|| json!({}));
-    let entries = entries.as_object_mut().ok_or_else(|| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            "runtime artifacts.artifacts 必须是对象",
-        )
+    let entries = fs::read_dir(change_dir).map_err(|error| {
+        SddError::new("E_STATE_CORRUPTED", &format!("读取回滚目录失败：{error}"))
     })?;
-    let prefix = format!("{change_id}:");
-    entries.retain(|key, _| !key.starts_with(&prefix));
-    let item = json!({
-        "type": "spec",
-        "hash": digest(spec_content),
-        "contentPath": format!(".sdd/changes/{change_id}/spec.md"),
-        "status": "READY",
-        "inputs": { "source": "sdd change" },
-    });
-    crate::schema::validate_json("artifact", &item)?;
-    entries.insert(format!("{change_id}:spec"), item);
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("读取回滚目录条目失败：{error}"),
+            )
+        })?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.ends_with(".md") && !documents.contains_key(name) {
+            remove_if_exists(&path)?;
+        }
+    }
     Ok(())
 }
 
-fn write_file(path: &Path, content: &str) -> Result<(), SddError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            SddError::new("E_STATE_CORRUPTED", &format!("创建文件目录失败：{error}"))
-        })?;
+fn remove_if_exists(path: &Path) -> Result<(), SddError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(SddError::new(
+            "E_STATE_CORRUPTED",
+            &format!("清理文件 {} 失败：{error}", path.display()),
+        )),
     }
-    fs::write(path, content)
-        .map_err(|error| SddError::new("E_STATE_CORRUPTED", &format!("写入文件失败：{error}")))
 }
 
-fn append_event(
-    loop_state: &mut Value,
-    run_id: Option<&str>,
-    event_type: &str,
-    change_id: &str,
-    reason: Option<&str>,
-) {
-    let Some(run_id) = run_id else {
-        return;
-    };
-    if !loop_state.is_object() {
-        *loop_state = json!({ "runs": {}, "events": {} });
+fn with_recovery(mut cause: SddError, recovery: Result<(), SddError>) -> SddError {
+    if let Err(error) = recovery {
+        cause.message = format!("{}；恢复原文档失败：{}", cause.message, error.message);
     }
-    let object = loop_state.as_object_mut().expect("loop state object");
-    let events = object.entry("events").or_insert_with(|| json!({}));
-    if !events.is_object() {
-        *events = json!({});
-    }
-    let run_events = events
-        .as_object_mut()
-        .expect("events object")
-        .entry(run_id.to_string())
-        .or_insert_with(|| json!([]));
-    if !run_events.is_array() {
-        *run_events = json!([]);
-    }
-    let mut event = json!({
+    cause
+}
+
+fn requirement_revised_event(run_id: &str, change_id: &str) -> Result<Value, SddError> {
+    Ok(json!({
         "schemaVersion": "1.0.0",
-        "eventId": make_event_id(),
+        "eventId": crate::state::state_store::unique_id("event")?,
         "runId": run_id,
-        "type": event_type,
+        "type": "REQUIREMENT_REVISED",
         "changeId": change_id,
-        "createdAt": now_iso(),
-    });
-    if let Some(reason) = reason {
-        event["reason"] = json!(reason);
-    }
-    run_events
+        "createdAt": crate::state::state_store::now_iso(),
+    }))
+}
+
+fn append_requirement_event(
+    document: &mut crate::state::RuntimeDocument,
+    run_id: &str,
+    event: Value,
+) -> Result<(), SddError> {
+    let run = document
+        .runs
+        .get_mut(run_id)
+        .and_then(Value::as_object_mut)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "活动 run 必须是对象"))?;
+    let run_events = run
+        .entry("events".to_string())
+        .or_insert_with(|| json!([]))
         .as_array_mut()
-        .expect("run events array")
-        .push(event);
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "活动 run.events 必须是数组"))?;
+    run_events.push(event);
+    Ok(())
 }
 
-fn reject(cwd: &str, run_id: Option<&str>, change_id: &str, code: &str, message: &str) -> SddError {
-    let reason = format!("{code}: {message}");
-    let _ = RuntimeStore::new(cwd.to_string()).update(|runtime| {
-        append_event(
-            &mut runtime.loop_state,
-            run_id,
-            "REQUIREMENT_REJECTED",
-            change_id,
-            Some(&reason),
-        );
-    });
+fn reject(code: &str, message: &str) -> SddError {
     SddError::new(code, message).with_next("sdd change")
-}
-
-fn make_event_id() -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    format!("event-{nanos}")
 }

@@ -3,7 +3,7 @@
   "$id": "https://sdd-harness.dev/schemas/report.schema.json",
   "title": "SDD 验证/审查报告",
   "type": "object",
-  "required": ["kind", "summary", "passed"],
+  "required": ["kind", "summary", "passed", "changeId", "issues"],
   "properties": {
     "kind": {
       "type": "string",
@@ -11,7 +11,7 @@
     },
     "summary": { "type": "string" },
     "passed": { "type": "boolean" },
-    "changeId": { "type": ["string", "null"] },
+    "changeId": { "type": "string", "minLength": 1 },
     "issues": {
       "type": "array",
       "items": {
@@ -24,16 +24,18 @@
             "enum": ["critical", "high", "medium", "low"]
           },
           "message": { "type": "string" },
-          "file": { "type": ["string", "null"] },
-          "category": { "type": ["string", "null"] },
-          "startLine": { "type": ["integer", "null"], "minimum": 0 },
-          "endLine": { "type": ["integer", "null"], "minimum": 0 },
-          "existingCode": { "type": ["string", "null"] },
-          "suggestionCode": { "type": ["string", "null"] },
-          "origin": { "type": ["string", "null"] }
-        }
+          "file": { "type": "string" },
+          "category": { "type": "string" },
+          "startLine": { "type": "integer", "minimum": 1 },
+          "endLine": { "type": "integer", "minimum": 1 },
+          "existingCode": { "type": "string" },
+          "suggestionCode": { "type": "string" },
+          "origin": { "type": "string" }
+        },
+        "additionalProperties": false
       }
-    }
+    },
+    "minimality": { "type": "object" }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

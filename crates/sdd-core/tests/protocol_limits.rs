@@ -9,12 +9,17 @@ fn base() -> serde_json::Value {
         "taskId": "TASK-001-RED",
         "status": "completed",
         "evidence": [{ "type": "command-run", "command": "cargo test", "output": "ok" }],
+        "verification": [{ "command": "cargo test", "passed": true }],
         "filesChanged": []
     })
 }
 
-fn evidence_item() -> serde_json::Value {
-    json!({ "type": "command-run", "command": "cargo test", "output": "ok" })
+fn evidence_item(index: usize) -> serde_json::Value {
+    json!({
+        "type": "command-run",
+        "command": format!("cargo test case-{index}"),
+        "output": format!("ok-{index}")
+    })
 }
 
 #[test]
@@ -28,13 +33,13 @@ fn schema_convergence_rejects_missing_required() {
 #[test]
 fn evidence_count_limit_is_64() {
     let mut over = base();
-    over["evidence"] = json!((0..65).map(|_| evidence_item()).collect::<Vec<_>>());
+    over["evidence"] = json!((0..65).map(evidence_item).collect::<Vec<_>>());
     assert_eq!(
         validate_task_result(&over).unwrap_err().code,
         "E_TDD_EVIDENCE_REQUIRED"
     );
     let mut at_limit = base();
-    at_limit["evidence"] = json!((0..64).map(|_| evidence_item()).collect::<Vec<_>>());
+    at_limit["evidence"] = json!((0..64).map(evidence_item).collect::<Vec<_>>());
     assert!(validate_task_result(&at_limit).is_ok());
 }
 
@@ -92,7 +97,11 @@ fn files_changed_count_and_length_limits() {
 fn verification_count_limit_is_32() {
     let mut over = base();
     over["verification"] = json!((0..33)
-        .map(|_| json!({ "command": "cargo test", "passed": true }))
+        .map(|index| json!({
+            "command": "cargo test",
+            "args": [format!("case-{index}")],
+            "passed": true
+        }))
         .collect::<Vec<_>>());
     assert_eq!(
         validate_task_result(&over).unwrap_err().code,
@@ -100,7 +109,11 @@ fn verification_count_limit_is_32() {
     );
     let mut at_limit = base();
     at_limit["verification"] = json!((0..32)
-        .map(|_| json!({ "command": "cargo test", "passed": true }))
+        .map(|index| json!({
+            "command": "cargo test",
+            "args": [format!("case-{index}")],
+            "passed": true
+        }))
         .collect::<Vec<_>>());
     assert!(validate_task_result(&at_limit).is_ok());
 }
@@ -108,7 +121,7 @@ fn verification_count_limit_is_32() {
 #[test]
 fn verification_command_argument_and_output_limits_are_enforced() {
     let mut over_command = base();
-    over_command["verification"] = json!([{ "command": "x".repeat(2049) }]);
+    over_command["verification"] = json!([{ "command": "x".repeat(2049), "passed": true }]);
     assert_eq!(
         validate_task_result(&over_command).unwrap_err().code,
         "E_TDD_EVIDENCE_REQUIRED"
@@ -117,7 +130,8 @@ fn verification_command_argument_and_output_limits_are_enforced() {
     let mut over_args = base();
     over_args["verification"] = json!([{
         "command": "cargo test",
-        "args": (0..65).map(|_| "--all").collect::<Vec<_>>()
+        "args": (0..65).map(|_| "--all").collect::<Vec<_>>(),
+        "passed": true
     }]);
     assert_eq!(
         validate_task_result(&over_args).unwrap_err().code,
@@ -127,7 +141,8 @@ fn verification_command_argument_and_output_limits_are_enforced() {
     let mut over_output = base();
     over_output["verification"] = json!([{
         "command": "cargo test",
-        "output": "x".repeat(8193)
+        "output": "x".repeat(8193),
+        "passed": true
     }]);
     assert_eq!(
         validate_task_result(&over_output).unwrap_err().code,

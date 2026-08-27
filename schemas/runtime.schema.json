@@ -3,13 +3,30 @@
   "type": "object",
   "required": ["schemaVersion", "state", "config", "artifacts", "changes", "runs", "loop", "index"],
   "properties": {
-    "schemaVersion": { "type": "integer" },
+    "schemaVersion": { "type": "integer", "enum": [5] },
     "state": { "type": "object" },
     "config": { "type": "object" },
-    "artifacts": { "type": "object" },
+    "artifacts": {
+      "type": "object",
+      "required": ["schemaVersion", "artifacts"],
+      "properties": {
+        "schemaVersion": { "type": "string", "enum": ["2.0.0"] },
+        "artifacts": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
     "changes": { "type": "object" },
     "runs": { "type": "object" },
-    "loop": { "type": "object" },
+    "loop": {
+      "type": "object",
+      "required": ["runs", "events"],
+      "properties": {
+        "runs": { "type": "object" },
+        "events": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
     "index": { "type": "object" }
-  }
+  },
+  "additionalProperties": false
 }

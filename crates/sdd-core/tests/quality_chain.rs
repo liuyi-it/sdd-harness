@@ -12,6 +12,42 @@ const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请�
 const REVISED_REQUIREMENT: &str =
     "授权用户通过 PATCH /orders/{id} 请求更新待处理订单，入参 order_id 和 status，返回 status 和 error_code，返回更新成功并写审计日志，需要自动化测试覆盖成功与失败";
 
+fn read_change_field(
+    cwd: &str,
+    change_id: &str,
+    field: &str,
+) -> Result<Option<serde_json::Value>, sdd_core::error::SddError> {
+    let runtime = sdd_core::state::RuntimeStore::new(cwd.to_string()).read()?;
+    Ok(runtime
+        .changes
+        .get(change_id)
+        .and_then(|change| change.get(field))
+        .cloned())
+}
+
+fn write_change_field(
+    cwd: &str,
+    change_id: &str,
+    field: &str,
+    value: serde_json::Value,
+) -> Result<(), sdd_core::error::SddError> {
+    sdd_core::git::isolation::validate_change_id(change_id)?;
+    sdd_core::state::RuntimeStore::new(cwd.to_string()).update(|runtime| {
+        let change = runtime
+            .changes
+            .entry(change_id.to_string())
+            .or_insert_with(|| json!({}));
+        change[field] = value;
+    })?;
+    Ok(())
+}
+
+fn update_config(cwd: &str, update: impl FnOnce(&mut serde_json::Value)) {
+    sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .update(|runtime| update(&mut runtime.config))
+        .unwrap();
+}
+
 fn git(dir: &std::path::Path, args: &[&str]) {
     let output = Command::new("git")
         .args(args)
@@ -30,12 +66,20 @@ fn prepare(dir: &std::path::Path) -> String {
         args: None,
     })
     .unwrap();
-    sdd_core::state::runtime_store::write_index(
-        &cwd,
-        json!([]),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
-    )
-    .unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            let prefix = runtime.index["summary"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap();
+            runtime.index["summary"] = json!(format!(
+                "{prefix}\nsrc/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n"
+            ));
+            runtime.index["updatedAt"] = json!("2026-01-01T00:00:00Z");
+        })
+        .unwrap();
     run_new(
         &cwd,
         Some(&json!({ "requirement": FULL_REQUIREMENT })),
@@ -127,14 +171,42 @@ fn complete_all_tasks(_dir: &std::path::Path, cwd: &str) {
 fn verify_fails_when_tasks_incomplete() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = prepare(dir.path());
-    // 尚未进入 BUILD_READY：阶段门禁拦截（E_INVALID_PHASE_COMMAND，对齐 Node 版）
+    // 尚未进入 BUILD_READY：阶段门禁必须拦截。
     let err = run(&CommandRequest {
         command: "verify".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: None,
     })
     .unwrap_err();
     assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
+}
+
+#[test]
+fn concurrent_verify_rechecks_phase_inside_the_write_lock() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let mut threads = Vec::new();
+    for _ in 0..2 {
+        let cwd = cwd.clone();
+        let barrier = barrier.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            sdd_core::commands::verify::run_verify(&cwd, Some(&json!({ "timeout": 5 })))
+        }));
+    }
+
+    let results = threads
+        .into_iter()
+        .map(|thread| thread.join().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+    let error = results
+        .into_iter()
+        .find_map(Result::err)
+        .expect("另一条并发 verify 必须被阶段门禁拒绝");
+    assert_eq!(error.code, "E_INVALID_PHASE_COMMAND");
 }
 
 #[test]
@@ -181,9 +253,7 @@ fn full_chain_verify_review_archive() {
         &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
     )
     .unwrap();
-    let state = sdd_core::state::StateStore::new(cwd.clone())
-        .read()
-        .unwrap();
+    let state = sdd_core::state::StateStore::new(cwd).read().unwrap();
     let change_id = state.current_change_id.unwrap();
     assert!(runtime["changes"][change_id]["archive"].is_object());
     assert!(names.contains(&"archive.md".to_string()));
@@ -336,9 +406,9 @@ fn review_fails_closed_when_audit_scan_limit_is_reached() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, "// changed\n").unwrap();
     }
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["audit"] = json!({ "maxFiles": 1, "maxSizeMb": 1 });
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
+    update_config(&cwd, |config| {
+        config["audit"] = json!({ "maxFiles": 1, "maxSizeMb": 1 });
+    });
 
     run(&CommandRequest {
         command: "verify".into(),
@@ -354,13 +424,48 @@ fn review_fails_closed_when_audit_scan_limit_is_reached() {
     .unwrap_err();
     assert_eq!(error.code, "E_AUDIT_SCAN_INCOMPLETE");
 
-    let report = sdd_core::state::runtime_store::read_change_field(&cwd, change_id, "reports")
+    let report = read_change_field(&cwd, change_id, "reports")
         .unwrap()
         .unwrap()["review"]
         .clone();
     assert!(report["issues"].as_array().unwrap().iter().any(|issue| {
         issue["code"] == "E_AUDIT_SCAN_INCOMPLETE" && issue["severity"] == "critical"
     }));
+}
+
+#[test]
+fn review_accepts_an_allowed_deleted_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
+    std::fs::write(dir.path().join("src/order_service.rs"), "// source\n").unwrap();
+    std::fs::write(dir.path().join("src/order_service.test.rs"), "// tests\n").unwrap();
+    git(dir.path(), &["init", "-q"]);
+    git(dir.path(), &["config", "user.email", "test@test.test"]);
+    git(dir.path(), &["config", "user.name", "test"]);
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    let cwd = prepare(dir.path());
+    complete_all_tasks(dir.path(), &cwd);
+    std::fs::remove_file(dir.path().join("src/order_service.rs")).unwrap();
+    update_config(&cwd, |config| {
+        config["quality"]["ocr"]["mode"] = json!("off");
+    });
+
+    run(&CommandRequest {
+        command: "verify".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap();
+    let result = run(&CommandRequest {
+        command: "review".into(),
+        cwd,
+        args: None,
+    })
+    .unwrap();
+
+    assert_eq!(result.state, "REVIEW_READY");
 }
 
 #[test]
@@ -385,13 +490,11 @@ fn archive_rejects_failed_review_report() {
         .unwrap()
         .current_change_id
         .unwrap();
-    let mut reports =
-        sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "reports")
-            .unwrap()
-            .unwrap();
-    reports["review"]["passed"] = json!(false);
-    sdd_core::state::runtime_store::write_change_field(&cwd, &change_id, "reports", reports)
+    let mut reports = read_change_field(&cwd, &change_id, "reports")
+        .unwrap()
         .unwrap();
+    reports["review"]["passed"] = json!(false);
+    write_change_field(&cwd, &change_id, "reports", reports).unwrap();
     let err = run(&CommandRequest {
         command: "archive".into(),
         cwd,
@@ -419,13 +522,11 @@ fn archive_rejects_tampered_marker_on_retry() {
         .unwrap()
         .current_change_id
         .unwrap();
-    let mut archive =
-        sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "archive")
-            .unwrap()
-            .unwrap();
-    archive["tampered"] = json!(true);
-    sdd_core::state::runtime_store::write_change_field(&cwd, &change_id, "archive", archive)
+    let mut archive = read_change_field(&cwd, &change_id, "archive")
+        .unwrap()
         .unwrap();
+    archive["tampered"] = json!(true);
+    write_change_field(&cwd, &change_id, "archive", archive).unwrap();
     let err = run(&CommandRequest {
         command: "archive".into(),
         cwd,
@@ -455,9 +556,7 @@ fn prepare_git_cargo(dir: &std::path::Path) -> String {
 /// 使"依赖增量"能通过文件范围检查、走到依赖决策比对；同步重录 plan 制品哈希，
 /// 保证 review 的制品完整性校验通过。
 fn rewrite_plan_with_dependencies(cwd: &str, change_id: &str, dependencies: serde_json::Value) {
-    let mut plan = sdd_core::state::runtime_store::read_change_field(cwd, change_id, "plan")
-        .unwrap()
-        .unwrap();
+    let mut plan = read_change_field(cwd, change_id, "plan").unwrap().unwrap();
     plan["dependencies"] = dependencies;
     if let Some(tasks) = plan["tasks"].as_array_mut() {
         for task in tasks.iter_mut() {
@@ -467,15 +566,15 @@ fn rewrite_plan_with_dependencies(cwd: &str, change_id: &str, dependencies: serd
             }
         }
     }
-    let plan_text = serde_json::to_string_pretty(&plan).unwrap();
-    sdd_core::state::runtime_store::write_change_field(cwd, change_id, "plan", plan).unwrap();
-    sdd_core::state::artifact_store::record_artifact(
+    write_change_field(cwd, change_id, "plan", plan).unwrap();
+    sdd_core::state::artifact_store::record_artifacts(
         cwd,
-        &format!("{change_id}:plan"),
-        "plan",
-        &format!("runtime://changes/{change_id}/plan"),
-        &plan_text,
-        json!({ "spec": "", "design": "" }),
+        [sdd_core::state::artifact_store::ArtifactRecord {
+            key: &format!("{change_id}:plan"),
+            artifact_type: "plan",
+            content_path: &format!("runtime://changes/{change_id}/plan"),
+            inputs: json!({ "spec": "", "design": "" }),
+        }],
     )
     .unwrap();
 }
@@ -544,9 +643,9 @@ fn review_accepts_dependency_declared_in_plan() {
     complete_all_tasks(dir.path(), &cwd);
     add_serde_dependency(dir.path());
     // 关闭 OCR：本环境 PATH 存在 ocr 但不可用，避免后端失败干扰依赖决策断言
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["quality"]["ocr"]["mode"] = json!("off");
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
+    update_config(&cwd, |config| {
+        config["quality"]["ocr"]["mode"] = json!("off");
+    });
     run(&CommandRequest {
         command: "verify".into(),
         cwd: cwd.clone(),
@@ -647,8 +746,23 @@ fn prepare_ocr_fixture(
     let backend_dir = tempfile::tempdir().unwrap();
     let script = backend_dir.path().join("ocr");
     let output = json!({
-        "status": "success",
-        "session_id": "session-test",
+        "status": "completed",
+        "llm": {
+            "provider": "test-provider",
+            "model": "test-model"
+        },
+        "summary": {
+            "files_reviewed": 1,
+            "comments": 1,
+            "total_tokens": 0,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "elapsed": "0s"
+        },
+        "tool_calls": {
+            "total": 0,
+            "by_tool": {}
+        },
         "comments": [{
             "path": changed,
             "content": "请处理错误",
@@ -656,7 +770,24 @@ fn prepare_ocr_fixture(
             "end_line": 1,
             "category": "bug",
             "severity": "medium"
-        }]
+        }],
+        "manifest": {
+            "schema_version": "ocr.run-manifest/v1",
+            "run_id": "run-test",
+            "operation": "review",
+            "terminal_state": "completed",
+            "repository": {},
+            "input": {},
+            "execution": {},
+            "coverage": {
+                "selected": [],
+                "completed": [],
+                "reused": [],
+                "failed": [],
+                "waived": []
+            },
+            "elapsed_ms": 0
+        }
     })
     .to_string()
     .replace('\'', "'\\''");
@@ -669,12 +800,12 @@ fn prepare_ocr_fixture(
     permissions.set_mode(0o755);
     std::fs::set_permissions(&script, permissions).unwrap();
 
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["quality"]["ocr"] = json!({
-        "mode": "auto",
-        "command": script.to_string_lossy(),
+    update_config(&cwd, |config| {
+        config["quality"]["ocr"] = json!({
+            "mode": "auto",
+            "command": script.to_string_lossy(),
+        });
     });
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
     run(&CommandRequest {
         command: "verify".into(),
         cwd: cwd.clone(),
@@ -699,13 +830,9 @@ fn review_merges_successful_ocr_findings() {
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
-    let report = sdd_core::state::runtime_store::read_change_field(
-        &cwd,
-        state.current_change_id.as_deref().unwrap(),
-        "reports",
-    )
-    .unwrap()
-    .unwrap()["review"]
+    let report = read_change_field(&cwd, state.current_change_id.as_deref().unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
         .clone();
     assert_eq!(report["minimality"]["ocr"]["status"], "completed");
     assert!(report["issues"].as_array().unwrap().iter().any(|issue| {
@@ -735,13 +862,9 @@ fn blocking_ocr_finding_returns_review_failure_code() {
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
-    let report = sdd_core::state::runtime_store::read_change_field(
-        &cwd,
-        state.current_change_id.as_deref().unwrap(),
-        "reports",
-    )
-    .unwrap()
-    .unwrap()["review"]
+    let report = read_change_field(&cwd, state.current_change_id.as_deref().unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
         .clone();
     assert!(report["issues"]
         .as_array()
@@ -754,9 +877,9 @@ fn blocking_ocr_finding_returns_review_failure_code() {
 #[test]
 fn review_auto_mode_warns_and_keeps_deterministic_result_when_ocr_missing() {
     let (_dir, _backend_dir, cwd, _changed) = prepare_ocr_fixture("fn main() {}\n", "");
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["quality"]["ocr"]["command"] = json!("/definitely/missing/ocr");
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
+    update_config(&cwd, |config| {
+        config["quality"]["ocr"]["command"] = json!("/definitely/missing/ocr");
+    });
     let result = run(&CommandRequest {
         command: "review".into(),
         cwd: cwd.clone(),
@@ -764,20 +887,13 @@ fn review_auto_mode_warns_and_keeps_deterministic_result_when_ocr_missing() {
     })
     .unwrap();
     assert_eq!(result.state, "REVIEW_READY");
-    assert_eq!(
-        result.warnings.as_ref().unwrap()[0]["code"],
-        "W_OCR_NOT_FOUND"
-    );
+    assert_eq!(result.warnings.as_ref().unwrap()[0].code, "W_OCR_NOT_FOUND");
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
-    let report = sdd_core::state::runtime_store::read_change_field(
-        &cwd,
-        &state.current_change_id.clone().unwrap(),
-        "reports",
-    )
-    .unwrap()
-    .unwrap()["review"]
+    let report = read_change_field(&cwd, &state.current_change_id.unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
         .clone();
     assert_eq!(report["passed"], true);
     assert_eq!(report["minimality"]["ocr"]["status"], "not-found");
@@ -812,18 +928,14 @@ fn started_ocr_failure_is_hard_failure_and_persists_report() {
         args: None,
     })
     .unwrap_err();
-    assert_eq!(error.code, "E_REVIEW_BACKEND_FAILED");
+    assert_eq!(error.code, "E_REVIEW_BACKEND_FAILED", "{}", error.message);
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
     assert_eq!(state.current_phase, "VERIFY_READY");
-    let report = sdd_core::state::runtime_store::read_change_field(
-        &cwd,
-        state.current_change_id.as_deref().unwrap(),
-        "reports",
-    )
-    .unwrap()
-    .unwrap()["review"]
+    let report = read_change_field(&cwd, state.current_change_id.as_deref().unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
         .clone();
     assert_eq!(report["passed"], false);
     assert_eq!(report["minimality"]["ocr"]["status"], "failed");
@@ -831,14 +943,46 @@ fn started_ocr_failure_is_hard_failure_and_persists_report() {
 
 #[cfg(unix)]
 #[test]
+fn reported_ocr_failure_uses_failed_status_in_persisted_report() {
+    let (_dir, backend_dir, cwd, _changed) = prepare_ocr_fixture("fn main() {}\n", "");
+    let script = backend_dir.path().join("ocr");
+    let script_text = std::fs::read_to_string(&script).unwrap();
+    let script_text = script_text
+        .replacen("\"status\":\"completed\"", "\"status\":\"failed\"", 1)
+        .replacen(
+            "\"terminal_state\":\"completed\"",
+            "\"terminal_state\":\"failed\"",
+            1,
+        );
+    std::fs::write(&script, script_text).unwrap();
+
+    let error = run(&CommandRequest {
+        command: "review".into(),
+        cwd: cwd.clone(),
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_REVIEW_BACKEND_FAILED", "{}", error.message);
+    let state = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap();
+    let report = read_change_field(&cwd, state.current_change_id.as_deref().unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
+        .clone();
+    assert_eq!(report["minimality"]["ocr"]["status"], "failed");
+}
+
+#[cfg(unix)]
+#[test]
 fn required_ocr_mode_errors_when_command_is_missing() {
     let (_dir, _backend_dir, cwd, _changed) = prepare_ocr_fixture("fn main() {}\n", "");
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["quality"]["ocr"] = json!({
-        "mode": "required",
-        "command": "/definitely/missing/ocr"
+    update_config(&cwd, |config| {
+        config["quality"]["ocr"] = json!({
+            "mode": "required",
+            "command": "/definitely/missing/ocr"
+        });
     });
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
     let error = run(&CommandRequest {
         command: "review".into(),
         cwd: cwd.clone(),
@@ -849,13 +993,9 @@ fn required_ocr_mode_errors_when_command_is_missing() {
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
-    let report = sdd_core::state::runtime_store::read_change_field(
-        &cwd,
-        &state.current_change_id.clone().unwrap(),
-        "reports",
-    )
-    .unwrap()
-    .unwrap()["review"]
+    let report = read_change_field(&cwd, &state.current_change_id.unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
         .clone();
     assert_eq!(report["passed"], false);
     assert_eq!(report["minimality"]["ocr"]["status"], "unavailable");
@@ -865,9 +1005,9 @@ fn required_ocr_mode_errors_when_command_is_missing() {
 #[test]
 fn review_off_mode_does_not_run_ocr_or_warn() {
     let (_dir, _backend_dir, cwd, _changed) = prepare_ocr_fixture("fn main() {}\n", "");
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["quality"]["ocr"]["mode"] = json!("off");
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
+    update_config(&cwd, |config| {
+        config["quality"]["ocr"]["mode"] = json!("off");
+    });
     let result = run(&CommandRequest {
         command: "review".into(),
         cwd: cwd.clone(),
@@ -880,13 +1020,9 @@ fn review_off_mode_does_not_run_ocr_or_warn() {
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
-    let report = sdd_core::state::runtime_store::read_change_field(
-        &cwd,
-        &state.current_change_id.clone().unwrap(),
-        "reports",
-    )
-    .unwrap()
-    .unwrap()["review"]
+    let report = read_change_field(&cwd, &state.current_change_id.unwrap(), "reports")
+        .unwrap()
+        .unwrap()["review"]
         .clone();
     assert_eq!(report["minimality"]["ocr"]["status"], "off");
     assert_eq!(report["passed"], true);

@@ -1,10 +1,9 @@
 //! 内嵌最小 JSON Schema 校验器。
 //!
-//! 校验语义对齐原 `scripts/validate-schemas.mjs` 的内联 validator：
-//! 检查 required / enum / type（递归处理 properties 中的对象）。
-//! 升级补实现：pattern（regex crate）、minimum、布尔形式 additionalProperties: false、
-//! uniqueItems、基础 oneOf/anyOf、$ref（同文档根内引用）。
-//! 不引入外部 schema 校验 crate，保持依赖最小化。
+//! 只实现当前内嵌 schema 使用的关键字：type、required、properties、propertyNames、
+//! additionalProperties、items、enum、const、pattern、minimum、minLength、minItems、
+//! uniqueItems、oneOf、anyOf 与同文档 `$ref`。不接受隐式迁移，也不引入通用
+//! JSON Schema 运行时依赖。
 
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -13,8 +12,8 @@ use regex::Regex;
 
 use crate::error::SddError;
 
-/// 已注册的 6 个 schema（内嵌编译期内容）
-pub const SCHEMAS: [(&str, &str); 6] = [
+/// 已注册的 7 个 schema（内嵌编译期内容）
+pub const SCHEMAS: [(&str, &str); 7] = [
     (
         "state",
         include_str!("../../../../schemas/state.schema.json"),
@@ -36,16 +35,30 @@ pub const SCHEMAS: [(&str, &str); 6] = [
         "runtime",
         include_str!("../../../../schemas/runtime.schema.json"),
     ),
+    (
+        "config",
+        include_str!("../../../../schemas/config.schema.json"),
+    ),
 ];
+
+fn parsed_schemas() -> &'static [serde_json::Value; SCHEMAS.len()] {
+    static PARSED: OnceLock<[serde_json::Value; SCHEMAS.len()]> = OnceLock::new();
+    PARSED.get_or_init(|| {
+        std::array::from_fn(|index| {
+            serde_json::from_str(SCHEMAS[index].1)
+                .expect("内嵌 schema 必须在构建和测试阶段保持合法 JSON")
+        })
+    })
+}
+
 /// 校验文档；失败返回 E_STATE_CORRUPTED（含首个问题描述）
 pub fn validate_json(name: &str, doc: &serde_json::Value) -> Result<(), SddError> {
-    let (_, raw) = SCHEMAS
+    let index = SCHEMAS
         .iter()
-        .find(|(n, _)| *n == name)
+        .position(|(candidate, _)| *candidate == name)
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", &format!("未知 schema：{name}")))?;
-    let schema: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("schema 解析失败：{e}")))?;
-    let problems = check_against(&schema, doc, "", &schema);
+    let schema = &parsed_schemas()[index];
+    let problems = check_against(schema, doc, "", schema);
     match problems.first() {
         Some(p) => Err(SddError::new(
             "E_STATE_CORRUPTED",
@@ -120,11 +133,13 @@ fn check_against(
     }
 
     // required
-    if let Some(required) = schema.get("required").and_then(|v| v.as_array()) {
-        for field in required {
-            if let Some(field_name) = field.as_str() {
-                if !doc.get(field_name).is_some() {
-                    problems.push(format!("{path}{field_name}：缺少必填字段（required）"));
+    if doc.is_object() {
+        if let Some(required) = schema.get("required").and_then(|v| v.as_array()) {
+            for field in required {
+                if let Some(field_name) = field.as_str() {
+                    if doc.get(field_name).is_none() {
+                        problems.push(format!("{path}{field_name}：缺少必填字段（required）"));
+                    }
                 }
             }
         }
@@ -164,6 +179,31 @@ fn check_against(
     if let Some(enum_values) = schema.get("enum").and_then(|v| v.as_array()) {
         if !enum_values.iter().any(|v| v == doc) {
             problems.push(format!("{path}：不在枚举范围内"));
+        }
+    }
+
+    // const
+    if let Some(expected) = schema.get("const") {
+        if doc != expected {
+            problems.push(format!("{path}：不等于 const 约束值"));
+        }
+    }
+
+    // minLength（按 Unicode 标量值计数）
+    if let Some(minimum) = schema.get("minLength").and_then(|v| v.as_u64()) {
+        if let Some(value) = doc.as_str() {
+            if u64::try_from(value.chars().count()).is_ok_and(|length| length < minimum) {
+                problems.push(format!("{path}：字符串短于 minLength {minimum}"));
+            }
+        }
+    }
+
+    // minItems
+    if let Some(minimum) = schema.get("minItems").and_then(|v| v.as_u64()) {
+        if let Some(items) = doc.as_array() {
+            if u64::try_from(items.len()).is_ok_and(|length| length < minimum) {
+                problems.push(format!("{path}：数组短于 minItems {minimum}"));
+            }
         }
     }
 
@@ -209,6 +249,16 @@ fn check_against(
                 }
             }
         }
+        if let (Some(name_schema), Some(object)) = (schema.get("propertyNames"), doc.as_object()) {
+            for name in object.keys() {
+                problems.extend(check_against(
+                    name_schema,
+                    &serde_json::Value::String(name.clone()),
+                    &format!("{path}{name}."),
+                    root,
+                ));
+            }
+        }
     }
     if let (Some(items), Some(arr)) = (schema.get("items"), doc.as_array()) {
         for (i, item) in arr.iter().enumerate() {
@@ -218,17 +268,16 @@ fn check_against(
     // additionalProperties: 对象形式 = 额外属性值枚举（tasks/artifacts 的 value 枚举）
     if let Some(additional) = schema
         .get("additionalProperties")
-        .and_then(|v| v.as_object())
+        .filter(|value| value.is_object())
     {
         if let Some(obj) = doc.as_object() {
-            let additional_value = serde_json::Value::Object(additional.clone());
             let properties = schema.get("properties").and_then(|v| v.as_object());
             for (key, value) in obj {
                 if properties.is_some_and(|declared| declared.contains_key(key)) {
                     continue;
                 }
                 problems.extend(check_against(
-                    &additional_value,
+                    additional,
                     value,
                     &format!("{path}{key}."),
                     root,
@@ -251,11 +300,6 @@ fn check_against(
     }
 
     problems
-}
-
-/// 全部 schema 名称
-pub fn schema_names() -> Vec<&'static str> {
-    SCHEMAS.iter().map(|(n, _)| *n).collect()
 }
 
 #[cfg(test)]
@@ -297,6 +341,33 @@ mod tests {
             &schema,
         )
         .is_empty());
+    }
+
+    #[test]
+    fn scalar_and_collection_size_keywords_are_enforced() {
+        let string_schema = json!({ "type": "string", "minLength": 2, "const": "ok" });
+        assert!(check_against(&string_schema, &json!("ok"), "", &string_schema).is_empty());
+        assert!(!check_against(&string_schema, &json!("o"), "", &string_schema).is_empty());
+
+        let array_schema = json!({ "type": "array", "minItems": 1 });
+        assert!(!check_against(&array_schema, &json!([]), "", &array_schema).is_empty());
+
+        let nullable = json!({
+            "type": ["object", "null"],
+            "required": ["value"],
+            "properties": { "value": { "type": "string" } }
+        });
+        assert!(check_against(&nullable, &json!(null), "", &nullable).is_empty());
+    }
+
+    #[test]
+    fn property_names_are_validated() {
+        let schema = json!({
+            "type": "object",
+            "propertyNames": { "pattern": "^TASK-[0-9]+$" }
+        });
+        assert!(check_against(&schema, &json!({ "TASK-1": "ok" }), "", &schema).is_empty());
+        assert!(!check_against(&schema, &json!({ "task-1": "bad" }), "", &schema).is_empty());
     }
 
     #[test]

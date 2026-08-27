@@ -28,11 +28,34 @@ fn init_creates_sdd_and_index_ready() {
     .unwrap();
     let config = &runtime["config"];
     assert_eq!(config["hostAdapter"], "codex");
-    assert!(config.get("plugins").is_none());
+    let config_keys: std::collections::BTreeSet<&str> = config
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        config_keys,
+        [
+            "audit",
+            "contextPack",
+            "hostAdapter",
+            "quality",
+            "schemaVersion",
+            "workflow",
+        ]
+        .into_iter()
+        .collect()
+    );
     assert_eq!(runtime["config"]["quality"]["ocr"]["mode"], "auto");
     assert_eq!(runtime["config"]["quality"]["ocr"]["command"], "ocr");
     assert!(runtime["index"]["summary"].is_string());
     assert!(runtime["index"]["diagnostics"].is_array());
+    sdd_core::state::artifact_store::verify_artifacts(
+        dir.path().to_string_lossy().as_ref(),
+        ["index:knowledge", "index:summary"],
+    )
+    .unwrap();
     assert!(!dir.path().join(".sdd/index").exists());
     assert!(dir
         .path()
@@ -40,7 +63,12 @@ fn init_creates_sdd_and_index_ready() {
         .exists());
     assert!(dir.path().join(".codex/agents/sdd-explorer.toml").exists());
     assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
+    assert!(dir
+        .path()
+        .join(".codex/agents/sdd-worker-complex.toml")
+        .exists());
     assert!(dir.path().join(".codex/agents/sdd-reviewer.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-architect.toml").exists());
     for obsolete in [
         "codebase-summary.md",
         "package-structure.md",
@@ -69,6 +97,25 @@ fn status_before_init_is_not_initialized() {
     assert_eq!(result.next.as_deref(), Some("sdd init"));
 }
 
+#[cfg(unix)]
+#[test]
+fn status_rejects_dangling_runtime_symlink() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join(".sdd")).unwrap();
+    std::os::unix::fs::symlink(
+        dir.path().join("outside-runtime.json"),
+        dir.path().join(".sdd/runtime.json"),
+    )
+    .unwrap();
+    let error = run(&CommandRequest {
+        command: "status".into(),
+        cwd: dir.path().to_string_lossy().into_owned(),
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_SYMLINK_BLOCKED");
+}
+
 #[test]
 fn init_twice_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
@@ -85,6 +132,7 @@ fn build_on_uninitialized_returns_not_initialized() {
     let err = run(&req(dir.path(), "build")).unwrap_err();
     assert_eq!(err.code, "E_NOT_INITIALIZED");
     assert_eq!(err.exit_code, 3);
+    assert!(!dir.path().join(".sdd").exists());
 }
 
 #[test]
@@ -103,6 +151,29 @@ fn codebase_status_returns_codegraph_provider() {
             .map(|a| a.len()),
         Some(1)
     );
+}
+
+#[test]
+fn codebase_index_requires_initialized_runtime() {
+    let dir = tempfile::tempdir().unwrap();
+    let error = sdd_core::commands::codebase::run_codebase(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&serde_json::json!({ "sub": "index" })),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_NOT_INITIALIZED");
+    assert!(!dir.path().join(".sdd").exists());
+}
+
+#[test]
+fn auto_on_uninitialized_project_does_not_create_state_directory() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let error = run(&req(dir.path(), "auto")).unwrap_err();
+
+    assert_eq!(error.code, "E_NOT_INITIALIZED");
+    assert!(!dir.path().join(".sdd").exists());
 }
 
 #[test]
@@ -173,7 +244,7 @@ fn empty_project_structure_policy_is_persisted_without_warning() {
         .warnings
         .unwrap_or_default()
         .iter()
-        .any(|warning| warning["code"] == "W_EMPTY_PROJECT"));
+        .any(|warning| warning.code == "W_EMPTY_PROJECT"));
     let runtime: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".sdd/runtime.json")).unwrap(),
     )

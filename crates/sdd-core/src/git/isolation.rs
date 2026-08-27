@@ -1,10 +1,10 @@
 //! 可选 Git worktree 隔离：只创建或验证工作区，不执行 merge/push/reset/clean/删除。
 
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use crate::error::SddError;
-use crate::knowledge::provider::run_command;
+use crate::subprocess::run_command;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorktreeHandle {
@@ -16,29 +16,17 @@ pub struct WorktreeHandle {
 pub struct GitIsolationManager;
 
 impl GitIsolationManager {
-    pub fn enabled(cwd: &str) -> Result<bool, SddError> {
-        let config = crate::state::runtime_store::read_config(cwd)?;
-        if config == serde_json::Value::Null || config == serde_json::json!({}) {
-            return Ok(false);
-        }
-        if !config
-            .get("workflow")
-            .is_some_and(serde_json::Value::is_object)
-        {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                "runtime.json 的 config 必须包含 workflow 对象",
-            ));
-        }
-        Ok(config
+    pub fn enabled(config: &serde_json::Value) -> Result<bool, SddError> {
+        crate::schema::validate_json("config", config)?;
+        config
             .pointer("/workflow/gitIsolation")
             .and_then(|value| value.as_bool())
-            .or_else(|| {
-                config
-                    .pointer("/git/createWorktree")
-                    .and_then(|value| value.as_bool())
+            .ok_or_else(|| {
+                SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "runtime.json 缺少 workflow.gitIsolation",
+                )
             })
-            .unwrap_or(false))
     }
 
     pub fn ensure_worktree(cwd: &str, change_id: &str) -> Result<WorktreeHandle, SddError> {
@@ -48,19 +36,14 @@ impl GitIsolationManager {
             .map_err(|e| SddError::new("E_PATH_OUTSIDE_REPO", &format!("无法解析仓库路径：{e}")))?;
         let baseline_commit = git_stdout(&root, &["rev-parse", "HEAD"])?;
         let branch = format!("sdd/{change_id}");
-        let path = root.join(".sdd/worktrees").join(change_id);
+        let worktrees_root = crate::state::paths::worktrees_dir(cwd, true)?;
+        let path = worktrees_root.join(change_id);
         let registered = worktrees(&root)?
             .into_iter()
             .find(|entry| same_worktree(&entry.path, &path));
 
         match (path.exists(), registered) {
             (false, None) => {
-                fs::create_dir_all(path.parent().expect("worktree 必须有父目录")).map_err(|e| {
-                    SddError::new(
-                        "E_STATE_CORRUPTED",
-                        &format!("创建 worktree 父目录失败：{e}"),
-                    )
-                })?;
                 let path_text = display_path(&path);
                 let output = git_output(
                     &root,
@@ -117,10 +100,6 @@ impl GitIsolationManager {
             baseline_commit,
         })
     }
-
-    pub fn release(_handle: WorktreeHandle) -> Result<(), SddError> {
-        Ok(())
-    }
 }
 
 /// Windows 下 `canonicalize()` 会返回 `\\?\` 前缀路径，git 不认且与
@@ -147,6 +126,7 @@ fn same_worktree(a: &Path, b: &Path) -> bool {
     }
 }
 
+#[derive(Debug)]
 struct WorktreeEntry {
     path: PathBuf,
     head: String,
@@ -154,29 +134,62 @@ struct WorktreeEntry {
 }
 
 fn worktrees(root: &Path) -> Result<Vec<WorktreeEntry>, SddError> {
-    let output = git_stdout(root, &["worktree", "list", "--porcelain"])?;
+    let output = git_output(root, &["worktree", "list", "--porcelain", "-z"])?;
+    if !output.status.success() {
+        return Err(git_error("读取 Git worktree 列表失败", &output));
+    }
+    parse_worktrees(&output.stdout)
+}
+
+fn parse_worktrees(output: &[u8]) -> Result<Vec<WorktreeEntry>, SddError> {
     let mut entries = Vec::new();
     let mut path = None;
     let mut head = None;
     let mut branch = None;
-    for line in output.lines().chain(std::iter::once("")) {
-        if line.is_empty() {
-            if let (Some(path), Some(head)) = (path.take(), head.take()) {
+    for field in output.split(|byte| *byte == 0) {
+        if field.is_empty() {
+            if path.is_some() || head.is_some() || branch.is_some() {
+                let entry_path = path.take().ok_or_else(malformed_worktree_output)?;
+                let entry_head = head.take().ok_or_else(malformed_worktree_output)?;
                 entries.push(WorktreeEntry {
-                    path,
-                    head,
+                    path: entry_path,
+                    head: entry_head,
                     branch: branch.take(),
                 });
             }
-        } else if let Some(value) = line.strip_prefix("worktree ") {
-            path = Some(PathBuf::from(value));
-        } else if let Some(value) = line.strip_prefix("HEAD ") {
-            head = Some(value.to_string());
-        } else if let Some(value) = line.strip_prefix("branch refs/heads/") {
-            branch = Some(value.to_string());
+            continue;
+        }
+        let field = std::str::from_utf8(field).map_err(|_| {
+            SddError::new(
+                "E_PATH_OUTSIDE_REPO",
+                "Git worktree 列表包含非 UTF-8 字段，当前 JSON 契约无法安全表示",
+            )
+        })?;
+        if let Some(value) = field.strip_prefix("worktree ") {
+            if path.replace(PathBuf::from(value)).is_some() {
+                return Err(malformed_worktree_output());
+            }
+        } else if let Some(value) = field.strip_prefix("HEAD ") {
+            if head.replace(value.to_string()).is_some() {
+                return Err(malformed_worktree_output());
+            }
+        } else if let Some(value) = field.strip_prefix("branch refs/heads/") {
+            if branch.replace(value.to_string()).is_some() {
+                return Err(malformed_worktree_output());
+            }
         }
     }
+    if path.is_some() || head.is_some() || branch.is_some() {
+        return Err(malformed_worktree_output());
+    }
     Ok(entries)
+}
+
+fn malformed_worktree_output() -> SddError {
+    SddError::new(
+        "E_COMPONENT_UNAVAILABLE",
+        "Git worktree porcelain 输出结构不完整",
+    )
 }
 
 pub fn validate_change_id(change_id: &str) -> Result<(), SddError> {
@@ -199,19 +212,21 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String, SddError> {
     if !output.status.success() {
         return Err(git_error("Git 命令失败", &output));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    String::from_utf8(output.stdout)
+        .map(|text| text.trim().to_string())
+        .map_err(|_| SddError::new("E_COMPONENT_UNAVAILABLE", "Git 命令返回了非 UTF-8 文本"))
 }
 
 fn git_output(cwd: &Path, args: &[&str]) -> Result<std::process::Output, SddError> {
-    // 与 inspector.rs 一致：子命令前加全局参数（关闭 fsmonitor 与 pager）；
-    // GIT_TERMINAL_PROMPT=0 由 run_command 的内部加固统一注入（签名固定）。
+    // 与 inspector.rs 一致：关闭 fsmonitor、pager 与交互式凭据提示。
     let mut full_args = vec!["-c", "core.fsmonitor=false", "--no-pager"];
     full_args.extend_from_slice(args);
     run_command(
         Path::new("git"),
         &full_args,
-        cwd.to_string_lossy().as_ref(),
-        30_000,
+        cwd,
+        Duration::from_secs(30),
+        &[("GIT_TERMINAL_PROMPT", "0")],
     )
     .map_err(|e| SddError::new("E_COMPONENT_UNAVAILABLE", &format!("执行 git 失败：{e}")))
 }
@@ -224,4 +239,35 @@ fn git_error(message: &str, output: &std::process::Output) -> SddError {
             String::from_utf8_lossy(&output.stderr).trim()
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_worktrees;
+
+    #[test]
+    fn worktree_parser_uses_nul_delimited_porcelain() {
+        let entries = parse_worktrees(
+            b"worktree /repo/main\0HEAD abc\0branch refs/heads/main\0\0worktree /repo/feature\nname\0HEAD def\0detached\0\0",
+        )
+        .unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].branch.as_deref(), Some("main"));
+        assert_eq!(entries[1].path.to_string_lossy(), "/repo/feature\nname");
+        assert_eq!(entries[1].branch, None);
+    }
+
+    #[test]
+    fn worktree_parser_rejects_incomplete_and_non_utf8_output() {
+        assert_eq!(
+            parse_worktrees(b"worktree /repo\0\0").unwrap_err().code,
+            "E_COMPONENT_UNAVAILABLE"
+        );
+        assert_eq!(
+            parse_worktrees(b"worktree \xff\0HEAD abc\0\0")
+                .unwrap_err()
+                .code,
+            "E_PATH_OUTSIDE_REPO"
+        );
+    }
 }

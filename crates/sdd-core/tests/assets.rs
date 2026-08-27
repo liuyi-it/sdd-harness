@@ -27,10 +27,18 @@ fn init_defaults_to_codex_native_resources() {
         .exists());
     assert!(dir.path().join(".codex/agents/sdd-explorer.toml").exists());
     assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
+    assert!(dir
+        .path()
+        .join(".codex/agents/sdd-worker-complex.toml")
+        .exists());
     assert!(dir.path().join(".codex/agents/sdd-reviewer.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-architect.toml").exists());
     assert!(!dir.path().join(".opencode").exists());
 
-    let config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
+    let config = sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .read()
+        .unwrap()
+        .config;
     assert_eq!(config["hostAdapter"], "codex");
     assert!(config.get("plugins").is_none());
 }
@@ -46,18 +54,55 @@ fn codex_assets_define_focused_skill_and_subagent_roles() {
     assert!(skill.contains("name: sdd-harness"));
     assert!(skill.contains("sdd-explorer"));
     assert!(skill.contains("sdd-worker"));
+    assert!(skill.contains("sdd-worker-complex"));
     assert!(skill.contains("sdd-reviewer"));
+    assert!(skill.contains("sdd-architect"));
     assert!(skill.contains("不要并行编辑共享文件"));
+    assert!(skill.contains("不得无声降级"));
 
-    for (file, name, sandbox) in [
-        ("sdd-explorer.toml", "sdd-explorer", "read-only"),
-        ("sdd-worker.toml", "sdd-worker", "workspace-write"),
-        ("sdd-reviewer.toml", "sdd-reviewer", "read-only"),
+    for (file, name, model, effort, sandbox) in [
+        (
+            "sdd-explorer.toml",
+            "sdd-explorer",
+            "gpt-5.6-terra",
+            "max",
+            "read-only",
+        ),
+        (
+            "sdd-worker.toml",
+            "sdd-worker",
+            "gpt-5.6-luna",
+            "max",
+            "workspace-write",
+        ),
+        (
+            "sdd-worker-complex.toml",
+            "sdd-worker-complex",
+            "gpt-5.6-terra",
+            "max",
+            "workspace-write",
+        ),
+        (
+            "sdd-reviewer.toml",
+            "sdd-reviewer",
+            "gpt-5.6-terra",
+            "max",
+            "read-only",
+        ),
+        (
+            "sdd-architect.toml",
+            "sdd-architect",
+            "gpt-5.6-sol",
+            "xhigh",
+            "read-only",
+        ),
     ] {
         let content = std::fs::read_to_string(dir.path().join(".codex/agents").join(file)).unwrap();
         assert!(content.contains(&format!("name = \"{name}\"")));
-        assert!(content.contains("model_reasoning_effort"));
+        assert!(content.contains(&format!("model = \"{model}\"")));
+        assert!(content.contains(&format!("model_reasoning_effort = \"{effort}\"")));
         assert!(content.contains(&format!("sandbox_mode = \"{sandbox}\"")));
+        assert!(content.contains("developer_instructions"));
     }
 }
 
@@ -75,26 +120,26 @@ fn init_writes_omp_native_resources_only_when_explicitly_selected() {
         .path()
         .join(".agents/skills/sdd-harness/SKILL.md")
         .exists());
-    let config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
+    let config = sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .read()
+        .unwrap()
+        .config;
     assert_eq!(config["hostAdapter"], "omp");
 }
 
 #[test]
-fn reinit_replaces_legacy_plugin_config_with_current_host_adapter() {
+fn config_store_rejects_obsolete_fields_and_versions() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy();
     run_init(&cwd, Some("omp"));
 
-    let mut config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    config["schemaVersion"] = serde_json::json!(2);
-    config["plugins"] = serde_json::json!({ "opencode": { "enabled": true } });
-    sdd_core::state::runtime_store::write_config(&cwd, config).unwrap();
-
-    run_init(&cwd, Some("codex"));
-    let config = sdd_core::state::runtime_store::read_config(&cwd).unwrap();
-    assert_eq!(config["schemaVersion"], 3);
-    assert_eq!(config["hostAdapter"], "codex");
-    assert!(config.get("plugins").is_none());
+    let error = sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .update(|runtime| {
+            runtime.config["schemaVersion"] = serde_json::json!(2);
+            runtime.config["plugins"] = serde_json::json!({ "opencode": { "enabled": true } });
+        })
+        .unwrap_err();
+    assert_eq!(error.code, "E_STATE_CORRUPTED");
 }
 
 #[test]
@@ -107,12 +152,12 @@ fn init_is_idempotent_and_reports_overwritten_codex_template() {
         .as_ref()
         .unwrap()
         .iter()
-        .any(|warning| warning["code"] == "W_ADAPTER_FILE"));
+        .any(|warning| warning.code == "W_ADAPTER_FILE"));
 
     let second = run_init(&cwd, Some("codex"));
     assert!(second.warnings.as_ref().is_none_or(|warnings| warnings
         .iter()
-        .all(|warning| warning["code"] != "W_ADAPTER_FILE")));
+        .all(|warning| warning.code != "W_ADAPTER_FILE")));
 
     let skill_path = dir.path().join(".agents/skills/sdd-harness/SKILL.md");
     std::fs::write(&skill_path, "本地修改").unwrap();
@@ -122,7 +167,7 @@ fn init_is_idempotent_and_reports_overwritten_codex_template() {
         .as_ref()
         .unwrap()
         .iter()
-        .any(|warning| warning["code"] == "W_ADAPTER_OVERWRITE"));
+        .any(|warning| warning.code == "W_ADAPTER_OVERWRITE"));
     assert!(std::fs::read_to_string(skill_path)
         .unwrap()
         .contains("# SDD Harness"));
@@ -137,6 +182,9 @@ fn init_rejects_removed_or_invalid_host_adapter_values() {
     for value in [
         serde_json::json!("opencode"),
         serde_json::json!("claude"),
+        serde_json::json!("Codex"),
+        serde_json::json!("OMP"),
+        serde_json::json!(" codex"),
         serde_json::json!(["codex"]),
     ] {
         let result = sdd_core::run(&CommandRequest {
@@ -147,10 +195,49 @@ fn init_rejects_removed_or_invalid_host_adapter_values() {
         assert_eq!(result.unwrap_err().code, "E_INVALID_PHASE_COMMAND");
     }
 
-    let legacy = sdd_core::run(&CommandRequest {
+    let removed_adapter = sdd_core::run(&CommandRequest {
         command: "init".into(),
         cwd,
         args: Some(serde_json::json!({ "agent": "opencode" })),
     });
-    assert_eq!(legacy.unwrap_err().code, "E_INVALID_PHASE_COMMAND");
+    assert_eq!(removed_adapter.unwrap_err().code, "E_INVALID_PHASE_COMMAND");
+}
+
+#[cfg(unix)]
+#[test]
+fn init_rejects_symlinked_agent_asset_paths() {
+    use std::os::unix::fs::symlink;
+
+    let target_project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(target_project.path().join(".codex/agents")).unwrap();
+    let external_file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(external_file.path(), "外部内容").unwrap();
+    symlink(
+        external_file.path(),
+        target_project.path().join(".codex/agents/sdd-worker.toml"),
+    )
+    .unwrap();
+    let error = sdd_core::run(&CommandRequest {
+        command: "init".into(),
+        cwd: target_project.path().to_string_lossy().into_owned(),
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_SECURITY_BLOCKED");
+    assert_eq!(
+        std::fs::read_to_string(external_file.path()).unwrap(),
+        "外部内容"
+    );
+
+    let parent_project = tempfile::tempdir().unwrap();
+    let external_dir = tempfile::tempdir().unwrap();
+    symlink(external_dir.path(), parent_project.path().join(".codex")).unwrap();
+    let error = sdd_core::run(&CommandRequest {
+        command: "init".into(),
+        cwd: parent_project.path().to_string_lossy().into_owned(),
+        args: None,
+    })
+    .unwrap_err();
+    assert_eq!(error.code, "E_SECURITY_BLOCKED");
+    assert!(!external_dir.path().join("agents/sdd-worker.toml").exists());
 }

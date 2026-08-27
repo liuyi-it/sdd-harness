@@ -1,6 +1,5 @@
 //! 对外稳定契约：命令集合、阶段枚举、错误码到退出码映射、请求/响应结构。
 //!
-//! 翻译自 早期 Node 实现，字段名与枚举值保持一致。
 //! `codebase.provider` 使用 `codegraph | fallback-file-scan`。
 
 use serde::{Deserialize, Serialize};
@@ -26,52 +25,34 @@ impl HostAdapter {
     }
 
     pub fn parse(raw: &str) -> Option<Self> {
-        let raw = raw.trim();
-        if raw.eq_ignore_ascii_case("codex") {
-            Some(Self::Codex)
-        } else if raw.eq_ignore_ascii_case("omp") {
-            Some(Self::Omp)
-        } else {
-            None
+        match raw {
+            "codex" => Some(Self::Codex),
+            "omp" => Some(Self::Omp),
+            _ => None,
         }
     }
 }
 
-/// 命令集合（12 个，与 Node 版一致）
-pub const COMMANDS: [&str; 12] = [
-    "init", "auto", "new", "change", "design", "plan", "build", "verify", "review", "archive",
-    "status", "codebase",
-];
-
-/// 阶段枚举（22 个，与 Node 版一致）
-pub const PHASES: [&str; 22] = [
+/// 当前工作流会真实持久化的阶段枚举。
+pub const PHASES: [&str; 14] = [
     "NOT_INITIALIZED",
     "INITIALIZING",
-    "INDEXING",
     "INDEX_READY",
     "NEW_STARTED",
     "CLARIFYING",
     "SPEC_READY",
-    "DESIGNING",
     "DESIGN_READY",
-    "PLANNING",
     "PLAN_READY",
-    "BUILDING",
     "BUILD_WAITING_AGENT",
     "BUILD_READY",
-    "VERIFYING",
     "VERIFY_READY",
-    "REVIEWING",
     "REVIEW_READY",
-    "ARCHIVING",
     "ARCHIVED",
-    "FAILED",
     "PAUSED",
 ];
 
-/// 错误码 → 退出码映射表（与 Node 版 ERROR_EXIT_CODES 逐字一致）。
-/// `error_exit_codes` 与 `is_known_error_code` 共用同一张表，避免两处漂移。
-const ERROR_EXIT_CODES: [(&str, i32); 33] = [
+/// 错误码 → 退出码的唯一映射表，未登记错误统一按内部错误退出。
+const ERROR_EXIT_CODES: [(&str, i32); 30] = [
     ("E_NOT_INITIALIZED", 3),
     ("E_INVALID_PHASE_COMMAND", 3),
     ("E_ACTIVE_CHANGE_EXISTS", 3),
@@ -80,7 +61,6 @@ const ERROR_EXIT_CODES: [(&str, i32); 33] = [
     ("E_INVALID_REQUIREMENT", 6),
     ("E_COMPONENT_UNAVAILABLE", 5),
     ("E_COMPONENT_INTEGRITY_FAILED", 10),
-    ("E_DEGRADED_MODE", 0),
     ("E_UNRESOLVED_BLOCKER", 6),
     ("E_VERIFY_REQUIRED", 3),
     ("E_REVIEW_REQUIRED", 3),
@@ -98,16 +78,14 @@ const ERROR_EXIT_CODES: [(&str, i32); 33] = [
     ("E_CONCURRENT_RUN", 9),
     ("E_LOCK_TIMEOUT", 9),
     ("E_TIMEOUT", 124),
-    ("E_INTERRUPTED", 130),
     ("E_STATE_CORRUPTED", 1),
     ("E_SECURITY_BLOCKED", 10),
     ("E_PATH_OUTSIDE_REPO", 10),
     ("E_SYMLINK_BLOCKED", 10),
-    ("E_PARALLEL_FILE_CONFLICT", 3),
     ("E_GENERATION_FAILED", 5),
 ];
 
-/// 错误码到退出码的映射（与 Node 版 ERROR_EXIT_CODES 逐字一致）
+/// 错误码到退出码的映射。
 pub fn error_exit_codes(code: &str) -> i32 {
     ERROR_EXIT_CODES
         .iter()
@@ -116,7 +94,7 @@ pub fn error_exit_codes(code: &str) -> i32 {
         .unwrap_or(1)
 }
 
-/// 结构化警告（对应 Node 版 CliWarning）
+/// 结构化警告。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CliWarning {
@@ -125,15 +103,27 @@ pub struct CliWarning {
     /// 人类可读警告信息
     pub message: String,
     /// 建议的下一步命令
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
-    /// 额外诊断详情
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub details: Option<serde_json::Value>,
+}
+
+impl CliWarning {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            next: None,
+        }
+    }
+
+    pub fn with_next(mut self, next: impl Into<String>) -> Self {
+        self.next = Some(next.into());
+        self
+    }
 }
 
 /// 验证命令（build next 的 verification 项）
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationCommand {
     pub command: String,
@@ -141,7 +131,7 @@ pub struct VerificationCommand {
 }
 
 /// 知识图谱提供方信息（provider 为 codegraph/fallback-file-scan）
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CodebaseProviderInfo {
     pub provider: String,
@@ -149,7 +139,7 @@ pub struct CodebaseProviderInfo {
 }
 
 /// Agent 行动要求（build next 返回此结构，结果通过 inline JSON 提交）。
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentActionRequired {
     #[serde(rename = "type")]
@@ -165,7 +155,7 @@ pub struct AgentActionRequired {
     /// 固定为 `inline-json`，提示 Adapter 使用 `build complete --result-json`。
     pub result_transport: String,
     pub codebase: CodebaseProviderInfo,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub policy_bundle: Option<serde_json::Value>,
 }
 
@@ -175,7 +165,7 @@ pub struct AgentActionRequired {
 pub struct CommandRequest {
     pub command: String,
     pub cwd: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub args: Option<serde_json::Value>,
 }
 
@@ -185,30 +175,30 @@ pub struct CommandRequest {
 pub struct CommandError {
     pub code: String,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
 }
 
-/// Core 响应结构（JSON 输出契约，camelCase 键名与 Node 版一致）
+/// Core 响应结构（JSON 输出契约使用 camelCase 键名）。
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CommandResult {
     pub ok: bool,
     pub state: String,
     pub exit_code: i32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub change_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub rendered: Option<RenderedOutput>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub warnings: Option<Vec<serde_json::Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warnings: Option<Vec<CliWarning>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub action_required: Option<AgentActionRequired>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<CommandError>,
 }
 
@@ -221,22 +211,6 @@ pub struct RenderedOutput {
 }
 
 impl CommandResult {
-    /// 构造一个成功的简单结果
-    pub fn ok(state: &str) -> Self {
-        Self {
-            ok: true,
-            state: state.to_string(),
-            exit_code: 0,
-            change_id: None,
-            next: None,
-            data: None,
-            rendered: None,
-            warnings: None,
-            action_required: None,
-            error: None,
-        }
-    }
-
     /// 从错误构造失败结果
     pub fn from_error(state: &str, error: &crate::error::SddError) -> Self {
         Self {
@@ -252,11 +226,4 @@ impl CommandResult {
             error: Some(error.to_command_error()),
         }
     }
-}
-
-/// 检查错误码是否为已知错误码
-pub fn is_known_error_code(code: &str) -> bool {
-    ERROR_EXIT_CODES
-        .iter()
-        .any(|(candidate, _)| *candidate == code)
 }

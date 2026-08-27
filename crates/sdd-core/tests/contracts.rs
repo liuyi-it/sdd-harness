@@ -19,7 +19,7 @@ fn command_result_serializes_camel_case() {
         error: None,
     };
     let json = serde_json::to_value(&result).unwrap();
-    // 键名必须是 camelCase（对齐 Node 版契约）
+    // 对外 JSON 契约固定使用 camelCase。
     assert!(json.get("exitCode").is_some(), "缺少 exitCode: {json}");
     assert!(json.get("changeId").is_some(), "缺少 changeId: {json}");
     assert!(json.get("exit_code").is_none(), "不允许 snake_case: {json}");
@@ -35,7 +35,7 @@ fn new_started_points_to_auto_resume() {
 }
 
 #[test]
-fn new_started_without_ids_reports_corruption_and_status() {
+fn new_started_without_ids_is_rejected_at_state_boundary() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
@@ -45,22 +45,14 @@ fn new_started_without_ids_reports_corruption_and_status() {
         args: None,
     })
     .unwrap();
-    sdd_core::state::StateStore::new(cwd.clone())
+    let error = sdd_core::state::StateStore::new(cwd)
         .update(|state| {
             state.current_phase = "NEW_STARTED".into();
             state.current_change_id = None;
             state.current_run_id = None;
         })
-        .unwrap();
-
-    let error = sdd_core::run(&sdd_core::contracts::CommandRequest {
-        command: "verify".into(),
-        cwd,
-        args: None,
-    })
-    .unwrap_err();
+        .unwrap_err();
     assert_eq!(error.code, "E_STATE_CORRUPTED");
-    assert_eq!(error.next.as_deref(), Some("sdd status"));
 }
 
 #[test]
@@ -122,7 +114,6 @@ fn task_definition_serializes_camel_case() {
         id: "TASK-001-RED".to_string(),
         title: "先写失败测试：x".to_string(),
         phase: "RED".to_string(),
-        status: "PENDING".to_string(),
         requirements: vec!["REQ-001".to_string()],
         scenarios: vec![],
         depends_on: vec![],
@@ -131,11 +122,10 @@ fn task_definition_serializes_camel_case() {
         forbidden_files: vec![],
         verification: vec![],
         done_criteria: vec![],
-        slice_type: None,
-        user_visible_outcome: None,
-        acceptance_criteria: None,
-        test_seam: None,
-        policy_refs: None,
+        slice_type: "VERTICAL".to_string(),
+        user_visible_outcome: "用户可见行为通过验证".to_string(),
+        acceptance_criteria: vec!["验收通过".to_string()],
+        test_seam: "tests/x.rs".to_string(),
     };
     let json = serde_json::to_value(&task).unwrap();
     assert!(json.get("dependsOn").is_some(), "缺少 dependsOn: {json}");
@@ -145,7 +135,7 @@ fn task_definition_serializes_camel_case() {
 
 #[test]
 fn report_serializes_camel_case() {
-    let report = sdd_core::quality::Report::new("verify", Some("change-1".to_string()));
+    let report = sdd_core::quality::Report::new("verify", "change-1".to_string());
     let json = serde_json::to_value(&report).unwrap();
     assert!(json.get("changeId").is_some());
     assert!(sdd_core::schema::validate_json("report", &json).is_ok());
@@ -153,7 +143,7 @@ fn report_serializes_camel_case() {
 
 #[test]
 fn error_exit_codes_match_contract() {
-    // 抽查关键错误码（与 Node 版 ERROR_EXIT_CODES 一致）
+    // 抽查当前公开契约中的关键错误码。
     assert_eq!(error_exit_codes("E_NOT_INITIALIZED"), 3);
     assert_eq!(error_exit_codes("E_SECURITY_BLOCKED"), 10);
     assert_eq!(error_exit_codes("E_VERIFY_FAILED"), 7);
@@ -165,9 +155,6 @@ fn error_exit_codes_match_contract() {
     assert_eq!(error_exit_codes("E_REVIEW_BACKEND_FAILED"), 8);
     assert_eq!(error_exit_codes("E_REVIEW_BACKEND_INVALID_OUTPUT"), 8);
     assert_eq!(error_exit_codes("E_GENERATION_FAILED"), 5);
-    assert!(sdd_core::contracts::is_known_error_code(
-        "E_GENERATION_FAILED"
-    ));
     // 未知错误码兜底 1
     assert_eq!(error_exit_codes("E_UNKNOWN"), 1);
 }
@@ -185,7 +172,7 @@ fn status_json_matches_contract_shape() {
     .unwrap();
     let result = sdd_core::run(&sdd_core::contracts::CommandRequest {
         command: "status".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: None,
     })
     .unwrap();

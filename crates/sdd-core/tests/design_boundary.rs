@@ -41,7 +41,18 @@ fn design_wraps_and_truncates_codebase_summary() {
         summary.push_str("代码库上下文填充");
     }
     summary.push_str("SENTINEL-END-在末尾");
-    sdd_core::state::runtime_store::write_index(&cwd, json!([]), summary).unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            let prefix = runtime.index["summary"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap();
+            runtime.index["summary"] = json!(format!("{prefix}\n{summary}"));
+            runtime.index["updatedAt"] = json!("2026-01-01T00:00:00Z");
+        })
+        .unwrap();
 
     let result = run(&CommandRequest {
         command: "design".into(),
@@ -64,13 +75,13 @@ fn design_wraps_and_truncates_codebase_summary() {
             .join("design.md"),
     )
     .unwrap();
-    let machine_design =
-        sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "design")
-            .unwrap()
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .to_string();
+    let machine_design = sdd_core::state::RuntimeStore::new(cwd)
+        .read()
+        .unwrap()
+        .changes[&change_id]["design"]
+        .as_str()
+        .unwrap()
+        .to_string();
     for document in [&design_md, &machine_design] {
         assert!(document.contains(BEGIN_MARKER), "缺少 BEGIN 边界标记");
         assert!(document.contains(END_MARKER), "缺少 END 边界标记");

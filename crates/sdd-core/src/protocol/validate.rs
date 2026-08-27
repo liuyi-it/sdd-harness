@@ -1,4 +1,4 @@
-//! Agent Task Protocol 校验（翻译自 早期 Node 实现）。
+//! Agent Task Protocol 校验。
 //!
 //! TaskExecutionResult 是 Agent 提交任务结果的稳定结构：
 //! taskId / status(completed|failed) / evidence / verification / filesChanged。
@@ -21,9 +21,7 @@ const MAX_TASK_ID_CHARS: usize = 128;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskResultEvidence {
-    pub evidence_type: String,
     pub command: String,
-    pub output: String,
     pub passed: Option<bool>,
     pub expected_failure: Option<bool>,
 }
@@ -32,15 +30,13 @@ pub struct TaskResultEvidence {
 pub struct TaskResultVerification {
     pub command: String,
     pub args: Vec<String>,
-    pub passed: Option<bool>,
-    pub output: Option<String>,
+    pub passed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskExecutionResult {
     pub task_id: String,
     pub status: String,
-    pub message: Option<String>,
     pub evidence: Vec<TaskResultEvidence>,
     pub verification: Vec<TaskResultVerification>,
     pub files_changed: Vec<String>,
@@ -153,13 +149,9 @@ pub fn validate_task_result(raw: &serde_json::Value) -> Result<TaskExecutionResu
 
     let mut evidence = Vec::new();
     for item in evidence_arr {
-        let evidence_type = required_string(item, "type")?;
         let command = required_string(item, "command")?;
-        let output = required_string(item, "output")?;
         evidence.push(TaskResultEvidence {
-            evidence_type,
             command,
-            output,
             passed: optional_bool(item, "passed")?,
             expected_failure: optional_bool(item, "expectedFailure")?,
         });
@@ -183,8 +175,10 @@ pub fn validate_task_result(raw: &serde_json::Value) -> Result<TaskExecutionResu
             Ok(TaskResultVerification {
                 command: required_string(item, "command")?,
                 args: optional_string_array(item, "args")?,
-                passed: optional_bool(item, "passed")?,
-                output: optional_string(item, "output")?,
+                passed: item
+                    .get("passed")
+                    .and_then(|value| value.as_bool())
+                    .ok_or_else(|| invalid("verification.passed 必须是布尔值"))?,
             })
         })
         .collect::<Result<Vec<_>, SddError>>()?;
@@ -192,10 +186,6 @@ pub fn validate_task_result(raw: &serde_json::Value) -> Result<TaskExecutionResu
     Ok(TaskExecutionResult {
         task_id: task_id.to_string(),
         status: status.to_string(),
-        message: raw
-            .get("message")
-            .and_then(|v| v.as_str())
-            .map(String::from),
         evidence,
         verification,
         files_changed,
@@ -207,16 +197,6 @@ fn required_string(raw: &serde_json::Value, field: &str) -> Result<String, SddEr
         .and_then(|value| value.as_str())
         .map(String::from)
         .ok_or_else(|| invalid(&format!("evidence.{field} 必须是字符串")))
-}
-
-fn optional_string(raw: &serde_json::Value, field: &str) -> Result<Option<String>, SddError> {
-    match raw.get(field) {
-        None => Ok(None),
-        Some(value) => value
-            .as_str()
-            .map(|value| Some(value.to_string()))
-            .ok_or_else(|| invalid(&format!("{field} 必须是字符串"))),
-    }
 }
 
 fn optional_string_array(raw: &serde_json::Value, field: &str) -> Result<Vec<String>, SddError> {

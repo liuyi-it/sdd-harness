@@ -1,12 +1,9 @@
 //! Alibaba Open Code Review 的 CLI 适配器与输出校验。
 
-use std::collections::BTreeSet;
-use std::io::{self, Read};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io;
 use std::path::Path;
-use std::process::{Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -49,13 +46,11 @@ const INTERPRETER_BLACKLIST: [&str; 18] = [
 ];
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct OcrComment {
     pub path: String,
     pub content: String,
-    #[serde(default)]
     pub existing_code: Option<String>,
-    #[serde(default)]
     pub suggestion_code: Option<String>,
     pub start_line: u32,
     pub end_line: u32,
@@ -64,23 +59,70 @@ pub struct OcrComment {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct OcrOutput {
     pub status: String,
-    #[serde(default)]
+    pub llm: OcrLlm,
+    pub message: Option<String>,
+    pub summary: OcrSummary,
+    pub tool_calls: OcrToolCalls,
     pub comments: Vec<OcrComment>,
-    #[serde(default)]
-    pub session_id: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    #[serde(default)]
-    pub files_reviewed: Option<u32>,
+    pub manifest: OcrManifest,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OcrLlm {
+    pub provider: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OcrSummary {
+    pub files_reviewed: u32,
+    pub comments: u32,
+    pub total_tokens: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub elapsed: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OcrToolCalls {
+    pub total: u64,
+    pub by_tool: BTreeMap<String, u64>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OcrManifest {
+    pub schema_version: String,
+    pub run_id: String,
+    pub operation: String,
+    pub terminal_state: String,
+    pub repository: serde_json::Value,
+    pub input: serde_json::Value,
+    pub execution: serde_json::Value,
+    pub coverage: OcrCoverage,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct OcrCoverage {
+    pub selected: Vec<serde_json::Value>,
+    pub completed: Vec<serde_json::Value>,
+    pub reused: Vec<serde_json::Value>,
+    pub failed: Vec<serde_json::Value>,
+    pub waived: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OcrExecution {
     NotFound,
-    Completed(OcrOutput),
+    Completed(Box<OcrOutput>),
 }
 
 pub trait OcrExecutor {
@@ -97,63 +139,29 @@ pub struct SystemOcrExecutor;
 
 impl OcrConfig {
     pub fn from_config(config: &serde_json::Value) -> Result<Self, SddError> {
-        let quality = config.get("quality");
-        if let Some(quality) = quality {
-            if !quality.is_object() {
-                return Err(SddError::new(
-                    "E_STATE_CORRUPTED",
-                    "runtime.json 的 quality 必须是对象",
-                ));
-            }
-        }
-        let ocr = quality
-            .and_then(|value| value.get("ocr"))
-            .or_else(|| config.get("ocr"));
-        let Some(ocr) = ocr else {
-            return Ok(Self {
-                mode: OcrMode::Auto,
-                command: "ocr".to_string(),
-            });
-        };
-        let Some(ocr) = ocr.as_object() else {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                "runtime.json 的 quality.ocr 必须是对象",
-            ));
-        };
+        crate::schema::validate_json("config", config)?;
+        let ocr = config
+            .pointer("/quality/ocr")
+            .and_then(serde_json::Value::as_object)
+            .expect("当前 config schema 保证 quality.ocr 为对象");
         let mode = match ocr.get("mode").and_then(serde_json::Value::as_str) {
-            None | Some("auto") => OcrMode::Auto,
+            Some("auto") => OcrMode::Auto,
             Some("off") => OcrMode::Off,
             Some("required") => OcrMode::Required,
-            Some(_) => {
-                return Err(SddError::new(
-                    "E_STATE_CORRUPTED",
-                    "runtime.json 的 quality.ocr.mode 必须是 auto、off 或 required",
-                ))
-            }
+            _ => unreachable!("当前 config schema 已校验 OCR mode"),
         };
         let command = ocr
             .get("command")
             .and_then(serde_json::Value::as_str)
-            .unwrap_or("ocr")
+            .expect("当前 config schema 保证 OCR command 为字符串")
             .trim();
-        if command.is_empty() {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                "runtime.json 的 quality.ocr.command 不能为空",
-            ));
-        }
-        // 命令 basename 命中解释器黑名单 → 阻断（可执行任意命令）
-        let program = command.split_whitespace().next().unwrap_or("");
-        let basename = program
-            .rsplit(['/', '\\'])
-            .next()
-            .unwrap_or(program)
-            .trim_end_matches(".exe");
-        if INTERPRETER_BLACKLIST.contains(&basename) {
+        // 同时检查完整可执行路径与首个空白分段：前者覆盖带空格路径，后者拒绝把
+        // “解释器 + 参数”误当成单个可执行文件。Windows 扩展与大小写统一处理。
+        let first = command.split_whitespace().next().unwrap_or("");
+        if command.contains('\0') || is_interpreter_path(command) || is_interpreter_path(first) {
             return Err(SddError::new(
                 "E_SECURITY_BLOCKED",
-                &format!("OCR 命令 {program} 指向脚本解释器，存在任意命令执行风险，禁止使用"),
+                &format!("OCR 命令 {command} 指向脚本解释器或包含 NUL，禁止使用"),
             ));
         }
         Ok(Self {
@@ -163,6 +171,19 @@ impl OcrConfig {
     }
 }
 
+fn is_interpreter_path(command: &str) -> bool {
+    let basename = command
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(command)
+        .to_ascii_lowercase();
+    let stem = [".exe", ".cmd", ".bat", ".com"]
+        .iter()
+        .find_map(|suffix| basename.strip_suffix(suffix))
+        .unwrap_or(&basename);
+    INTERPRETER_BLACKLIST.contains(&stem)
+}
+
 pub fn parse_output(bytes: &[u8]) -> Result<OcrOutput, SddError> {
     serde_json::from_slice(bytes)
         .map_err(|_| SddError::new("E_REVIEW_BACKEND_INVALID_OUTPUT", "OCR 输出不是合法 JSON"))
@@ -170,11 +191,57 @@ pub fn parse_output(bytes: &[u8]) -> Result<OcrOutput, SddError> {
 
 pub fn validate_output(
     output: OcrOutput,
-    cwd: &Path,
     changed_files: &BTreeSet<String>,
+    line_counts: &BTreeMap<String, usize>,
 ) -> Result<OcrOutput, SddError> {
-    if !matches!(output.status.as_str(), "success" | "skipped") {
+    if !matches!(output.status.as_str(), "completed" | "skipped") {
         return Err(SddError::new("E_REVIEW_BACKEND_FAILED", "OCR 返回失败状态"));
+    }
+    if output.status == "skipped" && !output.comments.is_empty() {
+        return Err(invalid_output("OCR skipped 结果不得包含 finding"));
+    }
+    if !valid_text(&output.llm.provider, 256)
+        || !valid_text(&output.llm.model, 256)
+        || !valid_optional_nonempty_text(output.message.as_deref(), 64 * 1024)
+        || !valid_text(&output.summary.elapsed, 128)
+        || !valid_text(&output.manifest.run_id, 128)
+        || output.manifest.schema_version != "ocr.run-manifest/v1"
+        || output.manifest.operation != "review"
+        || output.manifest.terminal_state != output.status
+        || !output.manifest.repository.is_object()
+        || !output.manifest.input.is_object()
+        || !output.manifest.execution.is_object()
+        || !output.manifest.coverage.failed.is_empty()
+    {
+        return Err(invalid_output("OCR 元数据内容非法"));
+    }
+    let files_reviewed = usize::try_from(output.summary.files_reviewed)
+        .map_err(|_| invalid_output("OCR files_reviewed 超出平台范围"))?;
+    let comment_count = usize::try_from(output.summary.comments)
+        .map_err(|_| invalid_output("OCR comment count 超出平台范围"))?;
+    if comment_count != output.comments.len()
+        || files_reviewed > changed_files.len()
+        || (output.status == "completed" && files_reviewed == 0)
+        || (output.status == "skipped" && (files_reviewed != 0 || !output.comments.is_empty()))
+    {
+        return Err(invalid_output("OCR 覆盖统计与变更范围不一致"));
+    }
+    let tool_call_total = output
+        .tool_calls
+        .by_tool
+        .values()
+        .try_fold(0_u64, |total, count| total.checked_add(*count))
+        .ok_or_else(|| invalid_output("OCR tool call 统计溢出"))?;
+    if tool_call_total != output.tool_calls.total {
+        return Err(invalid_output("OCR tool call 统计不一致"));
+    }
+    let token_total = output
+        .summary
+        .input_tokens
+        .checked_add(output.summary.output_tokens)
+        .ok_or_else(|| invalid_output("OCR token 统计溢出"))?;
+    if token_total != output.summary.total_tokens {
+        return Err(invalid_output("OCR token 统计不一致"));
     }
 
     for comment in &output.comments {
@@ -200,18 +267,19 @@ pub fn validate_output(
         {
             return Err(invalid_output("OCR finding 内容非法"));
         }
-        if comment.path.is_empty() || !changed_files.contains(&comment.path) {
+        if comment.path.trim().is_empty()
+            || crate::git::inspector::validated_relative_path(&comment.path).is_err()
+            || !changed_files.contains(&comment.path)
+        {
             return Err(invalid_output("OCR finding 路径不在变更文件范围内"));
         }
-        let cwd_string = cwd.to_string_lossy();
-        let path = crate::git::GitInspector::resolve_repo_path(&cwd_string, &comment.path)
-            .map_err(|_| invalid_output("OCR finding 路径不在仓库内"))?;
-        let content = std::fs::read_to_string(&path)
-            .map_err(|_| invalid_output("OCR finding 目标文件不可读"))?;
-        let line_count = content.lines().count() as u32;
-        if comment.start_line == 0
-            || comment.end_line < comment.start_line
-            || comment.end_line > line_count
+        let line_count = line_counts
+            .get(&comment.path)
+            .copied()
+            .ok_or_else(|| invalid_output("OCR finding 目标文件未通过确定性文本扫描"))?;
+        let end_line = usize::try_from(comment.end_line)
+            .map_err(|_| invalid_output("OCR finding 行号超出平台范围"))?;
+        if comment.start_line == 0 || comment.end_line < comment.start_line || end_line > line_count
         {
             return Err(invalid_output("OCR finding 行号范围非法"));
         }
@@ -224,41 +292,15 @@ fn invalid_output(message: &str) -> SddError {
 }
 
 fn valid_text(value: &str, max_bytes: usize) -> bool {
-    !value.is_empty() && value.len() <= max_bytes && !value.contains('\0')
+    !value.trim().is_empty() && value.len() <= max_bytes && !value.contains('\0')
 }
 
 fn valid_optional_text(value: Option<&str>, max_bytes: usize) -> bool {
     value.is_none_or(|value| value.len() <= max_bytes && !value.contains('\0'))
 }
 
-const MAX_STDOUT_BYTES: usize = 4 * 1024 * 1024;
-
-#[cfg(unix)]
-fn configure_process_group(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-
-    command.process_group(0);
-}
-
-#[cfg(not(unix))]
-fn configure_process_group(_command: &mut Command) {}
-
-#[cfg(unix)]
-fn kill_process_group(pid: u32) {
-    const SIGKILL: i32 = 9;
-    let process_group = -(pid as i32);
-    // 进程组由子进程创建，超时时必须连同继承 stdout/stderr 的后代一起终止。
-    unsafe {
-        let _ = kill(process_group, SIGKILL);
-    }
-}
-
-#[cfg(not(unix))]
-fn kill_process_group(_pid: u32) {}
-
-#[cfg(unix)]
-extern "C" {
-    fn kill(pid: i32, signal: i32) -> i32;
+fn valid_optional_nonempty_text(value: Option<&str>, max_bytes: usize) -> bool {
+    value.is_none_or(|value| valid_text(value, max_bytes))
 }
 
 impl OcrExecutor for SystemOcrExecutor {
@@ -268,252 +310,229 @@ impl OcrExecutor for SystemOcrExecutor {
         command: &str,
         timeout: Duration,
     ) -> Result<OcrExecution, SddError> {
-        let mut command_builder = Command::new(command);
-        command_builder
-            .args(["review", "--format", "json"])
-            .current_dir(cwd)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        configure_process_group(&mut command_builder);
-        let mut child = match command_builder.spawn() {
-            Ok(child) => child,
+        let output = match crate::subprocess::run_command(
+            Path::new(command),
+            &["review", "--format", "json", "--audience", "agent"],
+            cwd,
+            timeout,
+            &[("OCR_NO_UPDATE", "1")],
+        ) {
+            Ok(output) => output,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(OcrExecution::NotFound)
             }
-            Err(_) => {
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                return Err(SddError::new("E_REVIEW_BACKEND_TIMEOUT", "OCR 执行超时"))
+            }
+            Err(error) if error.kind() == io::ErrorKind::FileTooLarge => {
+                return Err(invalid_output("OCR 输出超过允许大小"))
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::PermissionDenied | io::ErrorKind::InvalidInput
+                ) =>
+            {
                 return Err(SddError::new(
                     "E_REVIEW_BACKEND_UNAVAILABLE",
                     "OCR 命令无法启动",
                 ))
             }
+            Err(_) => return Err(SddError::new("E_REVIEW_BACKEND_FAILED", "OCR 进程执行失败")),
         };
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| SddError::new("E_REVIEW_BACKEND_FAILED", "OCR stdout 不可用"))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| SddError::new("E_REVIEW_BACKEND_FAILED", "OCR stderr 不可用"))?;
-        let (stdout_sender, stdout_receiver) = mpsc::sync_channel(1);
-        let stdout_reader = thread::spawn(move || {
-            let _ = stdout_sender.send(capture_limited(stdout, MAX_STDOUT_BYTES));
-        });
-        let (stderr_sender, stderr_receiver) = mpsc::sync_channel(1);
-        let stderr_reader = thread::spawn(move || {
-            let _ = stderr_sender.send(drain(stderr));
-        });
-        let deadline = Instant::now().checked_add(timeout);
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) => {
-                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                        // 判定超时前补一次 try_wait：进程恰在判定时刻退出时按正常结果
-                        // 处理，避免"已退出却被判超时"的竞态（此前偶发 flaky）。
-                        if let Ok(Some(status)) = child.try_wait() {
-                            break status;
-                        }
-                        kill_process_group(child.id());
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        drop(stdout_reader);
-                        drop(stderr_reader);
-                        return Err(SddError::new("E_REVIEW_BACKEND_TIMEOUT", "OCR 执行超时"));
-                    }
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(_) => {
-                    kill_process_group(child.id());
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    drop(stdout_reader);
-                    drop(stderr_reader);
-                    return Err(SddError::new(
-                        "E_REVIEW_BACKEND_FAILED",
-                        "读取 OCR 进程状态失败",
-                    ));
-                }
-            }
-        };
-        // 读管道也受同一 deadline 约束；无论平台是否能杀进程树，都不能永久等待。
-        let reader_timeout = deadline
-            .map(|deadline| {
-                deadline
-                    .saturating_duration_since(Instant::now())
-                    .min(Duration::from_secs(1))
-            })
-            .unwrap_or_else(|| Duration::from_secs(1));
-        kill_process_group(child.id());
-        let stdout = collect_reader(stdout_receiver, stdout_reader, reader_timeout, "stdout")?;
-        collect_reader(stderr_receiver, stderr_reader, reader_timeout, "stderr")?;
-        if !status.success() {
+        if !output.status.success() {
             return Err(SddError::new(
                 "E_REVIEW_BACKEND_FAILED",
                 "OCR 进程返回非零退出码",
             ));
         }
-        if stdout.truncated {
-            return Err(invalid_output("OCR stdout 超过允许大小"));
-        }
-        Ok(OcrExecution::Completed(parse_output(&stdout.bytes)?))
+        Ok(OcrExecution::Completed(Box::new(parse_output(
+            &output.stdout,
+        )?)))
     }
-}
-
-#[derive(Debug)]
-struct CapturedOutput {
-    bytes: Vec<u8>,
-    truncated: bool,
-}
-
-fn capture_limited<R: Read>(mut reader: R, limit: usize) -> io::Result<CapturedOutput> {
-    let mut bytes = Vec::new();
-    let mut buffer = [0_u8; 8192];
-    let mut truncated = false;
-    loop {
-        let count = reader.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        if bytes.len() < limit {
-            let retained = (limit - bytes.len()).min(count);
-            bytes.extend_from_slice(&buffer[..retained]);
-            truncated |= retained < count;
-        } else {
-            truncated = true;
-        }
-    }
-    Ok(CapturedOutput { bytes, truncated })
-}
-
-fn drain<R: Read>(mut reader: R) -> io::Result<()> {
-    let mut buffer = [0_u8; 8192];
-    while reader.read(&mut buffer)? != 0 {}
-    Ok(())
-}
-
-fn collect_reader<T>(
-    receiver: Receiver<io::Result<T>>,
-    reader: thread::JoinHandle<()>,
-    timeout: Duration,
-    stream: &str,
-) -> Result<T, SddError> {
-    let result = receiver
-        .recv_timeout(timeout)
-        .map_err(|error| match error {
-            mpsc::RecvTimeoutError::Timeout => SddError::new(
-                "E_REVIEW_BACKEND_TIMEOUT",
-                &format!("读取 OCR {stream} 超时"),
-            ),
-            mpsc::RecvTimeoutError::Disconnected => SddError::new(
-                "E_REVIEW_BACKEND_FAILED",
-                &format!("读取 OCR {stream} 失败"),
-            ),
-        })?;
-    reader.join().map_err(|_| {
-        SddError::new(
-            "E_REVIEW_BACKEND_FAILED",
-            &format!("读取 OCR {stream} 失败"),
-        )
-    })?;
-    result.map_err(|_| {
-        SddError::new(
-            "E_REVIEW_BACKEND_FAILED",
-            &format!("读取 OCR {stream} 失败"),
-        )
-    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use super::*;
 
+    fn current_config(mode: &str, command: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schemaVersion": 3,
+            "hostAdapter": "codex",
+            "workflow": { "gitIsolation": false },
+            "quality": { "ocr": { "mode": mode, "command": command } },
+            "contextPack": { "maxSizeKb": 30 },
+            "audit": { "maxSizeMb": 5, "maxFiles": 200 }
+        })
+    }
+
+    fn current_output(
+        status: &str,
+        comments: Vec<serde_json::Value>,
+        files_reviewed: u32,
+    ) -> serde_json::Value {
+        let comment_count = u32::try_from(comments.len()).unwrap();
+        serde_json::json!({
+            "status": status,
+            "llm": {
+                "provider": "test-provider",
+                "model": "test-model"
+            },
+            "summary": {
+                "files_reviewed": files_reviewed,
+                "comments": comment_count,
+                "total_tokens": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "elapsed": "0s"
+            },
+            "tool_calls": {
+                "total": 0,
+                "by_tool": {}
+            },
+            "comments": comments,
+            "manifest": {
+                "schema_version": "ocr.run-manifest/v1",
+                "run_id": "run-test",
+                "operation": "review",
+                "terminal_state": status,
+                "repository": {},
+                "input": {},
+                "execution": {},
+                "coverage": {
+                    "selected": [],
+                    "completed": [],
+                    "reused": [],
+                    "failed": [],
+                    "waived": []
+                },
+                "elapsed_ms": 0
+            }
+        })
+    }
+
+    fn output_bytes(
+        status: &str,
+        comments: Vec<serde_json::Value>,
+        files_reviewed: u32,
+    ) -> Vec<u8> {
+        serde_json::to_vec(&current_output(status, comments, files_reviewed)).unwrap()
+    }
+
     #[test]
-    fn missing_ocr_config_defaults_to_auto_command() {
-        let config = OcrConfig::from_config(&serde_json::json!({})).unwrap();
-        assert_eq!(config.mode, OcrMode::Auto);
-        assert_eq!(config.command, "ocr");
+    fn rejects_incomplete_and_obsolete_config() {
+        assert!(OcrConfig::from_config(&serde_json::json!({})).is_err());
+        let mut config = current_config("auto", "ocr");
+        config["ocr"] = serde_json::json!({
+            "ocr": { "mode": "off", "command": "/obsolete/ocr" }
+        });
+        assert!(OcrConfig::from_config(&config).is_err());
     }
 
     #[test]
     fn parses_off_mode_and_structured_comment() {
-        let config = OcrConfig::from_config(&serde_json::json!({
-            "quality": { "ocr": { "mode": "off", "command": "/opt/ocr" } }
-        }))
-        .unwrap();
+        let config = OcrConfig::from_config(&current_config("off", "/opt/ocr")).unwrap();
         assert_eq!(config.mode, OcrMode::Off);
-        let output = parse_output(
-            r#"{
-                "status":"success",
-                "session_id":"s-1",
-                "comments":[{
-                    "path":"src/a.rs",
-                    "content":"修复",
-                    "start_line":2,
-                    "end_line":3,
-                    "category":"bug",
-                    "severity":"high"
-                }]
-            }"#
-            .as_bytes(),
-        )
+        let output = parse_output(&output_bytes(
+            "completed",
+            vec![serde_json::json!({
+                "path": "src/a.rs",
+                "content": "修复",
+                "start_line": 2,
+                "end_line": 3,
+                "category": "bug",
+                "severity": "high"
+            })],
+            1,
+        ))
         .unwrap();
         assert_eq!(output.comments[0].start_line, 2);
-        assert_eq!(output.session_id.as_deref(), Some("s-1"));
+        assert_eq!(output.manifest.run_id, "run-test");
     }
 
     #[test]
-    fn missing_comments_defaults_to_empty_list() {
-        let output = parse_output(br#"{"status":"skipped"}"#).unwrap();
-        assert!(output.comments.is_empty());
+    fn missing_comments_is_rejected() {
+        let mut output = current_output("skipped", Vec::new(), 0);
+        output.as_object_mut().unwrap().remove("comments");
+        let error = parse_output(&serde_json::to_vec(&output).unwrap()).unwrap_err();
+        assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
+    }
+
+    #[test]
+    fn unknown_output_fields_are_rejected() {
+        let mut output = current_output("skipped", Vec::new(), 0);
+        output["unexpected"] = serde_json::json!("value");
+        let error = parse_output(&serde_json::to_vec(&output).unwrap()).unwrap_err();
+        assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
     }
 
     #[test]
     fn rejects_failed_status() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = parse_output(br#"{"status":"failed","comments":[]}"#).unwrap();
-        let error = validate_output(output, dir.path(), &BTreeSet::new()).unwrap_err();
+        let output = parse_output(&output_bytes("failed", Vec::new(), 0)).unwrap();
+        let error = validate_output(output, &BTreeSet::new(), &BTreeMap::new()).unwrap_err();
         assert_eq!(error.code, "E_REVIEW_BACKEND_FAILED");
     }
 
     #[test]
     fn rejects_path_escape() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = parse_output(
-            br#"{
-                "status":"success",
-                "comments":[{
-                    "path":"../secret",
-                    "content":"x",
-                    "start_line":1,
-                    "end_line":1,
-                    "category":"bug",
-                    "severity":"low"
-                }]
-            }"#,
-        )
+        let output = parse_output(&output_bytes(
+            "completed",
+            vec![serde_json::json!({
+                "path": "../secret",
+                "content": "x",
+                "start_line": 1,
+                "end_line": 1,
+                "category": "bug",
+                "severity": "low"
+            })],
+            1,
+        ))
         .unwrap();
         let changed = std::iter::once("../secret".to_string()).collect();
-        let error = validate_output(output, dir.path(), &changed).unwrap_err();
+        let error = validate_output(output, &changed, &BTreeMap::new()).unwrap_err();
         assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
     }
 
     #[test]
     fn rejects_zero_or_reversed_line_range_and_unknown_metadata() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
         let changed = std::iter::once("src/a.rs".to_string()).collect();
-        for raw in [
-            br#"{"status":"success","comments":[{"path":"src/a.rs","content":"x","start_line":0,"end_line":1,"category":"bug","severity":"low"}]}"#.as_slice(),
-            br#"{"status":"success","comments":[{"path":"src/a.rs","content":"x","start_line":2,"end_line":1,"category":"bug","severity":"low"}]}"#.as_slice(),
-            br#"{"status":"success","comments":[{"path":"src/a.rs","content":"x","start_line":1,"end_line":1,"category":"unknown","severity":"low"}]}"#.as_slice(),
-            br#"{"status":"success","comments":[{"path":"src/a.rs","content":"x","start_line":1,"end_line":1,"category":"bug","severity":"urgent"}]}"#.as_slice(),
+        let line_counts = BTreeMap::from([("src/a.rs".to_string(), 1)]);
+        for comment in [
+            serde_json::json!({"path":"src/a.rs","content":"x","start_line":0,"end_line":1,"category":"bug","severity":"low"}),
+            serde_json::json!({"path":"src/a.rs","content":"x","start_line":2,"end_line":1,"category":"bug","severity":"low"}),
+            serde_json::json!({"path":"src/a.rs","content":"x","start_line":1,"end_line":1,"category":"unknown","severity":"low"}),
+            serde_json::json!({"path":"src/a.rs","content":"x","start_line":1,"end_line":1,"category":"bug","severity":"urgent"}),
         ] {
-            let output = parse_output(raw).unwrap();
-            let error = validate_output(output, dir.path(), &changed).unwrap_err();
+            let output = parse_output(&output_bytes("completed", vec![comment], 1)).unwrap();
+            let error = validate_output(output, &changed, &line_counts).unwrap_err();
             assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
         }
+    }
+
+    #[test]
+    fn rejects_inconsistent_summary_and_tool_call_counts() {
+        let changed = std::iter::once("src/a.rs".to_string()).collect();
+
+        let mut output = current_output("completed", Vec::new(), 1);
+        output["summary"]["comments"] = serde_json::json!(1);
+        let output = parse_output(&serde_json::to_vec(&output).unwrap()).unwrap();
+        let error = validate_output(output, &changed, &BTreeMap::new()).unwrap_err();
+        assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
+
+        let mut output = current_output("completed", Vec::new(), 1);
+        output["tool_calls"]["total"] = serde_json::json!(1);
+        let output = parse_output(&serde_json::to_vec(&output).unwrap()).unwrap();
+        let error = validate_output(output, &changed, &BTreeMap::new()).unwrap_err();
+        assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
+
+        let mut output = current_output("completed", Vec::new(), 1);
+        output["summary"]["total_tokens"] = serde_json::json!(1);
+        let output = parse_output(&serde_json::to_vec(&output).unwrap()).unwrap();
+        let error = validate_output(output, &changed, &BTreeMap::new()).unwrap_err();
+        assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
     }
     #[test]
     fn parse_output_rejects_invalid_json() {
@@ -552,23 +571,15 @@ mod tests {
     #[test]
     fn system_executor_parses_successful_json() {
         let dir = tempfile::tempdir().unwrap();
-        let script = executable_script(
-            dir.path(),
-            "printf '{\"status\":\"success\",\"comments\":[]}'",
-        );
+        let raw = serde_json::to_string(&current_output("skipped", Vec::new(), 0)).unwrap();
+        let script = executable_script(dir.path(), &format!("printf '%s' '{raw}'"));
         // 5s 时限：并行测试负载下放宽，避免偶发超时误判（flaky 修复）
         let result = SystemOcrExecutor
             .execute(dir.path(), script.to_str().unwrap(), Duration::from_secs(5))
             .unwrap();
         assert_eq!(
             result,
-            OcrExecution::Completed(OcrOutput {
-                status: "success".into(),
-                comments: Vec::new(),
-                session_id: None,
-                summary: None,
-                files_reviewed: None,
-            })
+            OcrExecution::Completed(Box::new(parse_output(raw.as_bytes()).unwrap()))
         );
     }
 
@@ -619,9 +630,10 @@ mod tests {
     #[test]
     fn system_executor_reaps_descendants_after_parent_exit() {
         let dir = tempfile::tempdir().unwrap();
+        let raw = serde_json::to_string(&current_output("skipped", Vec::new(), 0)).unwrap();
         let script = executable_script(
             dir.path(),
-            "printf '{\"status\":\"success\",\"comments\":[]}'\n(sleep 5) &\nexit 0",
+            &format!("printf '%s' '{raw}'\n(sleep 5) &\nexit 0"),
         );
         let started = Instant::now();
         // 5s 时限：并行测试负载下放宽，避免偶发超时误判（flaky 修复）
@@ -630,40 +642,16 @@ mod tests {
             .unwrap();
         assert_eq!(
             result,
-            OcrExecution::Completed(OcrOutput {
-                status: "success".into(),
-                comments: Vec::new(),
-                session_id: None,
-                summary: None,
-                files_reviewed: None,
-            })
+            OcrExecution::Completed(Box::new(parse_output(raw.as_bytes()).unwrap()))
         );
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
-    fn reader_collection_is_bounded_when_pipe_stays_open() {
-        let (sender, receiver) = mpsc::sync_channel(1);
-        let reader = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(50));
-            let _ = sender.send(Ok(()));
-        });
-        let started = Instant::now();
-        let error =
-            collect_reader(receiver, reader, Duration::from_millis(5), "stdout").unwrap_err();
-        assert_eq!(error.code, "E_REVIEW_BACKEND_TIMEOUT");
-        assert!(started.elapsed() < Duration::from_secs(1));
-    }
-
-    #[test]
     fn rejects_invalid_mode_and_empty_command() {
         for config in [
-            serde_json::json!({
-                "quality": { "ocr": { "mode": "manual", "command": "ocr" } }
-            }),
-            serde_json::json!({
-                "quality": { "ocr": { "mode": "auto", "command": "   " } }
-            }),
+            current_config("manual", "ocr"),
+            current_config("auto", "   "),
         ] {
             let error = OcrConfig::from_config(&config).unwrap_err();
             assert_eq!(error.code, "E_STATE_CORRUPTED");
@@ -671,15 +659,22 @@ mod tests {
     }
     #[test]
     fn rejects_control_character_in_suggestion() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("src")).unwrap();
-        std::fs::write(dir.path().join("src/a.rs"), "fn main() {}\n").unwrap();
-        let output = parse_output(
-            br#"{"status":"success","comments":[{"path":"src/a.rs","content":"x","start_line":1,"end_line":1,"category":"bug","severity":"low","suggestion_code":"\u0000"}]}"#,
-        )
+        let output = parse_output(&output_bytes(
+            "completed",
+            vec![serde_json::json!({
+                "path": "src/a.rs",
+                "content": "x",
+                "start_line": 1,
+                "end_line": 1,
+                "category": "bug",
+                "severity": "low",
+                "suggestion_code": "\0"
+            })],
+            1,
+        ))
         .unwrap();
         let changed = std::iter::once("src/a.rs".to_string()).collect();
-        let error = validate_output(output, dir.path(), &changed).unwrap_err();
+        let error = validate_output(output, &changed, &BTreeMap::new()).unwrap_err();
         assert_eq!(error.code, "E_REVIEW_BACKEND_INVALID_OUTPUT");
     }
 
@@ -691,18 +686,17 @@ mod tests {
             "sh script.sh",
             "pwsh.exe",
             "node /tmp/x.js",
+            "/tmp/my tools/PYTHON3.EXE",
+            "PowerShell.CMD",
+            "ocr\0payload",
         ] {
-            let config = OcrConfig::from_config(&serde_json::json!({
-                "quality": { "ocr": { "mode": "auto", "command": command } }
-            }));
+            let config = OcrConfig::from_config(&current_config("auto", command));
             let error = config.unwrap_err();
             assert_eq!(error.code, "E_SECURITY_BLOCKED", "命令 {command} 应被阻断");
         }
         // 正常可执行文件路径不受影响
-        let config = OcrConfig::from_config(&serde_json::json!({
-            "quality": { "ocr": { "mode": "auto", "command": "/opt/alibaba/ocr-bin" } }
-        }))
-        .unwrap();
+        let config =
+            OcrConfig::from_config(&current_config("auto", "/opt/alibaba/ocr-bin")).unwrap();
         assert_eq!(config.command, "/opt/alibaba/ocr-bin");
     }
 }

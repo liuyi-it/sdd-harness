@@ -1,7 +1,7 @@
-//! 任务原子拆分器（翻译自 早期 Node 实现）。
+//! 任务原子拆分器。
 //!
-//! createAtomicTasks：从 spec/design/impact 生成 RED/GREEN/REFACTOR/VERIFY
-//! 任务链，并对文件范围做精确映射与重叠检测。
+//! 从 spec/design/impact 生成 RED/GREEN/REFACTOR/VERIFY 任务链，
+//! 并对文件范围做精确映射与重叠检测。
 
 use std::sync::LazyLock;
 
@@ -17,7 +17,7 @@ use crate::error::SddError;
 
 // Rust regex 不支持 lookahead，去掉末尾 (?=$|...) 边界断言（捕获组提取语义不变）；
 // 字符类内的 `[` 需转义（Rust 语法）
-// toml 为 Rust 项目扩展（Node 版无此扩展名，Rust 版支持 Cargo 项目）
+// 同时识别常见源码、测试和项目清单扩展名。
 const FILE_PATTERN: &str = r#"(?:^|[\s`'"(\[])((?:(?:[A-Za-z]:)?\/{1,2})?(?:[\w@.-]+\/)*[\w@.-]+\.(?:properties|json|java|scala|swift|tsx|jsx|mjs|cjs|xml|ya?ml|kt|go|rs|py|rb|php|cs|ts|js|toml))"#;
 const DIRECTORY_PATTERN: &str =
     r#"(?:^|[\s`'"(\[])((?:(?:[A-Za-z]:)?\/{1,2})?[\w@.-]+(?:\/[\w@.-]+)+\/)"#;
@@ -54,17 +54,17 @@ static SOURCE_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
         .expect("源码扩展名正则必须合法")
 });
 
-/// 生成原子任务链（语义对齐 createAtomicTasks）
+/// 从当前规格、设计、影响和代码库摘要生成原子任务链。
 pub fn create_atomic_tasks(
-    input: &PlanningInput,
+    input: &PlanningInput<'_>,
 ) -> Result<(Vec<TaskDefinition>, Vec<RequirementPlan>), SddError> {
-    let requirements = parse_requirements(&input.spec)?;
+    let requirements = parse_requirements(input.spec)?;
     assert_requirements(&requirements)?;
     let context = format!(
         "{}\n{}\n{}\n{}",
         input.spec, input.design, input.impact, input.codebase_summary
     );
-    let migration = requires_expand_contract(&input.design, &input.impact);
+    let migration = requires_expand_contract(input.design, input.impact);
     let files = extract_paths(&context);
     let source_files: Vec<String> = files
         .iter()
@@ -92,7 +92,7 @@ pub fn create_atomic_tasks(
     let mut source_mapping = map_files(&requirements, &source_files, &context, is_source_file);
     merge_spec_path_mapping(
         &mut source_mapping,
-        &input.spec,
+        input.spec,
         &source_files,
         is_source_file,
         &requirements,
@@ -100,7 +100,7 @@ pub fn create_atomic_tasks(
     let mut test_mapping = map_files(&requirements, &test_files, &context, is_test_file);
     merge_spec_path_mapping(
         &mut test_mapping,
-        &input.spec,
+        input.spec,
         &test_files,
         is_test_file,
         &requirements,
@@ -113,32 +113,25 @@ pub fn create_atomic_tasks(
                 .or_insert_with(|| related_sources.clone());
         }
     }
-    share_single_mapping(&mut source_mapping, &requirements);
-    share_single_mapping(&mut test_mapping, &requirements);
-    // 单一需求且已明确存在源码/测试集合时，允许按仓库自有文件集兜底；
-    // 这比生成空范围更安全，也避免中文需求因文件名无同词而被错误阻塞。
-    fallback_single_requirement_mapping(
+    let focused_files = extract_paths(&format!(
+        "{}\n{}\n{}",
+        input.spec, input.design, input.impact
+    ));
+    map_single_requirement(
         &mut source_mapping,
         &mut test_mapping,
         &requirements,
-        &source_files,
-        &test_files,
+        &focused_files,
     );
 
-    let planned: Vec<RequirementPlan> = requirements
-        .iter()
-        .map(|r| RequirementPlan {
-            id: r.id.clone(),
-            title: r.title.clone(),
-            scenarios: r.scenarios.clone(),
-            source_files: source_mapping.get(&r.id).cloned().unwrap_or_default(),
-            test_files: test_mapping.get(&r.id).cloned().unwrap_or_default(),
-        })
-        .collect();
-    if let Some(unmapped) = planned
-        .iter()
-        .find(|r| r.source_files.is_empty() || r.test_files.is_empty())
-    {
+    if let Some(unmapped) = requirements.iter().find(|requirement| {
+        !source_mapping
+            .get(&requirement.id)
+            .is_some_and(|files| !files.is_empty())
+            || !test_mapping
+                .get(&requirement.id)
+                .is_some_and(|files| !files.is_empty())
+    }) {
         return Err(SddError::new(
             "E_UNRESOLVED_BLOCKER",
             &format!(
@@ -148,16 +141,34 @@ pub fn create_atomic_tasks(
         )
         .with_next("sdd plan"));
     }
+
+    let planned: Vec<RequirementPlan> = requirements
+        .iter()
+        .map(|r| RequirementPlan {
+            id: r.id.clone(),
+            title: r.title.clone(),
+            scenarios: r.scenarios.clone(),
+            source_files: source_mapping
+                .get(&r.id)
+                .expect("上方已验证源码映射")
+                .clone(),
+            test_files: test_mapping.get(&r.id).expect("上方已验证测试映射").clone(),
+        })
+        .collect();
     let new_files: std::collections::HashSet<String> =
         extract_new_paths(&context).into_iter().collect();
 
     let mut tasks: Vec<TaskDefinition> = Vec::new();
-    let mut previous_chains: Vec<&RequirementPlan> = Vec::new();
     for (index, requirement) in planned.iter().enumerate() {
         let ordinal = format!("{:03}", index + 1);
         let scenario_ids: Vec<String> =
             requirement.scenarios.iter().map(|s| s.id.clone()).collect();
-        let overlapping_verify_ids: Vec<String> = previous_chains
+        let acceptance_criteria: Vec<String> = requirement
+            .scenarios
+            .iter()
+            .map(|scenario| format!("{}：{}", scenario.id, scenario.title))
+            .collect();
+        let overlapping_verify_ids: Vec<String> = planned[..index]
             .iter()
             .enumerate()
             .filter(|(_, previous)| overlaps(requirement, previous))
@@ -185,8 +196,8 @@ pub fn create_atomic_tasks(
                     .cloned()
                     .collect()
             };
-            let allowed_files = unique(phase_files.clone());
-            let expected_new_files: Vec<String> = phase_files
+            let allowed_files = unique(phase_files);
+            let expected_new_files: Vec<String> = allowed_files
                 .iter()
                 .filter(|file| new_files.contains(*file))
                 .cloned()
@@ -195,7 +206,6 @@ pub fn create_atomic_tasks(
                 id,
                 title: format!("{}：{}", phase_title(phase), requirement.title),
                 phase: phase.to_string(),
-                status: "PENDING".to_string(),
                 requirements: vec![requirement.id.clone()],
                 scenarios: scenario_ids.clone(),
                 depends_on,
@@ -209,7 +219,7 @@ pub fn create_atomic_tasks(
                 ],
                 verification: commands.clone(),
                 done_criteria: done_criteria(phase, &scenario_ids),
-                slice_type: Some(if migration {
+                slice_type: if migration {
                     match *phase {
                         "RED" => "EXPAND".to_string(),
                         "VERIFY" => "CONTRACT".to_string(),
@@ -217,23 +227,22 @@ pub fn create_atomic_tasks(
                     }
                 } else {
                     "VERTICAL".to_string()
-                }),
-                user_visible_outcome: Some(format!(
-                    "{} 的用户可见行为通过完整验证",
-                    requirement.title
-                )),
-                acceptance_criteria: Some(done_criteria(phase, &scenario_ids)),
-                test_seam: requirement.test_files.first().cloned(),
-                policy_refs: None,
+                },
+                user_visible_outcome: format!("{} 的用户可见行为通过完整验证", requirement.title),
+                acceptance_criteria: acceptance_criteria.clone(),
+                test_seam: requirement
+                    .test_files
+                    .first()
+                    .cloned()
+                    .expect("任务规划前已验证测试文件存在"),
             });
         }
-        previous_chains.push(requirement);
     }
-    assert_acyclic(&tasks)?;
+    validate_task_graph(&tasks)?;
     Ok((tasks, planned))
 }
 
-/// 渲染任务 markdown（renderTasks）
+/// 渲染任务 Markdown。
 pub fn render_tasks(tasks: &[TaskDefinition]) -> String {
     let mut lines = vec!["# 开发任务".to_string()];
     for task in tasks {
@@ -242,9 +251,10 @@ pub fn render_tasks(tasks: &[TaskDefinition]) -> String {
         lines.push(String::new());
         lines.push(format!("- 阶段：{}", task.phase));
         lines.push(String::new());
-        lines.push(format!("- 状态：{}", task.status));
-        lines.push(String::new());
         lines.push(format!("- 执行要求：{}", phase_instruction(&task.phase)));
+        lines.push(format!("- 切片类型：{}", task.slice_type));
+        lines.push(format!("- 用户可见结果：{}", task.user_visible_outcome));
+        lines.push(format!("- 测试 seam：{}", task.test_seam));
         lines.push(String::new());
         push_checklist(&mut lines, "关联需求", &task.requirements);
         lines.push(String::new());
@@ -261,6 +271,8 @@ pub fn render_tasks(tasks: &[TaskDefinition]) -> String {
         push_checklist(&mut lines, "验证命令", &task.verification);
         lines.push(String::new());
         push_checklist(&mut lines, "完成标准", &task.done_criteria);
+        lines.push(String::new());
+        push_checklist(&mut lines, "验收标准", &task.acceptance_criteria);
     }
     lines.join("\n")
 }
@@ -276,7 +288,7 @@ fn push_checklist(lines: &mut Vec<String>, title: &str, values: &[String]) {
     }
 }
 
-/// 渲染测试计划（renderTestPlan）
+/// 渲染测试计划。
 pub fn render_test_plan(requirements: &[RequirementPlan]) -> String {
     let mut lines = vec!["# Test Plan".to_string()];
     for requirement in requirements {
@@ -298,7 +310,7 @@ pub fn render_test_plan(requirements: &[RequirementPlan]) -> String {
     lines.join("\n")
 }
 
-/// 渲染单任务 Context Pack（renderContextPack）
+/// 渲染单任务 Context Pack。
 pub fn render_context_pack(task: &TaskDefinition) -> String {
     let mut lines = vec![
         format!("# Context Pack: {}", task.id),
@@ -308,10 +320,19 @@ pub fn render_context_pack(task: &TaskDefinition) -> String {
         task.title.clone(),
         String::new(),
         format!("Phase: {}", task.phase),
+        format!("Slice Type: {}", task.slice_type),
         String::new(),
         "## TDD Instruction".to_string(),
         String::new(),
         phase_instruction(&task.phase).to_string(),
+        String::new(),
+        "## User-visible Outcome".to_string(),
+        String::new(),
+        task.user_visible_outcome.clone(),
+        String::new(),
+        "## Test Seam".to_string(),
+        String::new(),
+        task.test_seam.clone(),
         String::new(),
         "## Relevant Code Context".to_string(),
         String::new(),
@@ -329,38 +350,23 @@ pub fn render_context_pack(task: &TaskDefinition) -> String {
     lines.push(String::new());
     push_list(&mut lines, "Verification", &task.verification);
     lines.push(String::new());
+    push_list(&mut lines, "Acceptance Criteria", &task.acceptance_criteria);
+    lines.push(String::new());
     lines.push("## Risk".to_string());
     lines.push(String::new());
     lines.push("不得扩大文件范围或绕过现有安全与架构边界。".to_string());
     lines.join("\n")
 }
 
-/// 组装 PlanArtifacts（对齐 generatePlan）
-pub fn build_plan_artifacts(input: &PlanningInput) -> Result<PlanArtifacts, SddError> {
+/// 组装计划任务、任务文档与测试计划。
+pub fn build_plan_artifacts(input: &PlanningInput<'_>) -> Result<PlanArtifacts, SddError> {
     let (tasks, requirements) = create_atomic_tasks(input)?;
-    let context = [
-        "# Change Context".to_string(),
-        String::new(),
-        "## Codebase".to_string(),
-        String::new(),
-        input.codebase_summary.clone(),
-        String::new(),
-        "## Impact".to_string(),
-        String::new(),
-        input.impact.clone(),
-        String::new(),
-        "## Design".to_string(),
-        String::new(),
-        input.design.clone(),
-    ]
-    .join("\n");
     let tasks_markdown = render_tasks(&tasks);
     let test_plan = render_test_plan(&requirements);
     Ok(PlanArtifacts {
         tasks,
         tasks_markdown,
         test_plan,
-        context,
     })
 }
 
@@ -380,17 +386,40 @@ fn requires_expand_contract(design: &str, impact: &str) -> bool {
     MIGRATION_RE.is_match(&combined)
 }
 
-fn assert_acyclic(tasks: &[TaskDefinition]) -> Result<(), SddError> {
+pub(crate) fn validate_task_graph(tasks: &[TaskDefinition]) -> Result<(), SddError> {
     let by_id: std::collections::HashMap<&str, &TaskDefinition> =
         tasks.iter().map(|t| (t.id.as_str(), t)).collect();
-    let mut visiting: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    if by_id.len() != tasks.len() {
+        return Err(SddError::new("E_STATE_CORRUPTED", "计划包含重复任务 ID"));
+    }
+    for task in tasks {
+        if !super::protocol::valid_task_id(&task.id)
+            || task.phase != task.id.rsplit('-').next().expect("有效任务 ID 包含阶段")
+        {
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("任务 {} 的 ID 与阶段不一致", task.id),
+            ));
+        }
+        if let Some(missing) = task
+            .depends_on
+            .iter()
+            .find(|dependency| !by_id.contains_key(dependency.as_str()))
+        {
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("任务 {} 依赖不存在的任务 {missing}", task.id),
+            ));
+        }
+    }
+    let mut visiting: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut visited: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
-    fn visit(
-        id: &str,
-        by_id: &std::collections::HashMap<&str, &TaskDefinition>,
-        visiting: &mut std::collections::HashSet<String>,
-        visited: &mut std::collections::HashSet<String>,
+    fn visit<'a>(
+        id: &'a str,
+        by_id: &std::collections::HashMap<&'a str, &'a TaskDefinition>,
+        visiting: &mut std::collections::HashSet<&'a str>,
+        visited: &mut std::collections::HashSet<&'a str>,
     ) -> Result<(), SddError> {
         if visiting.contains(id) {
             return Err(SddError::new(
@@ -401,14 +430,13 @@ fn assert_acyclic(tasks: &[TaskDefinition]) -> Result<(), SddError> {
         if visited.contains(id) {
             return Ok(());
         }
-        visiting.insert(id.to_string());
-        if let Some(task) = by_id.get(id) {
-            for dependency in &task.depends_on {
-                visit(dependency, by_id, visiting, visited)?;
-            }
+        visiting.insert(id);
+        let task = by_id.get(id).expect("前置校验已确认所有依赖任务存在");
+        for dependency in &task.depends_on {
+            visit(dependency, by_id, visiting, visited)?;
         }
         visiting.remove(id);
-        visited.insert(id.to_string());
+        visited.insert(id);
         Ok(())
     }
 
@@ -534,6 +562,7 @@ fn map_files(
     context: &str,
     category: fn(&str) -> bool,
 ) -> std::collections::HashMap<String, Vec<String>> {
+    let file_set: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
     let mut mapping: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for requirement in requirements {
@@ -541,31 +570,29 @@ fn map_files(
             .split('\n')
             .filter(|line| line_explicitly_references(line, requirement))
             .flat_map(extract_paths)
-            .filter(|f| files.contains(f) && category(f))
+            .filter(|file| file_set.contains(file.as_str()) && category(file))
             .collect();
         if !explicit.is_empty() {
             mapping.insert(requirement.id.clone(), unique(explicit));
         }
     }
-    let unresolved: Vec<&RequirementPlan> = requirements
+    let unresolved: Vec<(&RequirementPlan, Vec<String>)> = requirements
         .iter()
         .filter(|r| !mapping.contains_key(&r.id))
+        .map(|requirement| (requirement, requirement_tokens(requirement)))
         .collect();
     if files.len() == 1 {
-        for requirement in unresolved {
+        for (requirement, _) in unresolved {
             mapping.insert(requirement.id.clone(), files.to_vec());
         }
         return mapping;
     }
     for file in files {
+        let lower = file.to_lowercase();
         let owners: Vec<&RequirementPlan> = unresolved
             .iter()
-            .filter(|requirement| {
-                requirement_tokens(requirement)
-                    .iter()
-                    .any(|token| file.to_lowercase().contains(token))
-            })
-            .copied()
+            .filter(|(_, tokens)| tokens.iter().any(|token| lower.contains(token)))
+            .map(|(requirement, _)| *requirement)
             .collect();
         if owners.len() == 1 {
             let owner = owners[0];
@@ -586,6 +613,7 @@ fn merge_spec_path_mapping(
     category: fn(&str) -> bool,
     requirements: &[RequirementPlan],
 ) {
+    let file_set: std::collections::HashSet<&str> = files.iter().map(String::as_str).collect();
     let starts: Vec<usize> = REQUIREMENT_HEADING_RE
         .find_iter(spec)
         .map(|match_| match_.start())
@@ -600,7 +628,7 @@ fn merge_spec_path_mapping(
         let end = starts.get(index + 1).copied().unwrap_or(spec.len());
         let candidates = extract_paths(&spec[start..end])
             .into_iter()
-            .filter(|path| files.contains(path) && category(path))
+            .filter(|path| file_set.contains(path.as_str()) && category(path))
             .collect::<Vec<_>>();
         if !candidates.is_empty() {
             mapping.insert(requirement.id.clone(), unique(candidates));
@@ -609,52 +637,25 @@ fn merge_spec_path_mapping(
 }
 
 fn related_source_files(source_files: &[String], test_files: &[String]) -> Vec<String> {
+    let source_set: std::collections::HashSet<&str> =
+        source_files.iter().map(String::as_str).collect();
     unique(
         test_files
             .iter()
             .filter_map(|test| {
                 let captures = TEST_NAME_RE.captures(test)?;
                 let source = format!("{}{}", captures.get(1)?.as_str(), captures.get(2)?.as_str());
-                source_files
-                    .iter()
-                    .find(|candidate| *candidate == &source)
-                    .cloned()
+                source_set.contains(source.as_str()).then_some(source)
             })
             .collect(),
     )
 }
 
-fn share_single_mapping(
-    mapping: &mut std::collections::HashMap<String, Vec<String>>,
-    requirements: &[RequirementPlan],
-) {
-    let shared = requirements
-        .iter()
-        .find_map(|requirement| {
-            mapping
-                .get(&requirement.id)
-                .filter(|files| !files.is_empty())
-                .cloned()
-        })
-        .or_else(|| {
-            (mapping.len() == 1)
-                .then(|| mapping.values().next().cloned())
-                .flatten()
-                .filter(|files| !files.is_empty())
-        });
-    let Some(shared) = shared else {
-        return;
-    };
-    for requirement in requirements {
-        mapping.insert(requirement.id.clone(), shared.clone());
-    }
-}
-fn fallback_single_requirement_mapping(
+fn map_single_requirement(
     source_mapping: &mut std::collections::HashMap<String, Vec<String>>,
     test_mapping: &mut std::collections::HashMap<String, Vec<String>>,
     requirements: &[RequirementPlan],
-    source_files: &[String],
-    test_files: &[String],
+    focused_files: &[String],
 ) {
     if requirements.len() != 1 {
         return;
@@ -664,9 +665,9 @@ fn fallback_single_requirement_mapping(
         .get(&requirement_id)
         .is_some_and(|files| !files.is_empty())
     {
-        let files = source_files
+        let files = focused_files
             .iter()
-            .filter(|file| is_workspace_owned_file(file))
+            .filter(|file| is_source_file(file))
             .cloned()
             .collect::<Vec<_>>();
         if !files.is_empty() {
@@ -677,23 +678,15 @@ fn fallback_single_requirement_mapping(
         .get(&requirement_id)
         .is_some_and(|files| !files.is_empty())
     {
-        let files = test_files
+        let files = focused_files
             .iter()
-            .filter(|file| is_workspace_owned_file(file))
+            .filter(|file| is_test_file(file))
             .cloned()
             .collect::<Vec<_>>();
         if !files.is_empty() {
             test_mapping.insert(requirement_id, files);
         }
     }
-}
-
-fn is_workspace_owned_file(file: &str) -> bool {
-    file.starts_with("crates/")
-        || file.starts_with("assets/")
-        || file.starts_with("docs/")
-        || file.starts_with("scripts/")
-        || file == "README.md"
 }
 
 fn line_explicitly_references(line: &str, requirement: &RequirementPlan) -> bool {
@@ -838,32 +831,23 @@ fn assert_requirements(requirements: &[RequirementPlan]) -> Result<(), SddError>
 
 /// 项目验证命令检测（detectProjectCommands，Rust 版同时识别 Cargo）
 pub fn detect_project_commands(files: &[String]) -> Vec<String> {
-    let normalized: Vec<String> = files.iter().map(|f| f.replace('\\', "/")).collect();
     let mut candidates: Vec<String> = Vec::new();
-    if normalized
-        .iter()
-        .any(|f| f == "pom.xml" || f.ends_with("/pom.xml"))
-    {
+    let has_manifest = |name| {
+        files
+            .iter()
+            .any(|file| file.rsplit(['/', '\\']).next() == Some(name))
+    };
+    if has_manifest("pom.xml") {
         candidates.push("mvn test".to_string());
         candidates.push("mvn verify".to_string());
     }
-    if normalized
-        .iter()
-        .any(|f| f == "package.json" || f.ends_with("/package.json"))
-    {
+    if has_manifest("package.json") {
         candidates.push("npm test".to_string());
     }
-    if normalized
-        .iter()
-        .any(|f| f == "Cargo.toml" || f.ends_with("/Cargo.toml"))
-    {
+    if has_manifest("Cargo.toml") {
         candidates.push("cargo test".to_string());
     }
-    let mut seen = std::collections::HashSet::new();
     candidates
-        .into_iter()
-        .filter(|c| seen.insert(c.clone()))
-        .collect()
 }
 
 fn unique(values: Vec<String>) -> Vec<String> {
@@ -879,7 +863,30 @@ fn unique(values: Vec<String>) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::extract_new_paths;
+    use super::{detect_project_commands, extract_new_paths, validate_task_graph, TaskDefinition};
+
+    fn task(id: &str, phase: &str, depends_on: &[&str]) -> TaskDefinition {
+        TaskDefinition {
+            id: id.to_string(),
+            title: "测试任务".to_string(),
+            phase: phase.to_string(),
+            requirements: vec!["REQ-001".to_string()],
+            scenarios: vec!["SCN-001".to_string()],
+            depends_on: depends_on
+                .iter()
+                .map(|value| (*value).to_string())
+                .collect(),
+            allowed_files: vec!["src/lib.rs".to_string()],
+            expected_new_files: Vec::new(),
+            forbidden_files: vec![".sdd/**".to_string()],
+            verification: vec!["cargo test".to_string()],
+            done_criteria: vec!["完成".to_string()],
+            slice_type: "VERTICAL".to_string(),
+            user_visible_outcome: "行为正确".to_string(),
+            acceptance_criteria: vec!["SCN-001：行为正确".to_string()],
+            test_seam: "src/lib.rs".to_string(),
+        }
+    }
 
     #[test]
     fn extracts_case_insensitive_new_path_markers() {
@@ -896,5 +903,37 @@ mod tests {
         assert!(!paths
             .iter()
             .any(|path| path == "crates/sdd-core/src/existing.rs"));
+    }
+
+    #[test]
+    fn detects_manifests_without_normalizing_every_path() {
+        let commands = detect_project_commands(&[
+            "backend\\pom.xml".to_string(),
+            "frontend/package.json".to_string(),
+            "crates/core/Cargo.toml".to_string(),
+        ]);
+        assert_eq!(
+            commands,
+            ["mvn test", "mvn verify", "npm test", "cargo test"]
+        );
+    }
+
+    #[test]
+    fn task_graph_rejects_missing_duplicate_cyclic_and_mismatched_nodes() {
+        let red = task("TASK-001-RED", "RED", &[]);
+        let green = task("TASK-001-GREEN", "GREEN", &["TASK-001-RED"]);
+        assert!(validate_task_graph(&[red.clone(), green.clone()]).is_ok());
+
+        assert!(validate_task_graph(&[
+            red.clone(),
+            task("TASK-001-GREEN", "GREEN", &["TASK-999-RED"]),
+        ])
+        .is_err());
+        assert!(validate_task_graph(&[red.clone(), red]).is_err());
+        assert!(
+            validate_task_graph(&[task("TASK-001-RED", "RED", &["TASK-001-GREEN"]), green,])
+                .is_err()
+        );
+        assert!(validate_task_graph(&[task("TASK-001-RED", "GREEN", &[])]).is_err());
     }
 }

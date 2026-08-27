@@ -111,7 +111,12 @@ fn init_codex_writes_native_project_files() {
         .exists());
     assert!(dir.path().join(".codex/agents/sdd-explorer.toml").exists());
     assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
+    assert!(dir
+        .path()
+        .join(".codex/agents/sdd-worker-complex.toml")
+        .exists());
     assert!(dir.path().join(".codex/agents/sdd-reviewer.toml").exists());
+    assert!(dir.path().join(".codex/agents/sdd-architect.toml").exists());
     assert!(!dir.path().join(".omp/skills/sdd-harness/SKILL.md").exists());
 }
 
@@ -132,7 +137,7 @@ fn init_without_host_marker_defaults_to_codex() {
 }
 
 #[test]
-fn init_non_interactive_defaults_to_codex() {
+fn init_rejects_new_only_non_interactive_flag() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("README.md"), "# demo").unwrap();
     let output = sdd()
@@ -140,8 +145,8 @@ fn init_non_interactive_defaults_to_codex() {
         .args(["init", "--non-interactive", "--json"])
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(0));
-    assert!(dir.path().join(".codex/agents/sdd-worker.toml").exists());
+    assert_eq!(output.status.code(), Some(2));
+    assert!(!dir.path().join(".sdd/runtime.json").exists());
 }
 
 #[test]
@@ -159,19 +164,9 @@ fn text_output_readable() {
 }
 
 #[test]
-fn status_loop_flag_is_accepted() {
-    let dir = tempfile::tempdir().unwrap();
-    let out = sdd()
-        .current_dir(dir.path())
-        .args(["status", "--loop", "--json"])
-        .output()
-        .unwrap();
-    assert_eq!(out.status.code(), Some(0));
-}
-
-#[test]
 fn removed_legacy_cli_aliases_are_rejected() {
     for args in [
+        vec!["status", "--loop"],
         vec!["status", "--loop-status"],
         vec!["init", "--structure-policy", "free-design"],
     ] {
@@ -219,10 +214,22 @@ fn malformed_values_exit_with_code_2() {
         vec!["init", "--structurePolicy", "invalid"],
         vec!["init", "--agent", "opencode"],
         vec!["plan", "--dependencies", "{}"],
+        vec!["build", "unknown"],
+        vec!["codebase", "unknown"],
     ] {
         let out = sdd().args(args).output().unwrap();
         assert_eq!(out.status.code(), Some(2));
     }
+}
+
+#[test]
+fn change_rejects_conflicting_global_and_positional_ids() {
+    let out = sdd()
+        .args(["--change", "change-a", "change", "change-b", "新需求"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("不得同时传入全局 --change"));
 }
 
 #[test]

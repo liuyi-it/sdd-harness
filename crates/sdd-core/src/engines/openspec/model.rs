@@ -1,4 +1,4 @@
-//! OpenSpec 规格模型（翻译自 早期 Node 实现）。
+//! OpenSpec 规格模型。
 
 use serde::{Deserialize, Serialize};
 

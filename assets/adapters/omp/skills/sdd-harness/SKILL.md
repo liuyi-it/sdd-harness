@@ -37,7 +37,7 @@ description: 用户要实现、修复、重构、测试或审查代码时使用�
 
 遇到任务边界时读取 `contextPack`，只改 `allowedFiles`，按 `verification` 验证，并提交 `TaskExecutionResult`。
 
-是否派发以及选择哪个 profile 由主 Agent 根据任务边界、风险、依赖、文件冲突和验收难度自主判断：`sdd-worker-simple` 用于简单独立任务，`sdd-worker` 用于一般任务，`sdd-worker-complex` 用于复杂但边界明确的任务。三个 profile 分别使用 `@smol`、`@task`、`@slow`；项目 `.omp/config.yml` 为这些角色提供模型与思考强度映射，OMP 负责解析当前可用模型。无法判断时向上选择一级；模型不可用时由 OMP 解析可用角色，主 Agent 不自行硬编码替代模型。架构定案、安全门禁、不可逆外部操作和最终验收留给主 Agent。
+是否派发以及选择哪个 profile 由主 Agent 根据任务边界、风险、依赖、文件冲突和验收难度自主判断：`sdd-worker-simple` 用于简单独立任务，`sdd-worker` 用于一般任务，`sdd-worker-complex` 用于复杂但边界明确的任务。三个 profile 分别使用 `@smol`、`@task`、`@slow`；项目 `.omp/config.yml` 将前两者固定为 `gpt-5.6-luna` + `max`，复杂任务固定为 `gpt-5.6-terra` + `max`。无法判断时向上选择一级；指定模型不可用时停止并报告，不降级到 GPT-5.6 之前的模型。架构定案、安全门禁、不可逆外部操作和最终验收留给主 Agent。
 
 subagent 完成后，主 Agent 必须重新检查 diff、文件范围和验证结果；不直接相信子 agent 的结论。所有任务完成后执行 `sdd verify`、`sdd review`，通过后归档。
 

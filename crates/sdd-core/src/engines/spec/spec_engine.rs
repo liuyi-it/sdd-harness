@@ -1,6 +1,6 @@
 //! SpecEngine：从需求文本生成 OpenSpec 规格制品。
 //!
-//! 翻译自 早期 Node 实现：
+//! 规格生成包含：
 //! - analyze：语义槽缺失检测（BLOCKER 澄清问题）
 //! - generate：生成 proposal/impact/questions/answers/assumptions/spec/delta/model
 //! - build_model：行为分割 → 需求/场景生成（GIVEN/WHEN/THEN）
@@ -575,19 +575,7 @@ impl Default for SpecEngine {
     }
 }
 
-impl SpecEngine {
-    /// 解析 spec.md（委托 OpenSpec parser）
-    pub fn parse_spec_md(&self, content: &str) -> Result<SpecDocument, String> {
-        crate::engines::openspec::parser::parse_spec(content)
-    }
-
-    /// 渲染 spec.md（委托 OpenSpec renderer）
-    pub fn render_spec_md(&self, document: &SpecDocument) -> Result<String, String> {
-        crate::engines::openspec::renderer::render_spec(document)
-    }
-}
-
-/// 组合有效需求（翻译自 composeEffectiveRequirement）
+/// 组合有效需求。
 fn compose_effective_requirement(
     requirement: &str,
     answers: &std::collections::HashMap<String, String>,
@@ -638,7 +626,7 @@ fn compose_effective_requirement(
     }
 }
 
-/// 从需求构建 OpenSpec 文档（翻译自 buildModel/splitBehaviors/buildRequirement）
+/// 从需求构建 OpenSpec 文档。
 fn build_model(requirement: &str) -> Result<SpecDocument, String> {
     let behaviors = split_behaviors(requirement);
     let mut requirements = Vec::new();

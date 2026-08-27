@@ -5,5 +5,10 @@ pub mod fallback_scan;
 pub mod provider;
 pub mod router;
 
-pub use provider::{KnowledgeIntent, KnowledgeProvider, QueryResult};
+pub use provider::{KnowledgeIntent, QueryResult};
 pub use router::KnowledgeRouter;
+
+pub(crate) const CODEGRAPH_SUMMARY_PREFIX: &str =
+    "<!-- summary-provider: codegraph degraded=false -->\n";
+pub(crate) const FALLBACK_SUMMARY_PREFIX: &str =
+    "<!-- summary-provider: fallback-file-scan degraded=true -->\n";

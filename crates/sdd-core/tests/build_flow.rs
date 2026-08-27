@@ -9,6 +9,14 @@ use std::process::Command;
 
 const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
 
+fn plan_value(cwd: &str, change_id: &str) -> serde_json::Value {
+    sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .read()
+        .unwrap()
+        .changes[change_id]["plan"]
+        .clone()
+}
+
 fn prepare(dir: &std::path::Path) -> String {
     std::fs::write(dir.join("README.md"), "# demo").unwrap();
     let cwd = dir.to_string_lossy().to_string();
@@ -18,12 +26,20 @@ fn prepare(dir: &std::path::Path) -> String {
         args: None,
     })
     .unwrap();
-    sdd_core::state::runtime_store::write_index(
-        &cwd,
-        json!([]),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
-    )
-    .unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            let prefix = runtime.index["summary"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap();
+            runtime.index["summary"] = json!(format!(
+                "{prefix}\nsrc/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n"
+            ));
+            runtime.index["updatedAt"] = json!("2026-01-01T00:00:00Z");
+        })
+        .unwrap();
     run_new(
         &cwd,
         Some(&json!({ "requirement": FULL_REQUIREMENT })),
@@ -52,7 +68,7 @@ fn build_next_returns_action_required_with_known_provider() {
     let cwd = prepare(dir.path());
     let result = run(&CommandRequest {
         command: "build".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: Some(json!({ "sub": "next" })),
     })
     .unwrap();
@@ -63,12 +79,59 @@ fn build_next_returns_action_required_with_known_provider() {
     assert!(action.task_id.starts_with("TASK-"));
     assert_eq!(action.result_transport, "inline-json");
     assert!(action.policy_bundle.is_some());
+    for section in [
+        "Slice Type:",
+        "## User-visible Outcome",
+        "## Test Seam",
+        "Acceptance Criteria:",
+    ] {
+        assert!(
+            action.context_pack.contains(section),
+            "Context Pack 缺少 subagent 执行边界：{section}"
+        );
+    }
     // 契约变更：provider 必须是 CodeGraph 或受限文件扫描
     assert!(
         ["codegraph", "fallback-file-scan"].contains(&action.codebase.provider.as_str()),
         "未知 provider: {}",
         action.codebase.provider
     );
+}
+
+#[test]
+fn context_pack_limits_multibyte_codebase_summary_by_utf8_bytes() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            runtime.config["contextPack"]["maxSizeKb"] = json!(1);
+            let prefix = runtime.index["summary"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap();
+            runtime.index["summary"] = json!(format!("{prefix}\n{}", "界".repeat(1_000)));
+        })
+        .unwrap();
+
+    let result = run(&CommandRequest {
+        command: "build".into(),
+        cwd,
+        args: Some(json!({ "sub": "next" })),
+    })
+    .unwrap();
+    let context = result.action_required.unwrap().context_pack;
+    let summary = context
+        .split_once("BEGIN_UNTRUSTED_CODEBASE_CONTEXT\n")
+        .unwrap()
+        .1
+        .split_once("\nEND_UNTRUSTED_CODEBASE_CONTEXT")
+        .unwrap()
+        .0;
+
+    assert!(summary.len() <= 1024);
+    assert_eq!(summary.len() % "界".len(), 0);
 }
 
 #[test]
@@ -79,12 +142,12 @@ fn build_rejects_tampered_plan() {
         .read()
         .unwrap();
     let change_id = state.current_change_id.unwrap();
-    let plan = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "plan")
-        .unwrap()
-        .unwrap();
+    let plan = plan_value(&cwd, &change_id);
     let mut tampered = plan;
     tampered["tasks"] = json!([]);
-    sdd_core::state::runtime_store::write_change_field(&cwd, &change_id, "plan", tampered).unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| runtime.changes.get_mut(&change_id).unwrap()["plan"] = tampered)
+        .unwrap();
 
     let err = run(&CommandRequest {
         command: "build".into(),
@@ -93,6 +156,36 @@ fn build_rejects_tampered_plan() {
     })
     .unwrap_err();
     assert_eq!(err.code, "E_COMPONENT_INTEGRITY_FAILED");
+}
+
+#[cfg(unix)]
+#[test]
+fn build_rejects_symlinked_context_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = prepare(dir.path());
+    let change_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .current_change_id
+        .unwrap();
+    let design_path = dir
+        .path()
+        .join(".sdd/changes")
+        .join(change_id)
+        .join("design.md");
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), "不得进入 Context Pack").unwrap();
+    std::fs::remove_file(&design_path).unwrap();
+    std::os::unix::fs::symlink(outside.path(), design_path).unwrap();
+
+    let error = run(&CommandRequest {
+        command: "build".into(),
+        cwd,
+        args: Some(json!({ "sub": "next" })),
+    })
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_SYMLINK_BLOCKED");
 }
 
 #[test]
@@ -110,7 +203,7 @@ fn build_complete_with_invalid_result_rejected() {
         json!({ "taskId": action.task_id, "status": "completed", "evidence": [] }).to_string();
     let err = run(&CommandRequest {
         command: "build".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: Some(json!({
             "sub": "complete",
             "task": action.task_id,
@@ -134,7 +227,7 @@ fn build_complete_wrong_task_id_rejected() {
     .unwrap();
     let err = run(&CommandRequest {
         command: "build".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: Some(json!({
             "sub": "complete",
             "task": "TASK-999-RED",
@@ -172,7 +265,7 @@ fn build_complete_with_valid_result_passes_red() {
     .to_string();
     let result = run(&CommandRequest {
         command: "build".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: Some(json!({
             "sub": "complete",
             "task": action.task_id,
@@ -243,7 +336,7 @@ fn build_complete_rejects_result_path_override() {
     assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
 }
 #[test]
-fn build_complete_accepts_result_from_file_path() {
+fn build_complete_rejects_removed_result_path_transport() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = prepare(dir.path());
     let next = run(&CommandRequest {
@@ -253,22 +346,9 @@ fn build_complete_accepts_result_from_file_path() {
     })
     .unwrap();
     let action = next.action_required.unwrap();
-    let result_json = json!({
-        "taskId": action.task_id,
-        "status": "completed",
-        "evidence": [{
-            "type": "command-run", "command": "cargo test", "output": "FAILED: expected",
-            "passed": false, "expectedFailure": true
-        }],
-        "verification": [
-            { "command": "cargo test", "args": [], "passed": false }
-        ],
-        "filesChanged": []
-    })
-    .to_string();
     let result_path = dir.path().join("task-result.json");
-    std::fs::write(&result_path, &result_json).unwrap();
-    let result = run(&CommandRequest {
+    std::fs::write(&result_path, "{}").unwrap();
+    let error = run(&CommandRequest {
         command: "build".into(),
         cwd,
         args: Some(json!({
@@ -277,9 +357,23 @@ fn build_complete_accepts_result_from_file_path() {
             "resultPath": result_path.to_string_lossy(),
         })),
     })
-    .unwrap();
-    assert!(result.ok);
-    assert_eq!(result.state, "PLAN_READY");
+    .unwrap_err();
+    assert_eq!(error.code, "E_INVALID_PHASE_COMMAND");
+}
+
+#[test]
+fn build_complete_rejects_oversized_inline_result_before_state_access() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = serde_json::json!({
+        "sub": "complete",
+        "task": "TASK-001-RED",
+        "resultJson": "x".repeat(4 * 1024 * 1024 + 1),
+    });
+    let error =
+        sdd_core::commands::build::run_build(dir.path().to_string_lossy().as_ref(), Some(&args))
+            .unwrap_err();
+
+    assert_eq!(error.code, "E_TDD_EVIDENCE_REQUIRED");
 }
 
 #[test]

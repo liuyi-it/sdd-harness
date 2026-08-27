@@ -1,8 +1,8 @@
 //! sdd CLI 入口 — 参数解析、命令路由、输出格式化。
 //!
-//! 参数与输出契约对齐 早期 Node 实现：
-//! - 全局参数：--json/--cwd/--change/--timeout/--non-interactive/--verbose
-//! - 命令：init/status/new/design/plan/build/verify/review/archive/auto/codebase
+//! 参数与输出遵循当前 Core 契约：
+//! - 全局参数：--json/--cwd/--change/--timeout
+//! - 命令：init/status/new/change/design/plan/build/verify/review/archive/auto/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
 
 use std::process::ExitCode;
@@ -23,7 +23,7 @@ struct Cli {
     command: Command,
 }
 
-/// 全局参数（对齐 Node 版 parseArgs 的通用 options）
+/// 全局参数。
 #[derive(Args)]
 struct GlobalArgs {
     /// JSON 输出
@@ -38,12 +38,6 @@ struct GlobalArgs {
     /// 超时秒数（锁等待与子进程执行超时）
     #[arg(long, global = true, value_parser = parse_timeout)]
     timeout: Option<f64>,
-    /// 无人值守模式；遇到未回答的需求阻塞问题直接失败
-    #[arg(long, global = true, default_value_t = false)]
-    non_interactive: bool,
-    /// 详细输出
-    #[arg(long, global = true, default_value_t = false)]
-    verbose: bool,
 }
 
 #[derive(Subcommand)]
@@ -58,11 +52,7 @@ enum Command {
         host_adapter: Option<String>,
     },
     /// 显示当前 SDD 状态
-    Status {
-        /// 显示 loop 状态摘要
-        #[arg(long = "loop")]
-        loop_status: bool,
-    },
+    Status,
     /// 创建新变更（需求）
     New {
         /// 需求文本（可多个词）
@@ -71,6 +61,9 @@ enum Command {
         #[arg(long)]
         #[arg(value_parser = parse_answers)]
         answers: Option<serde_json::Value>,
+        /// 需求不完整时直接失败，不进入交互澄清
+        #[arg(long, default_value_t = false)]
+        non_interactive: bool,
     },
     /// 修订已有变更并同步所有文档
     Change {
@@ -93,6 +86,7 @@ enum Command {
     /// 构建（build next / build complete）
     Build {
         /// 子命令：next 或 complete
+        #[arg(value_parser = ["next", "complete"])]
         sub: Option<String>,
         /// complete 时的任务 ID（如 TASK-001-RED）
         #[arg(long)]
@@ -100,9 +94,6 @@ enum Command {
         /// complete 时内联提交的 TaskExecutionResult JSON
         #[arg(long = "result-json")]
         result_json: Option<String>,
-        /// complete 时从文件读取 TaskExecutionResult JSON
-        #[arg(long)]
-        result: Option<String>,
     },
     /// 验证
     Verify,
@@ -117,6 +108,9 @@ enum Command {
         /// 澄清答案 JSON，如 {"Q-ACTOR":"答案"}
         #[arg(long, value_parser = parse_answers)]
         answers: Option<serde_json::Value>,
+        /// 需求不完整时直接失败，不进入交互澄清
+        #[arg(long, default_value_t = false)]
+        non_interactive: bool,
         /// 恢复当前 auto run
         #[arg(long, default_value_t = false)]
         resume: bool,
@@ -142,6 +136,7 @@ enum Command {
     /// 代码库上下文管理（status/doctor/index/query/rebuild）
     Codebase {
         /// 子命令：status/doctor/index/query/rebuild
+        #[arg(value_parser = ["status", "doctor", "index", "query", "rebuild"])]
         sub: Option<String>,
         /// 查询词（query 子命令）
         query_parts: Vec<String>,
@@ -152,7 +147,7 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    // 无命令时显示帮助并退出 0（对齐 Node 版行为）；未知命令由 clap 退出 2
+    // 无命令时显示帮助并退出 0；未知命令由 clap 退出 2。
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e)
@@ -167,7 +162,9 @@ fn main() -> ExitCode {
             return ExitCode::from(0);
         }
         Err(e) => {
-            e.print().ok();
+            if let Err(error) = e.print() {
+                eprintln!("输出命令行错误失败：{error}");
+            }
             return ExitCode::from(2);
         }
     };
@@ -178,7 +175,16 @@ fn main() -> ExitCode {
     let cwd = match &cli.global.cwd {
         Some(cwd) => cwd.clone(),
         None => match std::env::current_dir() {
-            Ok(cwd) => cwd.to_string_lossy().to_string(),
+            Ok(cwd) => match cwd.into_os_string().into_string() {
+                Ok(cwd) => cwd,
+                Err(_) => {
+                    let error = SddError::new(
+                        "E_PATH_OUTSIDE_REPO",
+                        "当前目录不是有效 UTF-8，无法写入 JSON 契约；请使用 --cwd 指定可表示路径",
+                    );
+                    return render_error_and_exit(&error, cli.global.json, "FAILED");
+                }
+            },
             Err(error) => {
                 let error =
                     SddError::new("E_PATH_OUTSIDE_REPO", &format!("无法读取当前目录：{error}"));
@@ -186,7 +192,10 @@ fn main() -> ExitCode {
             }
         },
     };
-    let (command, args) = build_request(&cli, init_adapter.as_deref());
+    let (command, args) = match build_request(&cli, init_adapter.as_deref()) {
+        Ok(request) => request,
+        Err(error) => return render_error_and_exit(&error, cli.global.json, "FAILED"),
+    };
     let args = if args.as_object().map(|o| o.is_empty()).unwrap_or(true) {
         None
     } else {
@@ -199,11 +208,10 @@ fn main() -> ExitCode {
     };
     match sdd_core::run(&request) {
         Ok(result) => render_and_exit(&result, cli.global.json),
-        Err(error) => {
-            let state = sdd_core::commands::status::read_phase(&request.cwd)
-                .unwrap_or_else(|_| "FAILED".to_string());
-            render_error_and_exit(&error, cli.global.json, &state)
-        }
+        Err(error) => match sdd_core::commands::status::read_phase(&request.cwd) {
+            Ok(state) => render_error_and_exit(&error, cli.global.json, &state),
+            Err(state_error) => render_error_and_exit(&state_error, cli.global.json, "FAILED"),
+        },
     }
 }
 
@@ -212,8 +220,8 @@ fn resolve_init_adapter(cli: &Cli) -> Result<Option<String>, SddError> {
     let Command::Init { host_adapter, .. } = &cli.command else {
         return Ok(None);
     };
-    if let Some(agent) = host_adapter {
-        return validate_adapter(agent).map(|adapter| Some(adapter.as_str().to_string()));
+    if let Some(adapter) = host_adapter {
+        return validate_adapter(adapter).map(|adapter| Some(adapter.as_str().to_string()));
     }
     Ok(Some(HostAdapter::DEFAULT.as_str().to_string()))
 }
@@ -239,7 +247,10 @@ fn render_and_exit(result: &CommandResult, json: bool) -> ExitCode {
     if json {
         match serde_json::to_string_pretty(result) {
             Ok(text) => println!("{text}"),
-            Err(e) => eprintln!("序列化结果失败：{e}"),
+            Err(e) => {
+                eprintln!("序列化结果失败：{e}");
+                return ExitCode::from(1);
+            }
         }
     } else {
         println!("{}", render_text(result));
@@ -247,7 +258,7 @@ fn render_and_exit(result: &CommandResult, json: bool) -> ExitCode {
     ExitCode::from(exit)
 }
 
-/// 文本渲染：状态、下一步与错误信息（对齐 Node 版 outputText 语义）
+/// 文本渲染：状态、下一步与错误信息。
 fn render_text(result: &CommandResult) -> String {
     let mut lines = Vec::new();
     if let Some(action) = &result.action_required {
@@ -289,30 +300,28 @@ fn render_text(result: &CommandResult) -> String {
     }
     if let Some(warnings) = &result.warnings {
         for warning in warnings {
-            if let Some(message) = warning.get("message").and_then(|m| m.as_str()) {
-                lines.push(format!("警告：{message}"));
-            }
+            lines.push(format!("警告：{}", warning.message));
         }
     }
     if let Some(data) = &result.data {
-        if let Ok(text) = serde_json::to_string(data) {
-            if !text.is_empty() && text != "null" {
-                if text.chars().count() > 512 {
-                    // 长数据在文本模式下只给提示，避免倾倒整个状态对象；完整内容走 --json。
-                    lines.push(format!(
-                        "数据：<JSON 过长，已省略 {} 字符；使用 --json 查看完整内容>",
-                        text.chars().count()
-                    ));
-                } else {
-                    lines.push(format!("数据：{text}"));
-                }
+        let text = serde_json::to_string(data).expect("serde_json::Value 必须可序列化");
+        if !text.is_empty() && text != "null" {
+            let char_count = text.chars().count();
+            if char_count > 512 {
+                // 长数据在文本模式下只给提示，避免倾倒整个状态对象；完整内容走 --json。
+                lines.push(format!(
+                    "数据：<JSON 过长，已省略 {} 字符；使用 --json 查看完整内容>",
+                    char_count
+                ));
+            } else {
+                lines.push(format!("数据：{text}"));
             }
         }
     }
     lines.join("\n")
 }
 
-/// 退出码截断到 0..=255（与 Node process.exitCode 行为一致）
+/// 将内部退出码约束到进程支持的 0..=255。
 fn clamp_exit(code: i32) -> u8 {
     if code < 0 {
         1
@@ -332,8 +341,11 @@ fn render_text_error(error: &SddError) -> String {
     }
 }
 
-/// 把 CLI 参数结构转换为 Core 的 args JSON（对齐 Node 版 extraArgs 键名）
-fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_json::Value) {
+/// 把 CLI 参数结构转换为 Core 的 args JSON。
+fn build_request(
+    cli: &Cli,
+    init_adapter: Option<&str>,
+) -> Result<(&'static str, serde_json::Value), SddError> {
     let mut args = serde_json::Map::new();
     let g = &cli.global;
     if let Some(change) = &g.change {
@@ -342,13 +354,6 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
     if let Some(timeout) = g.timeout {
         args.insert("timeout".into(), serde_json::json!(timeout));
     }
-    if g.non_interactive {
-        args.insert("nonInteractive".into(), serde_json::json!(true));
-    }
-    if g.verbose {
-        args.insert("verbose".into(), serde_json::json!(true));
-    }
-
     let command: &'static str = match &cli.command {
         Command::Init {
             structure_policy,
@@ -357,20 +362,16 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             if let Some(policy) = structure_policy {
                 args.insert("structurePolicy".into(), serde_json::json!(policy));
             }
-            if let Some(agent) = init_agent {
-                args.insert("hostAdapter".into(), serde_json::json!(agent));
+            if let Some(adapter) = init_adapter {
+                args.insert("hostAdapter".into(), serde_json::json!(adapter));
             }
             "init"
         }
-        Command::Status { loop_status } => {
-            if *loop_status {
-                args.insert("loopStatus".into(), serde_json::json!(true));
-            }
-            "status"
-        }
+        Command::Status => "status",
         Command::New {
             requirement,
             answers,
+            non_interactive,
         } => {
             if !requirement.is_empty() {
                 args.insert(
@@ -381,6 +382,9 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             if let Some(answers) = answers {
                 args.insert("answers".into(), answers.clone());
             }
+            if *non_interactive {
+                args.insert("nonInteractive".into(), serde_json::json!(true));
+            }
             "new"
         }
         Command::Change {
@@ -388,6 +392,12 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             requirement,
             answers,
         } => {
+            if g.change.is_some() {
+                return Err(SddError::new(
+                    "E_INVALID_PHASE_COMMAND",
+                    "sdd change 已使用位置参数指定变更 ID，不得同时传入全局 --change",
+                ));
+            }
             args.insert("changeId".into(), serde_json::json!(change_id));
             if !requirement.is_empty() {
                 args.insert(
@@ -411,7 +421,6 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             sub,
             task,
             result_json,
-            result,
         } => {
             if let Some(sub) = sub {
                 args.insert("sub".into(), serde_json::json!(sub));
@@ -422,9 +431,6 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             if let Some(result_json) = result_json {
                 args.insert("resultJson".into(), serde_json::json!(result_json));
             }
-            if let Some(result) = result {
-                args.insert("resultPath".into(), serde_json::json!(result));
-            }
             "build"
         }
         Command::Verify => "verify",
@@ -433,6 +439,7 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
         Command::Auto {
             requirement,
             answers,
+            non_interactive,
             resume,
             restart,
             stop,
@@ -449,6 +456,9 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             }
             if let Some(answers) = answers {
                 args.insert("answers".into(), answers.clone());
+            }
+            if *non_interactive {
+                args.insert("nonInteractive".into(), serde_json::json!(true));
             }
             if *resume {
                 args.insert("resume".into(), serde_json::json!(true));
@@ -490,7 +500,7 @@ fn build_request(cli: &Cli, init_agent: Option<&str>) -> (&'static str, serde_js
             "codebase"
         }
     };
-    (command, serde_json::Value::Object(args))
+    Ok((command, serde_json::Value::Object(args)))
 }
 
 fn parse_answers(raw: &str) -> Result<serde_json::Value, String> {

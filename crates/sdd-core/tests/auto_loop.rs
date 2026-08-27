@@ -15,12 +15,19 @@ fn setup(dir: &std::path::Path) -> String {
         args: None,
     })
     .unwrap();
-    sdd_core::state::runtime_store::write_index(
-        &cwd,
-        json!([]),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
-    )
-    .unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            let prefix = if runtime.state.degraded {
+                "<!-- summary-provider: fallback-file-scan degraded=true -->"
+            } else {
+                "<!-- summary-provider: codegraph degraded=false -->"
+            };
+            runtime.index["summary"] = json!(format!(
+                "{prefix}\nsrc/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n"
+            ));
+            runtime.index["updatedAt"] = json!("2026-01-01T00:00:00Z");
+        })
+        .unwrap();
     cwd
 }
 
@@ -30,7 +37,7 @@ fn auto_pauses_on_missing_requirement() {
     let cwd = setup(dir.path());
     let result = run(&CommandRequest {
         command: "auto".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: None,
     })
     .unwrap();
@@ -125,9 +132,7 @@ fn auto_events_persist_in_runtime_json() {
         args: Some(json!({ "requirement": FULL_REQUIREMENT })),
     })
     .unwrap();
-    let state = sdd_core::state::StateStore::new(cwd.clone())
-        .read()
-        .unwrap();
+    let state = sdd_core::state::StateStore::new(cwd).read().unwrap();
     let run_id = state.active_loop.unwrap()["runId"]
         .as_str()
         .unwrap()
@@ -156,7 +161,7 @@ fn auto_after_archive_reports_completed() {
     assert!(tasks > 0, "应完成至少一个任务");
     let result2 = run(&CommandRequest {
         command: "auto".into(),
-        cwd: cwd.clone(),
+        cwd,
         args: Some(json!({ "requirement": FULL_REQUIREMENT })),
     })
     .unwrap();
@@ -265,7 +270,7 @@ fn auto_step_failure_persists_paused_and_resume_recovers() {
     let state = sdd_core::state::StateStore::new(cwd.clone())
         .read()
         .unwrap();
-    let change_id = state.current_change_id.clone().unwrap();
+    let change_id = state.current_change_id.unwrap();
     std::fs::remove_file(
         dir.path()
             .join(".sdd/changes")
@@ -277,6 +282,8 @@ fn auto_step_failure_persists_paused_and_resume_recovers() {
         .update(|state| {
             state.current_phase = "SPEC_READY".into();
             state.in_progress_phase = None;
+            state.pending_agent_task = None;
+            state.tasks.clear();
         })
         .unwrap();
 
@@ -354,6 +361,14 @@ fn auto_after_archive_opens_new_change_with_requirement() {
         .unwrap()
         .current_change_id
         .unwrap();
+    let old_loop_run_id = sdd_core::state::StateStore::new(cwd.clone())
+        .read()
+        .unwrap()
+        .active_loop
+        .unwrap()["runId"]
+        .as_str()
+        .unwrap()
+        .to_string();
 
     // 无需求且 ARCHIVED（当前变更仍为已归档变更）：保持 archive 幂等分支，返回已完成
     let idempotent = run(&CommandRequest {
@@ -373,12 +388,17 @@ fn auto_after_archive_opens_new_change_with_requirement() {
     .unwrap();
     assert_eq!(opened.state, "BUILD_WAITING_AGENT");
     assert!(opened.action_required.is_some());
-    let new_change_id = sdd_core::state::StateStore::new(cwd.clone())
-        .read()
+    let state = sdd_core::state::StateStore::new(cwd).read().unwrap();
+    let new_change_id = state.current_change_id.unwrap();
+    let new_loop_run_id = state.active_loop.unwrap()["runId"]
+        .as_str()
         .unwrap()
-        .current_change_id
-        .unwrap();
+        .to_string();
     assert_ne!(old_change_id, new_change_id, "应开启新变更");
+    assert_ne!(
+        old_loop_run_id, new_loop_run_id,
+        "新变更应使用新的 auto run"
+    );
 }
 
 #[test]

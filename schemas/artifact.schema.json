@@ -3,22 +3,22 @@
   "$id": "https://sdd-harness.dev/schemas/artifact.schema.json",
   "title": "SDD 制品清单项",
   "type": "object",
-  "required": ["type", "hash"],
+  "required": ["type", "hash", "contentPath", "status", "inputs"],
   "properties": {
     "type": {
       "type": "string",
       "enum": ["spec", "design", "plan", "report", "context-pack", "summary", "input"]
     },
-    "hash": { "type": "string" },
-    "contentPath": { "type": ["string", "null"] },
+    "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "contentPath": { "type": "string", "minLength": 1 },
     "status": {
       "type": "string",
-      "enum": ["MISSING", "READY", "CANDIDATE", "STALE"]
+      "enum": ["READY"]
     },
     "inputs": {
       "type": "object",
       "additionalProperties": true
     }
   },
-  "additionalProperties": true
+  "additionalProperties": false
 }

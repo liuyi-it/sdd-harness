@@ -4,11 +4,19 @@ use sdd_core::commands::new::run_new;
 use sdd_core::contracts::CommandRequest;
 use sdd_core::engines::openspec::model::SpecDocument;
 use sdd_core::engines::spec::spec_engine::SpecEngine;
-use sdd_core::engines::tdd::tdd_engine::{PlanningInputRust, TddEngine};
+use sdd_core::engines::tdd::{PlanningInput, TddEngine};
 use sdd_core::run;
 use serde_json::json;
 
 const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
+
+fn spec_value(cwd: &str, change_id: &str) -> serde_json::Value {
+    sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .read()
+        .unwrap()
+        .changes[change_id]["spec"]
+        .clone()
+}
 
 fn init(dir: &std::path::Path) {
     std::fs::write(dir.join("README.md"), "# demo").unwrap();
@@ -35,11 +43,19 @@ fn new_without_requirement_returns_invalid_requirement() {
     init(dir.path());
     let err = run_new(
         dir.path().to_string_lossy().as_ref(),
-        Some(&json!({ "requirement": null })),
+        None,
         &SpecEngine::new(),
     )
     .unwrap_err();
     assert_eq!(err.code, "E_INVALID_REQUIREMENT");
+
+    let err = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": null })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
 }
 
 #[test]
@@ -62,9 +78,7 @@ fn new_with_incomplete_requirement_enters_clarifying() {
         .unwrap()
         .current_change_id
         .unwrap();
-    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
-        .unwrap()
-        .unwrap();
+    let spec_json = spec_value(&cwd, &change_id);
     assert_eq!(spec_json.get("status").unwrap(), "CLARIFYING");
     let change_dir = std::fs::read_dir(dir.path().join(".sdd/changes"))
         .unwrap()
@@ -93,12 +107,9 @@ fn clarifying_resume_merges_answers_and_original_requirement() {
         .read()
         .unwrap();
     let run_id = state.current_run_id.unwrap();
-    let input = sdd_core::state::runtime_store::read_run_field(&cwd, &run_id, "input")
-        .unwrap()
-        .unwrap();
-    let answers = sdd_core::state::runtime_store::read_run_field(&cwd, &run_id, "answers")
-        .unwrap()
-        .unwrap();
+    let runtime = sdd_core::state::RuntimeStore::new(cwd).read().unwrap();
+    let input = &runtime.runs[&run_id]["input"];
+    let answers = &runtime.runs[&run_id]["answers"];
     assert_eq!(input, "实现订单取消功能");
     assert_eq!(answers["Q-ACTOR"], "授权用户");
 }
@@ -125,14 +136,70 @@ fn new_with_full_requirement_writes_spec() {
         .unwrap()
         .current_change_id
         .unwrap();
-    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
-        .unwrap()
-        .unwrap();
+    let spec_json = spec_value(&cwd, &change_id);
     assert_eq!(spec_json.get("status").unwrap(), "READY");
     assert!(spec_json.get("spec").is_none());
     let model: SpecDocument =
         serde_json::from_value(spec_json.get("model").unwrap().clone()).unwrap();
     assert!(!model.requirements.is_empty());
+}
+
+#[test]
+fn new_does_not_silently_drop_an_unborn_git_repository() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    init(dir.path());
+
+    let error = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": FULL_REQUIREMENT })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "E_PATH_OUTSIDE_REPO");
+    assert!(std::fs::read_dir(dir.path().join(".sdd/changes"))
+        .unwrap()
+        .next()
+        .is_none());
+}
+
+#[test]
+fn new_before_init_uses_not_initialized_contract() {
+    let dir = tempfile::tempdir().unwrap();
+    let error = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": FULL_REQUIREMENT })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_NOT_INITIALIZED");
+    assert_eq!(error.next.as_deref(), Some("sdd init"));
+    assert!(!dir.path().join(".sdd").exists());
+}
+
+#[test]
+fn dispatcher_accepts_explicit_change_id_when_starting_a_change() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+
+    let result = run(&CommandRequest {
+        command: "new".into(),
+        cwd: dir.path().to_string_lossy().to_string(),
+        args: Some(json!({
+            "changeId": "explicit-change",
+            "requirement": FULL_REQUIREMENT
+        })),
+    })
+    .unwrap();
+
+    assert_eq!(result.change_id.as_deref(), Some("explicit-change"));
+    assert_eq!(result.state, "SPEC_READY");
 }
 
 #[test]
@@ -145,7 +212,7 @@ fn spec_parse_render_roundtrip() {
             answers: Default::default(),
         })
         .unwrap();
-    let parsed = engine.parse_spec_md(&artifacts.spec).unwrap();
+    let parsed = sdd_core::engines::openspec::parser::parse_spec(&artifacts.spec).unwrap();
     assert_eq!(
         parsed.requirements.len(),
         artifacts.model.requirements.len()
@@ -161,11 +228,11 @@ fn spec_parse_render_roundtrip() {
 #[test]
 fn planner_rejects_removed_req_heading_format() {
     let err = TddEngine::new()
-        .generate_plan(&PlanningInputRust {
-            spec: "# Requested Change\n\n## ADDED Requirements\n\n### REQ-001: Old format\n\n#### Scenario: legacy\n- GIVEN a resource\n- WHEN it changes\n- THEN it succeeds\n".into(),
-            design: String::new(),
-            impact: String::new(),
-            codebase_summary: String::new(),
+        .generate_plan(&PlanningInput {
+            spec: "# Requested Change\n\n## ADDED Requirements\n\n### REQ-001: Old format\n\n#### Scenario: legacy\n- GIVEN a resource\n- WHEN it changes\n- THEN it succeeds\n",
+            design: "",
+            impact: "",
+            codebase_summary: "",
         })
         .unwrap_err();
     assert_eq!(err.code, "E_UNRESOLVED_BLOCKER");
@@ -209,6 +276,35 @@ fn new_rejects_non_string_answers() {
     )
     .unwrap_err();
     assert_eq!(err.code, "E_INVALID_PHASE_COMMAND");
+}
+
+#[cfg(unix)]
+#[test]
+fn clarifying_resume_rejects_symlinked_spec_document() {
+    let dir = tempfile::tempdir().unwrap();
+    init(dir.path());
+    let first = new_request(dir.path(), "实现订单取消功能");
+    assert_eq!(first.state, "CLARIFYING");
+    let change_id = first.change_id.unwrap();
+    let spec_path = dir
+        .path()
+        .join(".sdd/changes")
+        .join(change_id)
+        .join("spec.md");
+    let outside = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(outside.path(), "不得改写").unwrap();
+    std::fs::remove_file(&spec_path).unwrap();
+    std::os::unix::fs::symlink(outside.path(), &spec_path).unwrap();
+
+    let error = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "answers": { "Q-ACTOR": "授权用户" } })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_SYMLINK_BLOCKED");
+    assert_eq!(std::fs::read_to_string(outside.path()).unwrap(), "不得改写");
 }
 
 #[test]
@@ -290,48 +386,6 @@ fn new_answers_resume_interrupted_new_started_change() {
 }
 
 #[test]
-fn new_started_without_current_run_is_not_resumed() {
-    let dir = tempfile::tempdir().unwrap();
-    init(dir.path());
-    let cwd = dir.path().to_string_lossy().to_string();
-    sdd_core::state::StateStore::new(cwd.clone())
-        .update(|state| {
-            state.current_phase = "NEW_STARTED".into();
-            state.current_change_id = None;
-            state.current_run_id = None;
-        })
-        .unwrap();
-
-    let err = run_new(&cwd, Some(&json!({})), &SpecEngine::new()).unwrap_err();
-    assert_eq!(err.code, "E_STATE_CORRUPTED");
-    assert_eq!(err.next.as_deref(), Some("sdd status"));
-}
-
-#[test]
-fn new_started_without_runtime_requirement_stays_recoverable() {
-    let dir = tempfile::tempdir().unwrap();
-    init(dir.path());
-    let cwd = dir.path().to_string_lossy().to_string();
-    sdd_core::state::StateStore::new(cwd.clone())
-        .update(|state| {
-            state.current_phase = "NEW_STARTED".into();
-            state.current_change_id = Some("change-test".into());
-            state.current_run_id = Some("run-test".into());
-        })
-        .unwrap();
-
-    let err = run_new(&cwd, Some(&json!({})), &SpecEngine::new()).unwrap_err();
-    assert_eq!(err.code, "E_MISSING_ARTIFACT");
-    assert_eq!(
-        sdd_core::state::StateStore::new(cwd)
-            .read()
-            .unwrap()
-            .current_phase,
-        "NEW_STARTED"
-    );
-}
-
-#[test]
 fn new_in_spec_ready_requires_change_instead_of_overwriting() {
     let dir = tempfile::tempdir().unwrap();
     init(dir.path());
@@ -354,9 +408,7 @@ fn new_in_spec_ready_requires_change_instead_of_overwriting() {
     assert_eq!(err.code, "E_ACTIVE_CHANGE_EXISTS");
     assert_eq!(err.next, Some(format!("sdd change {change_id}")));
     // spec 未被覆盖
-    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
-        .unwrap()
-        .unwrap();
+    let spec_json = spec_value(&cwd, &change_id);
     assert_eq!(spec_json.get("requirement").unwrap(), FULL_REQUIREMENT);
 }
 
@@ -372,4 +424,23 @@ fn new_rejects_requirement_over_32768_chars() {
     )
     .unwrap_err();
     assert_eq!(err.code, "E_INVALID_REQUIREMENT");
+}
+
+#[cfg(unix)]
+#[test]
+fn new_rejects_symlinked_changes_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    init(dir.path());
+    std::os::unix::fs::symlink(outside.path(), dir.path().join(".sdd/changes")).unwrap();
+
+    let error = run_new(
+        dir.path().to_string_lossy().as_ref(),
+        Some(&json!({ "requirement": FULL_REQUIREMENT })),
+        &SpecEngine::new(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.code, "E_SYMLINK_BLOCKED");
+    assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
 }

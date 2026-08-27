@@ -26,26 +26,16 @@ fn init_repo(dir: &std::path::Path) {
 fn not_a_git_repo_returns_error() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
-    let err = GitInspector::snapshot(&cwd).unwrap_err();
+    assert!(!GitInspector::is_git_repo(&cwd).unwrap());
+    let err = GitInspector::head(&cwd).unwrap_err();
     assert_eq!(err.code, "E_PATH_OUTSIDE_REPO");
 }
 
 #[test]
-fn delta_detects_created_modified() {
+fn bare_repository_is_not_a_working_tree() {
     let dir = tempfile::tempdir().unwrap();
-    init_repo(dir.path());
-    std::fs::write(dir.path().join("a.txt"), "1").unwrap();
-    git(dir.path(), &["add", "."]);
-    git(dir.path(), &["commit", "-qm", "base"]);
-    let base = GitInspector::snapshot(dir.path().to_string_lossy().as_ref()).unwrap();
-    std::fs::write(dir.path().join("b.txt"), "2").unwrap();
-    std::fs::write(dir.path().join("a.txt"), "2").unwrap();
-    git(dir.path(), &["add", "."]);
-    git(dir.path(), &["commit", "-qm", "change"]);
-    let delta =
-        GitInspector::compute_delta(dir.path().to_string_lossy().as_ref(), &base.head).unwrap();
-    assert!(delta.iter().any(|d| d.path == "b.txt" && d.status == "A"));
-    assert!(delta.iter().any(|d| d.path == "a.txt" && d.status == "M"));
+    git(dir.path(), &["init", "--bare", "-q"]);
+    assert!(!GitInspector::is_git_repo(&dir.path().to_string_lossy()).unwrap());
 }
 
 #[test]
@@ -58,6 +48,20 @@ fn changed_files_reports_uncommitted() {
     std::fs::write(dir.path().join("a.txt"), "2").unwrap();
     let files = GitInspector::changed_files(dir.path().to_string_lossy().as_ref()).unwrap();
     assert!(files.iter().any(|f| f.contains("a.txt")));
+}
+
+#[test]
+fn changed_files_reports_both_sides_of_a_rename() {
+    let dir = tempfile::tempdir().unwrap();
+    init_repo(dir.path());
+    std::fs::write(dir.path().join("old.txt"), "content").unwrap();
+    git(dir.path(), &["add", "."]);
+    git(dir.path(), &["commit", "-qm", "base"]);
+    git(dir.path(), &["mv", "old.txt", "new.txt"]);
+
+    let files = GitInspector::changed_files(&dir.path().to_string_lossy()).unwrap();
+
+    assert_eq!(files, ["new.txt", "old.txt"]);
 }
 
 #[test]
@@ -74,34 +78,32 @@ fn workspace_fingerprint_changes_with_business_content() {
     assert_ne!(before, after);
 }
 
+#[cfg(unix)]
 #[test]
-fn file_at_head_distinguishes_tracked_and_untracked_files() {
+fn file_hashes_use_symlink_text_instead_of_target_content() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());
-    std::fs::write(dir.path().join("a.txt"), "base").unwrap();
-    git(dir.path(), &["add", "."]);
-    git(dir.path(), &["commit", "-qm", "base"]);
-    std::fs::write(dir.path().join("a.txt"), "current").unwrap();
-    std::fs::write(dir.path().join("b.txt"), "new").unwrap();
+    std::fs::write(dir.path().join("target.txt"), "before").unwrap();
+    std::os::unix::fs::symlink("target.txt", dir.path().join("link.txt")).unwrap();
     let cwd = dir.path().to_string_lossy();
-    assert_eq!(
-        GitInspector::file_at_head(&cwd, "a.txt")
-            .unwrap()
-            .as_deref(),
-        Some("base")
-    );
-    assert_eq!(GitInspector::file_at_head(&cwd, "b.txt").unwrap(), None);
+    let files = vec!["link.txt".to_string()];
+
+    let before = GitInspector::file_hashes(&cwd, &files).unwrap();
+    std::fs::write(dir.path().join("target.txt"), "after").unwrap();
+    let after = GitInspector::file_hashes(&cwd, &files).unwrap();
+
+    assert_eq!(before, after, "链接目标内容不应改变 symlink 自身摘要");
 }
 
 #[test]
-fn path_within_repo_checks_scope() {
+fn resolve_repo_path_checks_scope() {
     let dir = tempfile::tempdir().unwrap();
     init_repo(dir.path());
     let cwd = dir.path().to_string_lossy().to_string();
-    assert!(GitInspector::path_within_repo(&cwd, "src/lib.rs"));
-    assert!(!GitInspector::path_within_repo(&cwd, "../outside.txt"));
-    assert!(!GitInspector::path_within_repo(&cwd, "..\\outside.txt"));
-    assert!(!GitInspector::path_within_repo(&cwd, "/tmp/outside.txt"));
+    assert!(GitInspector::resolve_repo_path(&cwd, "src/lib.rs").is_ok());
+    assert!(GitInspector::resolve_repo_path(&cwd, "../outside.txt").is_err());
+    assert!(GitInspector::resolve_repo_path(&cwd, "..\\outside.txt").is_err());
+    assert!(GitInspector::resolve_repo_path(&cwd, "/tmp/outside.txt").is_err());
 }
 
 #[test]
@@ -131,5 +133,10 @@ fn path_within_repo_rejects_symlink_escape() {
     std::os::unix::fs::symlink(outside.path(), dir.path().join("link")).unwrap();
     let cwd = dir.path().to_string_lossy().to_string();
     let err = GitInspector::resolve_repo_path(&cwd, "link/result.json").unwrap_err();
+    assert_eq!(err.code, "E_SYMLINK_BLOCKED");
+
+    let dangling_target = outside.path().join("missing.txt");
+    std::os::unix::fs::symlink(&dangling_target, dir.path().join("dangling.txt")).unwrap();
+    let err = GitInspector::resolve_repo_path(&cwd, "dangling.txt").unwrap_err();
     assert_eq!(err.code, "E_SYMLINK_BLOCKED");
 }

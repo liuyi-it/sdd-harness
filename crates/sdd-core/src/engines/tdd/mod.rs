@@ -2,4 +2,5 @@
 
 pub mod tdd_engine;
 
-pub use tdd_engine::{DesignInput, PlanningInputRust, TddEngine};
+pub use super::superpowers::protocol::PlanningInput;
+pub use tdd_engine::{DesignInput, TddEngine};

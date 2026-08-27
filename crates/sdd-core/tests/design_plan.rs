@@ -9,6 +9,14 @@ use serde_json::json;
 
 const FULL_REQUIREMENT: &str = "授权用户通过 POST /orders/{id}/cancel 请求取消待处理订单，入参 order_id，返回 status 和 error_code，未授权请求被拒绝，返回取消成功，每次取消写审计日志，需要自动化测试覆盖成功与未授权";
 
+fn change_field(cwd: &str, change_id: &str, field: &str) -> serde_json::Value {
+    sdd_core::state::RuntimeStore::new(cwd.to_string())
+        .read()
+        .unwrap()
+        .changes[change_id][field]
+        .clone()
+}
+
 fn prepare(dir: &std::path::Path) -> String {
     // 准备：init + new（含 index 摘要与 impact 中的文件路径）
     std::fs::write(dir.join("README.md"), "# demo").unwrap();
@@ -20,12 +28,20 @@ fn prepare(dir: &std::path::Path) -> String {
     })
     .unwrap();
     // 写入 index 摘要（含源码与测试文件路径，供 planner 推导范围）
-    sdd_core::state::runtime_store::write_index(
-        &cwd,
-        json!([]),
-        "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n".to_string(),
-    )
-    .unwrap();
+    sdd_core::state::RuntimeStore::new(cwd.clone())
+        .update(|runtime| {
+            let prefix = runtime.index["summary"]
+                .as_str()
+                .unwrap()
+                .lines()
+                .next()
+                .unwrap();
+            runtime.index["summary"] = json!(format!(
+                "{prefix}\nsrc/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n"
+            ));
+            runtime.index["updatedAt"] = json!("2026-01-01T00:00:00Z");
+        })
+        .unwrap();
     let result = run_new(
         &cwd,
         Some(&json!({ "requirement": FULL_REQUIREMENT })),
@@ -48,12 +64,11 @@ fn tdd_plan_has_red_green_refactor_verify() {
         })
         .unwrap();
     let artifacts = engine
-        .generate_plan(&sdd_core::engines::tdd::PlanningInputRust {
-            spec: spec.spec,
-            design: "# Design\n\n## Target Design\n\norder cancellation".to_string(),
-            impact: spec.impact,
-            codebase_summary: "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n"
-                .to_string(),
+        .generate_plan(&sdd_core::engines::tdd::PlanningInput {
+            spec: &spec.spec,
+            design: "# Design\n\n## Target Design\n\norder cancellation",
+            impact: &spec.impact,
+            codebase_summary: "src/order_service.rs\nsrc/order_service.test.rs\nCargo.toml\n",
         })
         .unwrap();
     let phases: Vec<&str> = artifacts.tasks.iter().map(|t| t.phase.as_str()).collect();
@@ -63,6 +78,14 @@ fn tdd_plan_has_red_green_refactor_verify() {
     assert!(phases.contains(&"VERIFY"));
     // 任务 id 格式 TASK-001-RED
     assert!(artifacts.tasks.iter().all(|t| t.id.starts_with("TASK-")));
+    assert!(artifacts.tasks.iter().all(|task| {
+        !task.acceptance_criteria.is_empty()
+            && task.acceptance_criteria != task.done_criteria
+            && task
+                .acceptance_criteria
+                .iter()
+                .all(|criterion| criterion.contains('：'))
+    }));
 }
 
 #[test]
@@ -84,10 +107,9 @@ fn design_then_plan_updates_phases() {
         .unwrap()
         .current_change_id
         .unwrap();
-    let spec_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "spec")
-        .unwrap()
-        .unwrap();
-    assert!(spec_json.get("design").and_then(|v| v.as_str()).is_some());
+    let spec_json = change_field(&cwd, &change_id, "spec");
+    assert!(spec_json.get("design").is_none());
+    assert!(change_field(&cwd, &change_id, "design").is_string());
 
     let plan = run(&CommandRequest {
         command: "plan".into(),
@@ -104,9 +126,7 @@ fn design_then_plan_updates_phases() {
     let tasks_markdown = std::fs::read_to_string(change_dir.join("tasks.md")).unwrap();
     assert!(tasks_markdown.contains("# 开发任务"));
     assert!(tasks_markdown.contains("## [ ] TASK-001-RED"));
-    let plan_json = sdd_core::state::runtime_store::read_change_field(&cwd, &change_id, "plan")
-        .unwrap()
-        .unwrap();
+    let plan_json = change_field(&cwd, &change_id, "plan");
     let tasks = plan_json.get("tasks").and_then(|t| t.as_array());
     assert!(tasks.is_some() && !tasks.unwrap().is_empty());
 }
@@ -131,11 +151,11 @@ fn plan_requires_source_and_test_files() {
             answers: Default::default(),
         })
         .unwrap();
-    let result = engine.generate_plan(&sdd_core::engines::tdd::PlanningInputRust {
-        spec: spec.spec,
-        design: "# Design".to_string(),
-        impact: spec.impact,
-        codebase_summary: "（无文件信息）".to_string(),
+    let result = engine.generate_plan(&sdd_core::engines::tdd::PlanningInput {
+        spec: &spec.spec,
+        design: "# Design",
+        impact: &spec.impact,
+        codebase_summary: "（无文件信息）",
     });
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -168,13 +188,7 @@ fn plan_persists_valid_dependency_decisions() {
         .unwrap()
         .current_change_id
         .unwrap();
-    let plan = sdd_core::state::runtime_store::read_change_field(
-        &dir.path().to_string_lossy(),
-        &change_id,
-        "plan",
-    )
-    .unwrap()
-    .unwrap();
+    let plan = change_field(&dir.path().to_string_lossy(), &change_id, "plan");
     assert_eq!(plan["dependencies"][0]["name"], "serde");
 }
 

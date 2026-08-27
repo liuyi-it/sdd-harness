@@ -3,9 +3,12 @@
   "$id": "https://sdd-harness.dev/schemas/task-result.schema.json",
   "title": "SDD 任务执行结果",
   "type": "object",
-  "required": ["taskId", "status", "evidence", "filesChanged"],
+  "required": ["taskId", "status", "evidence", "verification", "filesChanged"],
   "properties": {
-    "taskId": { "type": "string" },
+    "taskId": {
+      "type": "string",
+      "pattern": "^TASK-\\d{3}-(RED|GREEN|REFACTOR|VERIFY)$"
+    },
     "status": {
       "type": "string",
       "enum": ["completed", "failed"]
@@ -13,37 +16,35 @@
     "message": { "type": "string" },
     "evidence": {
       "type": "array",
+      "uniqueItems": true,
       "items": {
         "type": "object",
         "required": ["type", "command", "output"],
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["command-run", "test", "file-change", "note"]
+            "enum": ["command-run"]
           },
-          "command": { "type": "string" },
+          "command": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
           "expectedFailure": { "type": "boolean" },
-          "args": {
-            "type": "array",
-            "items": { "type": "string" }
-          },
-          "output": { "type": "string" },
-          "file": { "type": "string" }
+          "output": { "type": "string", "minLength": 1 }
         },
         "additionalProperties": false
       }
     },
     "verification": {
       "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
       "items": {
         "type": "object",
-        "required": ["command"],
+        "required": ["command", "passed"],
         "properties": {
-          "command": { "type": "string" },
+          "command": { "type": "string", "minLength": 1 },
           "args": {
             "type": "array",
-            "items": { "type": "string" }
+            "items": { "type": "string", "minLength": 1 }
           },
           "passed": { "type": "boolean" },
           "output": { "type": "string" }
@@ -53,7 +54,8 @@
     },
     "filesChanged": {
       "type": "array",
-      "items": { "type": "string" }
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
     }
   },
   "additionalProperties": false

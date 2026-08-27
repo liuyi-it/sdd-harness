@@ -3,7 +3,6 @@
 //! 机器设计字段位于 `.sdd/runtime.json`，change 目录只保留 design.md。
 
 use std::fs;
-use std::path::PathBuf;
 
 use serde_json::json;
 
@@ -11,90 +10,92 @@ use crate::commands::new::current_change_id;
 use crate::contracts::CommandResult;
 use crate::engines::tdd::tdd_engine::{DesignInput, TddEngine};
 use crate::error::SddError;
-use crate::state::file_lock::lock_sdd;
-use crate::state::StateStore;
+use crate::state::artifact_store::ArtifactRecord;
+use crate::state::file_lock::lock_initialized_sdd;
 
 pub fn run_design(
     cwd: &str,
     args: Option<&serde_json::Value>,
     engine: &TddEngine,
 ) -> Result<CommandResult, SddError> {
-    let timeout_ms = args
-        .and_then(|a| a.get("timeout"))
-        .and_then(|v| v.as_f64())
-        .map(|s| (s * 1000.0) as u64);
-    let _guard = lock_sdd(cwd, "sdd design", None, timeout_ms)?;
+    let timeout_ms = super::timeout_ms(args)?;
+    let _guard = lock_initialized_sdd(cwd, "sdd design", None, timeout_ms)?;
 
-    let store = StateStore::new(cwd.to_string());
-    let state = store.read()?;
+    let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    let state = runtime.state.clone();
+    super::ensure_phase(cwd, &state, "design", args)?;
+    super::validate_args(args, &["timeout", "changeId"])?;
     let change_id = current_change_id(&state)?;
-    let change_dir = PathBuf::from(cwd).join(".sdd/changes").join(&change_id);
-    crate::state::artifact_store::verify_artifact(cwd, &format!("{change_id}:spec"))?;
+    let change_dir = crate::state::paths::change_dir(cwd, &change_id, false)?;
+    crate::state::artifact_store::verify_artifacts_in(
+        cwd,
+        &runtime,
+        [format!("{change_id}:spec")],
+    )?;
 
-    let mut spec_json = crate::state::runtime_store::read_change_field(cwd, &change_id, "spec")?
+    let spec_json = runtime
+        .changes
+        .get(&change_id)
+        .and_then(|change| change.get("spec"))
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
-    let spec = fs::read_to_string(change_dir.join("spec.md"))
+    let spec_path = change_dir.join("spec.md");
+    crate::safe_fs::reject_symlink(&spec_path, "spec.md")?;
+    let spec = fs::read_to_string(spec_path)
         .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
     let spec_digest = crate::policies::digest::digest(&spec);
     let impact = spec_json
         .get("impact")
         .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
-    let codebase_summary = crate::state::runtime_store::read_index_field(cwd, "summary")?
-        .and_then(|value| value.as_str().map(String::from))
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 的 spec 缺少 impact"))?;
+    let codebase_summary = runtime
+        .index
+        .get("summary")
+        .and_then(serde_json::Value::as_str)
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少索引摘要"))?;
     // 不可信上下文边界（与 build.rs 的 Context Pack 做法一致）：代码库摘要是外部输入，
     // 先转义 END 标记防止注入逃逸，再按字符截断 8192，最后用 BEGIN/END 标记包裹。
-    let safe_summary = codebase_summary
-        .replace(
-            "END_UNTRUSTED_CODEBASE_CONTEXT",
-            "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
-        )
-        .chars()
-        .take(8_192)
-        .collect::<String>();
+    let mut safe_summary = codebase_summary.replace(
+        "END_UNTRUSTED_CODEBASE_CONTEXT",
+        "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
+    );
+    if let Some((boundary, _)) = safe_summary.char_indices().nth(8_192) {
+        safe_summary.truncate(boundary);
+    }
     let wrapped_summary =
         format!("BEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{safe_summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT");
-    let existing_design = spec_json
-        .get("design")
-        .and_then(|value| value.as_str())
-        .map(String::from);
-    // DesignInput 结构不动：三个代码库字段统一传包裹后的安全串，设计提示不再直接拼接原始摘要。
     let design = engine.generate_design(&DesignInput {
-        spec,
+        spec: &spec,
         impact,
-        codebase_summary: wrapped_summary.clone(),
-        package_structure: wrapped_summary.clone(),
-        architecture: wrapped_summary,
-        existing_design,
+        codebase_context: &wrapped_summary,
     });
-    spec_json
-        .as_object_mut()
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 的 spec 必须是对象"))?
-        .insert("design".to_string(), json!(design));
-    crate::state::runtime_store::write_change_fields(
-        cwd,
-        &change_id,
-        [("spec", spec_json), ("design", json!(design.clone()))],
+    crate::safe_fs::atomic_write(
+        &change_dir.join("design.md"),
+        design.as_bytes(),
+        "design.md",
     )?;
-    fs::write(change_dir.join("design.md"), &design)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("写入 design.md 失败：{e}")))?;
-    crate::state::artifact_store::record_artifact(
-        cwd,
-        &format!("{change_id}:design"),
-        "design",
-        &format!(".sdd/changes/{change_id}/design.md"),
-        &design,
-        json!({ "spec": spec_digest }),
-    )?;
-
-    store.update(|s| {
-        s.current_phase = "DESIGN_READY".to_string();
-        s.in_progress_phase = None;
-        s.suggested_command = Some("sdd plan".to_string());
-        s.last_command = Some("sdd design".to_string());
-        s.last_error = None;
+    let artifact_key = format!("{change_id}:design");
+    let content_path = format!(".sdd/changes/{change_id}/design.md");
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        let change = super::change_mut(document, &change_id)?;
+        change.insert("design".to_string(), json!(design));
+        crate::state::artifact_store::record_artifacts_in(
+            cwd,
+            document,
+            vec![ArtifactRecord {
+                key: &artifact_key,
+                artifact_type: "design",
+                content_path: &content_path,
+                inputs: json!({ "spec": spec_digest }),
+            }],
+        )?;
+        crate::state::state_store::apply_state_update(&mut document.state, |state| {
+            state.current_phase = "DESIGN_READY".to_string();
+            state.in_progress_phase = None;
+            state.clear_failure();
+            state.suggested_command = Some("sdd plan".to_string());
+            state.last_command = Some("sdd design".to_string());
+        })?;
+        Ok(())
     })?;
 
     Ok(CommandResult {

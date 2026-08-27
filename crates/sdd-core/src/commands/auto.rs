@@ -1,10 +1,10 @@
 //! auto 命令：自动推进 SDD Loop。
 //!
-//! 翻译自 早期 Node 实现 + loop-engine 的核心语义：
+//! 组合命令按当前 loop 状态机推进：
 //! - 确定性步骤（new→design→plan→build→verify→review→archive）自动推进
 //! - 遇到澄清（CLARIFYING）或 Agent 编码（BUILD_WAITING_AGENT）时暂停，
 //!   返回当前状态与原因，不绕过交互边界
-//! - 失败预算：单步失败即暂停（stopOnFailure）
+//! - 失败预算：单步失败即暂停
 
 use serde_json::json;
 
@@ -13,11 +13,41 @@ use crate::contracts::CommandResult;
 use crate::engines::spec::spec_engine::SpecEngine;
 use crate::engines::tdd::TddEngine;
 use crate::error::SddError;
-use crate::state::StateStore;
 
 pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
+    super::validate_args(
+        args,
+        &[
+            "timeout",
+            "changeId",
+            "nonInteractive",
+            "requirement",
+            "answers",
+            "resume",
+            "restart",
+            "stop",
+            "events",
+            "tail",
+            "loopStatus",
+            "run",
+        ],
+    )?;
     let empty_args = serde_json::Value::Null;
     let args = args.unwrap_or(&empty_args);
+    for name in [
+        "nonInteractive",
+        "resume",
+        "restart",
+        "stop",
+        "events",
+        "loopStatus",
+    ] {
+        super::bool_arg(Some(args), name)?;
+    }
+    super::string_arg(Some(args), "requirement")?;
+    super::string_arg(Some(args), "run")?;
+    super::u64_arg(Some(args), "tail")?;
+    super::validate_string_map_arg(Some(args), "answers")?;
     // --tail 只对事件查看有意义，必须与 --events 一起使用。
     if args.get("tail").is_some()
         && !args
@@ -30,18 +60,22 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
             "--tail 必须与 --events 一起使用",
         ));
     }
-    let timeout_ms = args
-        .get("timeout")
-        .and_then(|value| value.as_f64())
-        .map(|seconds| (seconds * 1000.0) as u64);
+    let timeout_ms = super::timeout_ms(Some(args))?;
+    let _sdd_guard = crate::state::file_lock::lock_initialized_sdd(
+        cwd,
+        "sdd auto",
+        args.get("changeId").and_then(|value| value.as_str()),
+        timeout_ms,
+    )?;
     let _auto_guard = crate::state::file_lock::lock_auto(
         cwd,
         "sdd auto",
         args.get("changeId").and_then(|value| value.as_str()),
         timeout_ms,
     )?;
-    let store = StateStore::new(cwd.to_string());
-    let state = store.read()?;
+    let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    let state = runtime.state.clone();
+    super::ensure_phase(cwd, &state, "auto", Some(args))?;
     let resume = args
         .get("resume")
         .and_then(|v| v.as_bool())
@@ -61,7 +95,7 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
     {
-        return read_events(cwd, &state, args);
+        return read_events(&runtime, &state, args);
     }
     if args
         .get("loopStatus")
@@ -73,38 +107,40 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
 
     if args.get("stop").and_then(|v| v.as_bool()).unwrap_or(false) {
         let context = active_loop(&state)?;
-        update_loop(&store, &context, "ABORTED", None)?;
-        // 停止只终止 loop，不改变工作流阶段；恢复时应回到原有 Agent/命令边界。
-        {
-            let _guard = crate::state::file_lock::lock_sdd(
-                cwd,
-                "sdd auto stop",
-                state.current_change_id.as_deref(),
-                timeout_ms.or(Some(5_000)),
-            )?;
-            store.update(|s| {
-                s.in_progress_phase = None;
-                s.suggested_command = Some("sdd auto --resume".to_string());
-            })?;
-        }
-        append_event(cwd, &context, "LOOP_STOPPED", &state.current_phase, None)?;
+        persist_transition(
+            cwd,
+            &context,
+            "ABORTED",
+            None,
+            [LoopEvent::new("LOOP_STOPPED", &state.current_phase, None)],
+            |workflow| {
+                // 停止只终止 loop，不改变工作流阶段；恢复时回到原有 Agent/命令边界。
+                workflow.in_progress_phase = None;
+                workflow.suggested_command = Some("sdd auto --resume".to_string());
+            },
+        )?;
         return Ok(paused_result_with_reason(
             &state.current_phase,
             "auto loop 已停止；工作流阶段未改变",
         ));
     }
 
-    let context = prepare_loop(&store, &state, resume, restart, args)?;
-    append_event(
+    let context = prepare_loop(&state, resume, restart, args)?;
+    persist_transition(
         cwd,
         &context,
-        if resume {
-            "LOOP_RESUMED"
-        } else {
-            "LOOP_STARTED"
-        },
-        &state.current_phase,
+        "RUNNING",
         None,
+        [LoopEvent::new(
+            if resume {
+                "LOOP_RESUMED"
+            } else {
+                "LOOP_STARTED"
+            },
+            &state.current_phase,
+            None,
+        )],
+        |_| {},
     )?;
 
     let requirement = args
@@ -117,22 +153,28 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
 
     // 第一步：new。INDEX_READY 必须提供需求，其它可恢复阶段从 runtime 读取原始需求。
     // ARCHIVED 且提供了新需求时也要走 new 开启新变更；无需求保持走 archive 幂等分支。
-    let mut phase = state.current_phase.clone();
+    let mut phase = state.current_phase;
     if matches!(
         phase.as_str(),
-        "INDEX_READY" | "CLARIFYING" | "FAILED" | "PAUSED" | "NEW_STARTED"
+        "INDEX_READY" | "CLARIFYING" | "PAUSED" | "NEW_STARTED"
     ) || (phase == "ARCHIVED" && requirement.is_some())
     {
         if phase == "INDEX_READY" && requirement.is_none() {
-            update_loop(&store, &context, "PAUSED", Some("CLARIFICATION"))?;
-            append_event(cwd, &context, "LOOP_PAUSED", &phase, None)?;
+            persist_transition(
+                cwd,
+                &context,
+                "PAUSED",
+                Some("CLARIFICATION"),
+                [LoopEvent::new("LOOP_PAUSED", &phase, None)],
+                |_| {},
+            )?;
             return Ok(paused_result_with_reason(
                 &phase,
                 "auto 需要需求文本（sdd auto \"<需求>\"）",
             ));
         }
         let mut new_args = serde_json::Map::new();
-        if let Some(requirement) = requirement.clone() {
+        if let Some(requirement) = requirement {
             new_args.insert("requirement".to_string(), json!(requirement));
         }
         for key in ["changeId", "nonInteractive", "timeout", "answers"] {
@@ -146,15 +188,30 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
             &spec_engine,
         )?;
         if new_result.state == "CLARIFYING" {
-            update_loop(&store, &context, "PAUSED", Some("CLARIFICATION"))?;
-            append_event(cwd, &context, "LOOP_PAUSED", "CLARIFYING", Some("new"))?;
+            persist_transition(
+                cwd,
+                &context,
+                "PAUSED",
+                Some("CLARIFICATION"),
+                [LoopEvent::new("LOOP_PAUSED", "CLARIFYING", Some("new"))],
+                |_| {},
+            )?;
             return Ok(paused_result_with_reason(
                 "CLARIFYING",
                 "需求存在未回答的阻塞问题，请用 sdd auto --resume --answers '<JSON>' 继续",
             ));
         }
-        phase = new_result.state.clone();
+        phase = new_result.state;
     }
+
+    // 下游命令只接收自身支持的公共参数，auto 控制字段不得泄漏并被静默忽略。
+    let mut step_args = serde_json::Map::new();
+    for key in ["timeout", "changeId"] {
+        if let Some(value) = args.get(key) {
+            step_args.insert(key.to_string(), value.clone());
+        }
+    }
+    let step_args = serde_json::Value::Object(step_args);
 
     // 确定性步骤链：design → plan → build next →（Agent 完成全部任务后）verify → review → archive
     type StepFn = fn(&str, Option<&serde_json::Value>) -> Result<CommandResult, SddError>;
@@ -180,43 +237,53 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     ];
 
     for (name, step) in steps {
-        let current = crate::commands::status::read_phase(cwd)?;
         let should_run = match name {
-            "design" => current == "SPEC_READY",
-            "plan" => current == "DESIGN_READY",
+            "design" => phase == "SPEC_READY",
+            "plan" => phase == "DESIGN_READY",
             // build 只在等待/可派发任务时运行；BUILD_READY（任务已全部完成）跳过
-            "build" => current == "PLAN_READY" || current == "BUILD_WAITING_AGENT",
-            "verify" => current == "BUILD_READY",
-            "review" => current == "VERIFY_READY",
-            "archive" => current == "REVIEW_READY" || current == "ARCHIVED",
+            "build" => phase == "PLAN_READY" || phase == "BUILD_WAITING_AGENT",
+            "verify" => phase == "BUILD_READY",
+            "review" => phase == "VERIFY_READY",
+            "archive" => phase == "REVIEW_READY" || phase == "ARCHIVED",
             _ => false,
         };
         if !should_run {
             continue;
         }
-        match step(cwd, Some(args)) {
+        match step(cwd, Some(&step_args)) {
             Ok(result) => {
-                append_event(cwd, &context, "COMMAND_FINISHED", &result.state, Some(name))?;
                 if result.state == "BUILD_WAITING_AGENT" {
                     // Agent 编码边界：暂停，返回 actionRequired
-                    update_loop(
-                        &store,
+                    persist_transition(
+                        cwd,
                         &context,
                         "WAITING_AGENT",
                         Some("AGENT_TASK_EXECUTION"),
+                        [
+                            LoopEvent::new("COMMAND_FINISHED", &result.state, Some(name)),
+                            LoopEvent::new("ACTION_REQUIRED", &result.state, Some(name)),
+                        ],
+                        |_| {},
                     )?;
-                    append_event(cwd, &context, "ACTION_REQUIRED", &result.state, Some(name))?;
                     return Ok(result);
                 }
-                phase = result.state.clone();
                 if result.state == "ARCHIVED" {
-                    update_loop(&store, &context, "SUCCEEDED", None)?;
-                    append_event(cwd, &context, "LOOP_ARCHIVED", "ARCHIVED", Some(name))?;
+                    persist_transition(
+                        cwd,
+                        &context,
+                        "SUCCEEDED",
+                        None,
+                        [
+                            LoopEvent::new("COMMAND_FINISHED", "ARCHIVED", Some(name)),
+                            LoopEvent::new("LOOP_ARCHIVED", "ARCHIVED", Some(name)),
+                        ],
+                        |_| {},
+                    )?;
                     return Ok(CommandResult {
                         ok: true,
                         state: "ARCHIVED".to_string(),
                         exit_code: 0,
-                        change_id: result.change_id.clone(),
+                        change_id: result.change_id,
                         next: Some("sdd new <需求>".to_string()),
                         data: Some(json!({ "loop": "COMPLETED" })),
                         rendered: None,
@@ -225,27 +292,28 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
                         error: None,
                     });
                 }
+                phase = result.state;
+                persist_events(
+                    cwd,
+                    &context,
+                    [LoopEvent::new("COMMAND_FINISHED", &phase, Some(name))],
+                )?;
             }
             Err(e) => {
-                {
-                    let _guard = crate::state::file_lock::lock_sdd(
-                        cwd,
-                        "sdd auto failure",
-                        state.current_change_id.as_deref(),
-                        timeout_ms.or(Some(5_000)),
-                    )?;
-                    // 恢复语义落地：步骤失败把工作流阶段置为 PAUSED 并清空 in_progress_phase，
-                    // 与返回结果一致，使 sdd status 能给出 auto --resume 建议。
-                    store.update(|s| {
-                        s.current_phase = "PAUSED".to_string();
-                        s.in_progress_phase = None;
-                        s.failed_command = Some(format!("sdd {name}"));
-                        s.failed_reason = Some(e.message.clone());
-                        s.suggested_command = Some("sdd auto --resume".to_string());
-                    })?;
-                }
-                update_loop(&store, &context, "FAILED", None)?;
-                append_event(cwd, &context, "LOOP_FAILED", &phase, Some(name))?;
+                persist_transition(
+                    cwd,
+                    &context,
+                    "FAILED",
+                    None,
+                    [LoopEvent::new("LOOP_FAILED", &phase, Some(name))],
+                    |workflow| {
+                        // 步骤失败时将工作流阶段置为 PAUSED，供 status 给出恢复建议。
+                        workflow.current_phase = "PAUSED".to_string();
+                        workflow.in_progress_phase = None;
+                        workflow.record_failure(format!("sdd {name}"), e.message.clone());
+                        workflow.suggested_command = Some("sdd auto --resume".to_string());
+                    },
+                )?;
                 return Ok(CommandResult {
                     ok: false,
                     state: "PAUSED".to_string(),
@@ -266,8 +334,14 @@ pub fn run_auto(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         }
     }
 
-    update_loop(&store, &context, "PAUSED", None)?;
-    append_event(cwd, &context, "LOOP_PAUSED", &phase, None)?;
+    persist_transition(
+        cwd,
+        &context,
+        "PAUSED",
+        None,
+        [LoopEvent::new("LOOP_PAUSED", &phase, None)],
+        |_| {},
+    )?;
     Ok(paused_result(&phase))
 }
 
@@ -296,8 +370,24 @@ struct LoopContext {
     run_id: String,
 }
 
+#[derive(Clone, Copy)]
+struct LoopEvent<'a> {
+    event_type: &'a str,
+    phase: &'a str,
+    command: Option<&'a str>,
+}
+
+impl<'a> LoopEvent<'a> {
+    fn new(event_type: &'a str, phase: &'a str, command: Option<&'a str>) -> Self {
+        Self {
+            event_type,
+            phase,
+            command,
+        }
+    }
+}
+
 fn prepare_loop(
-    store: &StateStore,
     state: &crate::state::WorkflowState,
     resume: bool,
     restart: bool,
@@ -314,21 +404,20 @@ fn prepare_loop(
                 ));
             }
         }
-        update_loop(store, &context, "RUNNING", None)?;
         return Ok(context);
     }
-    if !restart {
-        if let Ok(context) = active_loop(state) {
-            update_loop(store, &context, "RUNNING", None)?;
-            return Ok(context);
-        }
+    let starts_new_change = state.current_phase == "ARCHIVED"
+        && args
+            .get("requirement")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|requirement| !requirement.trim().is_empty());
+    if !restart && state.active_loop.is_some() && !starts_new_change {
+        return active_loop(state);
     }
-    let context = LoopContext {
-        loop_id: unique_id("loop"),
-        run_id: unique_id("run"),
-    };
-    update_loop(store, &context, "RUNNING", None)?;
-    Ok(context)
+    Ok(LoopContext {
+        loop_id: crate::state::state_store::unique_id("loop")?,
+        run_id: crate::state::state_store::unique_id("run")?,
+    })
 }
 
 fn active_loop(state: &crate::state::WorkflowState) -> Result<LoopContext, SddError> {
@@ -344,6 +433,7 @@ fn active_loop(state: &crate::state::WorkflowState) -> Result<LoopContext, SddEr
         .get("runId")
         .and_then(|value| value.as_str())
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "activeLoop 缺少 runId"))?;
+    crate::state::state_store::validate_run_id(loop_id)?;
     crate::state::state_store::validate_run_id(run_id)?;
     Ok(LoopContext {
         loop_id: loop_id.to_string(),
@@ -351,20 +441,20 @@ fn active_loop(state: &crate::state::WorkflowState) -> Result<LoopContext, SddEr
     })
 }
 
-fn update_loop(
-    store: &StateStore,
+fn persist_transition<'a, I, F>(
+    cwd: &str,
     context: &LoopContext,
     status: &str,
     waiting: Option<&str>,
-) -> Result<(), SddError> {
-    let cwd = store
-        .sdd_dir()
-        .parent()
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "无法解析项目根目录"))?
-        .to_string_lossy()
-        .to_string();
-    // 给 update_loop 一个短等待超时：瞬时锁冲突时短暂重试，避免直接 E_CONCURRENT_RUN 脆断。
-    let _guard = crate::state::file_lock::lock_sdd(&cwd, "sdd auto state", None, Some(5_000))?;
+    events: I,
+    update_workflow: F,
+) -> Result<(), SddError>
+where
+    I: IntoIterator<Item = LoopEvent<'a>>,
+    F: FnOnce(&mut crate::state::WorkflowState),
+{
+    let event_values = loop_event_values(context, events)?;
+    let _guard = crate::state::file_lock::lock_sdd(cwd, "sdd auto state", None, Some(5_000))?;
     let now = crate::state::state_store::now_iso();
     let active = json!({
         "loopId": context.loop_id,
@@ -372,46 +462,98 @@ fn update_loop(
         "status": status,
         "waiting": waiting.map(|reason| json!({ "reason": reason, "since": now })),
     });
-    store.update(|state| state.active_loop = Some(active.clone()))?;
-    crate::state::runtime_store::write_loop_run(
-        &cwd,
-        &context.run_id,
-        json!({
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        crate::state::state_store::apply_state_update(&mut document.state, |state| {
+            state.active_loop = Some(active);
+            update_workflow(state);
+        })?;
+        set_loop_run(
+            document,
+            &context.run_id,
+            json!({
             "schemaVersion": "1.3.0",
             "loopId": context.loop_id,
             "runId": context.run_id,
             "status": status,
             "updatedAt": now,
-        }),
-    )
+            }),
+        )?;
+        append_loop_events(document, &context.run_id, event_values)?;
+        Ok(())
+    })?;
+    Ok(())
 }
 
-fn append_event(
-    cwd: &str,
-    context: &LoopContext,
-    event_type: &str,
-    phase: &str,
-    command: Option<&str>,
-) -> Result<(), SddError> {
+fn persist_events<'a, I>(cwd: &str, context: &LoopContext, events: I) -> Result<(), SddError>
+where
+    I: IntoIterator<Item = LoopEvent<'a>>,
+{
+    let event_values = loop_event_values(context, events)?;
     let _guard = crate::state::file_lock::lock_sdd(cwd, "sdd auto event", None, Some(5_000))?;
-    crate::state::runtime_store::append_loop_event(
-        cwd,
-        &context.run_id,
-        json!({
+    crate::state::RuntimeStore::new(cwd.to_string())
+        .try_update(|document| append_loop_events(document, &context.run_id, event_values))?;
+    Ok(())
+}
+
+fn loop_event_values<'a, I>(
+    context: &LoopContext,
+    events: I,
+) -> Result<Vec<serde_json::Value>, SddError>
+where
+    I: IntoIterator<Item = LoopEvent<'a>>,
+{
+    events
+        .into_iter()
+        .map(|event| {
+            Ok(json!({
             "schemaVersion": "1.0.0",
-            "eventId": unique_id("event"),
+                "eventId": crate::state::state_store::unique_id("event")?,
             "loopId": context.loop_id,
             "runId": context.run_id,
-            "type": event_type,
-            "phase": phase,
-            "command": command,
+                "type": event.event_type,
+                "phase": event.phase,
+                "command": event.command,
             "createdAt": crate::state::state_store::now_iso(),
-        }),
-    )
+            }))
+        })
+        .collect()
+}
+
+fn set_loop_run(
+    document: &mut crate::state::RuntimeDocument,
+    run_id: &str,
+    run: serde_json::Value,
+) -> Result<(), SddError> {
+    let runs = document
+        .loop_state
+        .get_mut("runs")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.loop.runs 必须是对象"))?;
+    runs.insert(run_id.to_string(), run);
+    Ok(())
+}
+
+fn append_loop_events(
+    document: &mut crate::state::RuntimeDocument,
+    run_id: &str,
+    event_values: Vec<serde_json::Value>,
+) -> Result<(), SddError> {
+    let events = document
+        .loop_state
+        .get_mut("events")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.loop.events 必须是对象"))?;
+    let run_events = events
+        .entry(run_id.to_string())
+        .or_insert_with(|| json!([]))
+        .as_array_mut()
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "auto loop 事件必须是数组"))?;
+    run_events.extend(event_values);
+    Ok(())
 }
 
 fn read_events(
-    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
     state: &crate::state::WorkflowState,
     args: &serde_json::Value,
 ) -> Result<CommandResult, SddError> {
@@ -421,20 +563,27 @@ fn read_events(
         .and_then(|value| value.as_str())
         .unwrap_or(&context.run_id);
     crate::state::state_store::validate_run_id(run_id)?;
-    let mut events = crate::state::runtime_store::read_loop_events(cwd, run_id)?;
-    if let Some(tail) = args.get("tail").and_then(|value| value.as_u64()) {
-        let keep = usize::try_from(tail).unwrap_or(usize::MAX);
-        if keep < events.len() {
-            events.drain(..events.len() - keep);
-        }
-    }
+    let events = runtime
+        .loop_state
+        .get("events")
+        .and_then(|events| events.get(run_id))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "指定 auto run 没有事件"))?;
+    let start = if let Some(tail) = args.get("tail").and_then(|value| value.as_u64()) {
+        let keep = usize::try_from(tail).map_err(|_| {
+            SddError::new("E_INVALID_PHASE_COMMAND", "--tail 超出当前平台可表示范围")
+        })?;
+        events.len().saturating_sub(keep)
+    } else {
+        0
+    };
     Ok(CommandResult {
         ok: true,
         state: state.current_phase.clone(),
         exit_code: 0,
         change_id: state.current_change_id.clone(),
         next: None,
-        data: Some(json!({ "runId": run_id, "events": events })),
+        data: Some(json!({ "runId": run_id, "events": &events[start..] })),
         rendered: None,
         warnings: None,
         action_required: None,
@@ -455,14 +604,4 @@ fn loop_status_result(state: &crate::state::WorkflowState) -> CommandResult {
         action_required: None,
         error: None,
     }
-}
-
-fn unique_id(prefix: &str) -> String {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    format!("{prefix}-{}-{nanos}-{sequence}", std::process::id())
 }

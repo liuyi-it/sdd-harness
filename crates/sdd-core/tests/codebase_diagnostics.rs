@@ -58,7 +58,7 @@ fn codebase_query_degrades_with_warning_without_codegraph() {
         assert_eq!(data["provider"], "fallback-file-scan");
         assert_eq!(data["degraded"], true);
         let warnings = result.warnings.as_ref().expect("降级应带警告");
-        assert_eq!(warnings[0]["code"], "W_KNOWLEDGE_UNAVAILABLE");
+        assert_eq!(warnings[0].code, "W_KNOWLEDGE_UNAVAILABLE");
     }
 }
 
