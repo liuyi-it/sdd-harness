@@ -3,11 +3,11 @@
   "$id": "https://sdd-harness.dev/schemas/config.schema.json",
   "title": "SDD 当前运行配置",
   "type": "object",
-  "required": ["schemaVersion", "hostAdapter", "workflow", "quality", "contextPack", "audit"],
+  "required": ["schemaVersion", "hostAdapter", "workflow", "contextPack", "audit"],
   "properties": {
     "schemaVersion": {
       "type": "integer",
-      "enum": [3]
+      "enum": [4]
     },
     "hostAdapter": {
       "type": "string",
@@ -21,28 +21,6 @@
         "structurePolicy": {
           "type": "string",
           "enum": ["free-design", "user-defined"]
-        }
-      },
-      "additionalProperties": false
-    },
-    "quality": {
-      "type": "object",
-      "required": ["ocr"],
-      "properties": {
-        "ocr": {
-          "type": "object",
-          "required": ["mode", "command"],
-          "properties": {
-            "mode": {
-              "type": "string",
-              "enum": ["auto", "off", "required"]
-            },
-            "command": {
-              "type": "string",
-              "pattern": "\\S"
-            }
-          },
-          "additionalProperties": false
         }
       },
       "additionalProperties": false

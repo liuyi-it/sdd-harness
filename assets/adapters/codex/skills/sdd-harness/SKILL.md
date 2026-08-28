@@ -1,41 +1,18 @@
 ---
 name: sdd-harness
-description: 在软件实现、修复、重构、测试或代码审查任务中使用 SDD 工作流；对可独立的探索、架构分析、实现和审查任务按边界派发 Codex subagent。
+description: 用逐阶段 SDD 工作流处理软件实现、修复、重构和测试任务；协调规格、设计、计划、构建、质量验证与归档。
 ---
 
 # SDD Harness
 
-仅在软件变更任务或明确提到 SDD 时使用；普通问答不启动工作流。
+仅在软件变更任务或用户明确提到 SDD 时使用。普通问答和只读解释不启动工作流。
 
-## 工作原则
-
-- 通过 `sdd` CLI 推进所有 SDD 阶段，不从源码入口绕过状态机，也不直接修改 `.sdd/` 内部文件。
-- 首次 `sdd new` 或 `sdd auto` 必须携带非空需求；遇到 `CLARIFYING` 时一次询问 Core 返回的当前 round 问题，并使用 `--answers` 继续。
-- 对用户只汇报目标、变更、验证、风险和下一步；CLI JSON、任务 ID、Context Pack、状态码和内部路径只在内部处理。
-- 需求、架构、安全边界、不可逆外部操作和最终验收由主 Agent 决定；subagent 不能自行扩大任务范围或替代最终验收。
-
-## 默认流程
-
-1. 先确认任务类型与范围；只读分析、方案或实现请求分别停在相应阶段。
-2. 未初始化时运行 `sdd init --json`。当前 Codex 是默认宿主，不需要交互选择。
-3. 用 `sdd auto "<需求>" --json` 推进工作流；高风险变更在设计/计划完成后先向用户说明影响并等待确认。
-4. `AGENT_TASK_EXECUTION` 出现时，读取 Context Pack，只修改 `allowedFiles`，执行指定 verification，并用 `sdd build complete` 提交结果。
-5. 所有任务完成后运行 `sdd verify` 与 `sdd review`；只有两者通过才能归档。
-
-## Subagent 编排
-
-Codex 的主 Agent 负责拆分、等待、汇总和最终检查；优先将嘈杂的只读工作交给 subagent，避免主线程被原始日志和搜索结果淹没。
-
-- `sdd-explorer`：只读梳理调用链、状态转换、约束和可验证证据。适用于复杂需求开始前、跨模块定位和设计前的事实收集。
-- `sdd-worker`：处理边界清晰的单模块 SDD build 任务，使用 `gpt-5.6-luna` 与 `max` 推理。
-- `sdd-worker-complex`：处理边界明确但跨模块、集成密集或根因复杂的单个 build 任务，使用 `gpt-5.6-terra` 与 `max` 推理。
-- `sdd-reviewer`：只读复核 diff、真实调用路径、回归风险和测试缺口。它不修改代码，主 Agent 根据证据决定是否修复。
-- `sdd-architect`：只读分析高风险架构、并发一致性和关键集成根因，使用 `gpt-5.6-sol` 与 `xhigh` 推理；最终架构决定仍由主 Agent 作出。
-
-派发实现任务时必须明确一个所有者、任务目标、允许文件、验收条件和验证命令；只有文件集合、状态和外部副作用完全不重叠时才并行 worker。对独立的探索、测试日志分析和审查可并行派发并等待全部结果；不要并行编辑共享文件或 `.sdd/` 状态。worker 必须返回可核验的 `TaskExecutionResult` JSON；其他 subagent 必须返回结论、证据位置、涉及文件、验证结果和未决风险。主 Agent 必须重新检查 diff、文件范围和验证输出，不能直接相信 subagent 的结论。
-
-角色声明的模型不可用时立即停止并向用户报告，不得无声降级或换用 GPT-5.6 之前的模型。
-
-## 输出边界
-
-不要向用户暴露 `.sdd/runtime.json`、策略包、Context Pack、任务/运行标识、错误码或调试字段，除非用户明确要求排障原始信息。
+1. 所有状态读写只通过 `sdd` CLI，不直接修改 `.sdd/`。
+2. 先运行 `sdd status --json`。若存在多个活动 change 且用户没有明确 change，列出简短标题并询问用户选择；不得自动选择最近任务。
+3. 未初始化时运行 `sdd init --json`；新需求运行 `sdd new "<需求>" --json`。
+4. 严格按 `new → design → plan → build → verify → archive` 推进，不存在 `auto` 或独立 `review`。
+5. `AGENT_PHASE_EXECUTION`：基于 Context Pack 和真实代码生成符合 resultSchema 的 JSON；规格、设计、计划阶段不得修改业务文件，然后用对应命令的 `--result-json` 回传。
+6. `AGENT_TASK_EXECUTION`：只修改 allowedFiles，按任务内部 steps 完成测试、实现和验证，执行全部 verification，再用 `sdd build complete` 回传结果。
+7. `AGENT_FIX_EXECUTION`：只修复质量报告中的阻断问题，执行全部 verification，再用 `sdd verify --result-json` 回传；Core 自动控制一轮修复，后续轮次必须先询问用户。
+8. 文档深度和任务数量随复杂度调整，但任何任务都必须有可验收规格；不要为小任务引入额外流程、角色或 subagent。
+9. 对用户只汇报目标、必要问题、关键决策、改动、验证和风险；内部 JSON、Context Pack、标识符和运行路径不直接展示。

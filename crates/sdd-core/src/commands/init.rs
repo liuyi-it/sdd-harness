@@ -15,9 +15,6 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     super::validate_args(args, &["timeout", "structurePolicy", "hostAdapter"])?;
     let timeout_ms = super::timeout_ms(args)?;
     let _guard = lock_sdd(cwd, "sdd init", None, timeout_ms)?;
-    let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
-    super::check_auto_loop_busy(cwd, &current.state, "init", args)?;
-
     let adapter = requested_adapter(args)?;
     let structure_policy = super::string_arg(args, "structurePolicy")?;
     if structure_policy.is_some_and(|policy| !matches!(policy, "free-design" | "user-defined")) {
@@ -35,7 +32,6 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
             if first_init {
                 crate::state::state_store::apply_state_update(&mut document.state, |state| {
                     state.current_phase = "INITIALIZING".to_string();
-                    state.in_progress_phase = Some("INITIALIZING".to_string());
                     state.last_command = Some("sdd init".to_string());
                 })?;
             }
@@ -91,8 +87,6 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
                 state.initialized = true;
                 if first_init {
                     state.current_phase = "INDEX_READY".to_string();
-                    state.in_progress_phase = None;
-                    state.suggested_command = Some("sdd new".to_string());
                 }
                 state.last_command = Some("sdd init".to_string());
             })
@@ -103,9 +97,8 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
         ok: true,
         state: ready.current_phase.clone(),
         exit_code: 0,
-        change_id: ready.current_change_id.clone(),
-        next: crate::commands::status::next_command(&ready.current_phase)
-            .or(ready.suggested_command.clone()),
+        change_id: None,
+        next: crate::commands::status::next_command(&ready.current_phase),
         data: None,
         rendered: None,
         warnings: if warnings.is_empty() {

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/fix-result.schema.json",
+  "title": "SDD 质量修复结果",
+  "type": "object",
+  "required": ["fixId", "status", "filesChanged", "verification"],
+  "properties": {
+    "fixId": { "type": "string", "pattern": "^FIX-[0-9]{3}$" },
+    "status": { "type": "string", "enum": ["completed", "failed"] },
+    "message": { "type": "string" },
+    "filesChanged": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "verification": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["command", "args", "passed"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "args": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "passed": { "type": "boolean" },
+          "output": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,40 +1,36 @@
-# Schema 说明
+# JSON Schema
 
-正式 JSON Schema 位于仓库根目录 `schemas/`，Rust Core 在编译时内嵌并执行校验。当前保留八个事实模型：
+所有 Schema 位于 `schemas/` 并编译进二进制。Core 的轻量校验器支持当前文件实际使用的 type、required、properties、additionalProperties、items、enum、const、pattern、minimum、minLength、minItems、uniqueItems、oneOf、anyOf 和同文档 `$ref`。
 
-| Schema | 对应数据 |
+| Schema | 用途 |
 | --- | --- |
-| `state.schema.json` | `.sdd/runtime.json` 的 `state` 节点 |
-| `runtime.schema.json` | `.sdd/runtime.json` 顶层统一运行数据 |
-| `config.schema.json` | `.sdd/runtime.json` 的当前配置节点 |
-| `spec.schema.json` | runtime 中的澄清中或就绪规格记录及项目原生需求模型 |
-| `task.schema.json` | runtime 计划中的任务定义 |
-| `task-result.schema.json` | runtime 运行级任务结果 |
-| `report.schema.json` | runtime 中的 verify/review 报告 |
-| `artifact.schema.json` | runtime 中的制品条目 |
+| `runtime.schema.json` | Runtime 根结构，当前 schemaVersion 6 |
+| `state.schema.json` | 项目初始化与索引状态，当前 schemaVersion 4 |
+| `config.schema.json` | 宿主、Git 隔离、Context Pack 和审计限制，当前 schemaVersion 4 |
+| `artifact.schema.json` | 制品类型、路径、输入和内容哈希 |
+| `spec-result.schema.json` | Agent 回传的规格阶段结果 |
+| `spec.schema.json` | Core 持久化的 READY 规格模型 |
+| `design-result.schema.json` | Agent 回传的技术设计 |
+| `plan-result.schema.json` | Agent 回传的计划与任务集合 |
+| `task.schema.json` | 单个纵向任务 |
+| `task-result.schema.json` | build 的任务执行结果 |
+| `fix-result.schema.json` | verify 的受控修复结果 |
+| `report.schema.json` | kind=quality 的统一质量报告 |
 
-当前 runtime、state、config 的整数版本分别为 `5`、`3`、`3`；规格、计划和归档模型版本分别为 `3.0.0`、`2.0.0`、`2.0.0`，设计以 Markdown 字符串存储。状态、runtime、config、规格、任务、任务结果和报告会在关键读写边界执行结构校验（required/type/enum/const/pattern/minLength/minItems/minimum/uniqueItems/propertyNames/additionalProperties/$ref/oneOf/anyOf）；数组元素也按 `items` 递归校验。runtime 读取还会校验 state、config、artifacts、index、changes、runs、reports、loop 与归档之间的引用和阶段不变量，拒绝未知顶层字段、悬空 ID、重复诊断和错误聚合形状。就绪规格只接受当前 Requirement/Scenario 模型；任务定义在读取计划时执行 `task.schema.json` 校验。
+## 阶段结果
 
-索引节点固定为一条 CodeGraph 诊断、摘要和更新时间。诊断中的 `installed`/`version`、`indexed`/`degraded`/`reason` 必须彼此一致；降级原因还必须与工作流状态完全相同，provider、索引状态和摘要首行来源标记也必须对应。
+规格结果必须包含目标、included/excluded 范围、约束和 Requirement/Scenario 模型。设计结果必须包含真实代码现状、决策与理由、影响文件、接口、错误处理、测试、风险和回滚。计划结果必须包含全局约束、依赖决策和至少一个 task。
 
-每个业务 `run` 必须显式绑定现存的 `changeId`；当前 `currentRunId` 与 `currentChangeId` 必须属于同一变更。业务事件只接受当前 `REQUIREMENT_REVISED` 精确结构并同时绑定 run/change，未知字段或跨变更事件会在 runtime 边界拒绝。
+Core 对 result JSON 先做 Schema 校验，再反序列化为强类型，并递归拒绝占位内容。计划还会逐个用 task schema 复验，检查文件范围矛盾、验证命令、依赖环和规格覆盖。
 
-计划任务只使用 `acceptanceCriteria`，旧 `acceptance` 字段已删除；`acceptanceCriteria` 固定列出需求场景 ID 与标题，`doneCriteria` 描述当前 RED/GREEN/REFACTOR/VERIFY 阶段的完成条件，两者不再重复。任务读取边界会复核 ID/阶段、重复节点、缺失依赖、依赖环、`expectedNewFiles`/`testSeam` 文件子集和验证命令。计划本身不再保存永远为 `PENDING` 的重复状态，唯一任务状态源是 `WorkflowState.tasks`，且只包含 `PENDING` / `BUILDING` / `DONE` / `FAILED`。任务结果的 evidence 只接受 `command-run`，不接受裁决层不会消费的旧证据类型或 `args` / `file` 字段；`taskId` 必须与当前 RED/GREEN/REFACTOR/VERIFY 任务格式一致，且 `verification` 必须不重不漏地覆盖全部计划命令。
+## 纵向任务
 
-`state.pendingAgentTask` 与 `state.workspace` 使用精确嵌套 schema，不接受未知或缺失字段。可用 Git 基线必须包含 40/64 位十六进制 OID、唯一文件列表和同键 SHA-256 表；不可用基线只能包含 `available=false`。workspace 的 branch/worktree 必须同时为空或同时为非空字符串，任务状态对象的键必须符合当前 `TASK-000-PHASE` 格式；Core 还会交叉校验文件与哈希键集合及阶段关系。
+taskId 格式为 `TASK-001`。`executionMode` 为 `TDD` 或 `VERIFY_ONLY`。TDD 的 steps 至少包含 TEST、IMPLEMENT、VERIFY；VERIFY_ONLY 至少包含 VERIFY。`interfaces`、用户可见结果、验收标准和 testSeam 用于防止计划退化成模糊动作列表。
 
-`config` 只接受 `schemaVersion`、`hostAdapter`、`workflow.gitIsolation`（以及可选的 `structurePolicy`）、`quality.ocr`、`contextPack.maxSizeKb` 和 `audit`。`maxSizeKb` 是代码库摘要的 UTF-8 字节上限。所有必填值必须存在且类型、枚举和正整数约束正确；未知字段、旧版本和旧配置位置会在读写边界直接返回 `E_STATE_CORRUPTED`，不迁移、不忽略、也不回退默认值。
+## 结果传输
 
-## 报告字段
+阶段、任务和修复行动都使用 `resultTransport=inline-json`，不接受 Agent 提供的任意结果文件路径。任务结果包含 evidence、verification 和 filesChanged；修复结果包含 fixId、status、verification 和 filesChanged。
 
-`report.schema.json` 中 `issues[]` 的 `code`、`severity`、`message` 为必填，其余均为可选：`file`、`origin`、`category`、`startLine`、`endLine`、`existingCode`、`suggestionCode`。OCR 后端产生的 finding 带 `origin="ocr"`，并可选携带定位（`startLine`/`endLine`）、分类（`category`）和建议代码（`suggestionCode`）；确定性 finding 保持原始格式。报告同时以 `minimality.ocr.status` 记录 OCR 结果：`completed`、`not-found`、`unavailable`、`failed`、`invalid-output`、`off`、`skipped` 或 `blocked-by-deterministic-review`。
+## 报告
 
-OCR 适配器只接受当前 `ocr.run-manifest/v1` 输出：顶层 `status`、`llm`、`summary`、`tool_calls`、`comments`、`manifest` 必须完整且无未知字段；运行 ID、终态、操作类型、finding 数、审查文件数、工具调用统计、变更路径和行号必须交叉一致。旧版 `success`、`session_id` 或缺省统计字段不会被兼容解析。
-
-状态写入使用同目录唯一临时文件、文件与目录同步、重命名和 `runtime.json.bak` 恢复，并维护主文件与备份各自的 SHA-256 校验和。缺失或不匹配的校验和、损坏、符号链接或版本不匹配都会返回 `E_STATE_CORRUPTED`，不会猜测内容继续执行。
-
-## 校验
-
-```bash
-cargo test -p sdd-core --test schema_validator --test state_store --test artifact_store
-```
+统一报告 `kind` 固定为 `quality`。issues 的必填字段为 code、severity、message；可选 file、category、startLine、endLine、existingCode、suggestionCode、origin。minimality 保存 Git 指纹和实际变更文件等可复核事实。

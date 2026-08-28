@@ -170,14 +170,6 @@ fn virtual_content(document: &RuntimeDocument, path: &str) -> Result<String, Sdd
             .get(*run_id)
             .and_then(|run| run.get("tasks"))
             .and_then(|tasks| tasks.get(*task_id)),
-        ["loop", "runs", run_id] => document
-            .loop_state
-            .get("runs")
-            .and_then(|runs| runs.get(*run_id)),
-        ["loop", "events", run_id] => document
-            .loop_state
-            .get("events")
-            .and_then(|events| events.get(*run_id)),
         _ => None,
     }
     .ok_or_else(|| {

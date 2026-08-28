@@ -29,30 +29,14 @@ pub fn run(request: &CommandRequest) -> Result<CommandResult, SddError> {
         // status 是纯只读命令，不依赖完整分发流程
         "status" => commands::status::run_status(cwd, request.args.as_ref()),
         "codebase" => commands::codebase::run_codebase(cwd, request.args.as_ref()),
-        "change" => commands::change::run_change(
-            cwd,
-            request.args.as_ref(),
-            &engines::spec::spec_engine::SpecEngine::new(),
-        ),
+        "change" => commands::change::run_change(cwd, request.args.as_ref()),
         "init" => commands::init::run_init(cwd, request.args.as_ref()),
-        "new" => commands::new::run_new(
-            cwd,
-            request.args.as_ref(),
-            &engines::spec::spec_engine::SpecEngine::new(),
-        ),
-        "design" => commands::design::run_design(
-            cwd,
-            request.args.as_ref(),
-            &engines::tdd::TddEngine::new(),
-        ),
-        "plan" => {
-            commands::plan::run_plan(cwd, request.args.as_ref(), &engines::tdd::TddEngine::new())
-        }
+        "new" => commands::new::run_new(cwd, request.args.as_ref()),
+        "design" => commands::design::run_design(cwd, request.args.as_ref()),
+        "plan" => commands::plan::run_plan(cwd, request.args.as_ref()),
         "build" => commands::build::run_build(cwd, request.args.as_ref()),
         "verify" => commands::verify::run_verify(cwd, request.args.as_ref()),
-        "review" => commands::review::run_review(cwd, request.args.as_ref()),
         "archive" => commands::archive::run_archive(cwd, request.args.as_ref()),
-        "auto" => commands::auto::run_auto(cwd, request.args.as_ref()),
         _ => Err(SddError::new(
             "E_INVALID_PHASE_COMMAND",
             &format!("命令 {} 不可用", request.command),

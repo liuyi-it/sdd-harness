@@ -5,26 +5,16 @@
   "type": "object",
   "required": ["taskId", "status", "evidence", "verification", "filesChanged"],
   "properties": {
-    "taskId": {
-      "type": "string",
-      "pattern": "^TASK-\\d{3}-(RED|GREEN|REFACTOR|VERIFY)$"
-    },
-    "status": {
-      "type": "string",
-      "enum": ["completed", "failed"]
-    },
+    "taskId": { "type": "string", "pattern": "^TASK-[0-9]{3}$" },
+    "status": { "type": "string", "enum": ["completed", "failed"] },
     "message": { "type": "string" },
     "evidence": {
       "type": "array",
-      "uniqueItems": true,
       "items": {
         "type": "object",
         "required": ["type", "command", "output"],
         "properties": {
-          "type": {
-            "type": "string",
-            "enum": ["command-run"]
-          },
+          "type": { "type": "string", "enum": ["command-run"] },
           "command": { "type": "string", "minLength": 1 },
           "passed": { "type": "boolean" },
           "expectedFailure": { "type": "boolean" },
@@ -36,27 +26,19 @@
     "verification": {
       "type": "array",
       "minItems": 1,
-      "uniqueItems": true,
       "items": {
         "type": "object",
-        "required": ["command", "passed"],
+        "required": ["command", "args", "passed"],
         "properties": {
           "command": { "type": "string", "minLength": 1 },
-          "args": {
-            "type": "array",
-            "items": { "type": "string", "minLength": 1 }
-          },
+          "args": { "type": "array", "items": { "type": "string", "minLength": 1 } },
           "passed": { "type": "boolean" },
           "output": { "type": "string" }
         },
         "additionalProperties": false
       }
     },
-    "filesChanged": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    }
+    "filesChanged": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
   },
   "additionalProperties": false
 }

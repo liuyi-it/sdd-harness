@@ -2,7 +2,7 @@
 //!
 //! 参数与输出遵循当前 Core 契约：
 //! - 全局参数：--json/--cwd/--change/--timeout
-//! - 命令：init/status/new/change/design/plan/build/verify/review/archive/auto/codebase
+//! - 命令：init/status/new/change/design/plan/build/verify/archive/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
 
 use std::process::ExitCode;
@@ -57,38 +57,36 @@ enum Command {
     New {
         /// 需求文本（可多个词）
         requirement: Vec<String>,
-        /// 澄清答案 JSON，如 {"Q-GOAL":"答案"}
-        #[arg(long)]
-        #[arg(value_parser = parse_answers)]
-        answers: Option<serde_json::Value>,
-        /// 需求不完整时直接失败，不进入交互澄清
-        #[arg(long, default_value_t = false)]
-        non_interactive: bool,
+        /// 宿主 Agent 回传的结构化规格 JSON
+        #[arg(long = "result-json")]
+        result_json: Option<String>,
     },
     /// 修订已有变更并同步所有文档
     Change {
-        /// 目标变更 ID
-        change_id: String,
         /// 新需求文本（可多个词）
         requirement: Vec<String>,
-        /// 澄清答案 JSON，如 {"Q-ACTOR":"授权用户"}
-        #[arg(long, value_parser = parse_answers)]
-        answers: Option<serde_json::Value>,
+        /// 宿主 Agent 回传的结构化规格 JSON
+        #[arg(long = "result-json")]
+        result_json: Option<String>,
     },
     /// 生成设计制品
-    Design,
+    Design {
+        /// 宿主 Agent 回传的结构化设计 JSON
+        #[arg(long = "result-json")]
+        result_json: Option<String>,
+    },
     /// 生成实施计划
     Plan {
-        /// 计划内依赖决策 JSON 数组
-        #[arg(long, value_parser = parse_dependencies)]
-        dependencies: Option<serde_json::Value>,
+        /// 宿主 Agent 回传的结构化计划 JSON
+        #[arg(long = "result-json")]
+        result_json: Option<String>,
     },
     /// 构建（build next / build complete）
     Build {
         /// 子命令：next 或 complete
         #[arg(value_parser = ["next", "complete"])]
         sub: Option<String>,
-        /// complete 时的任务 ID（如 TASK-001-RED）
+        /// complete 时的任务 ID（如 TASK-001）
         #[arg(long)]
         task: Option<String>,
         /// complete 时内联提交的 TaskExecutionResult JSON
@@ -96,43 +94,16 @@ enum Command {
         result_json: Option<String>,
     },
     /// 验证
-    Verify,
-    /// 审查
-    Review,
+    Verify {
+        /// 用户明确授权质量阻断后的下一轮修复
+        #[arg(long = "continue", default_value_t = false)]
+        continue_fix: bool,
+        /// 宿主 Agent 回传的结构化修复结果 JSON
+        #[arg(long = "result-json")]
+        result_json: Option<String>,
+    },
     /// 归档
     Archive,
-    /// 自动推进 SDD Loop
-    Auto {
-        /// 需求文本（可多个词）
-        requirement: Vec<String>,
-        /// 澄清答案 JSON，如 {"Q-ACTOR":"答案"}
-        #[arg(long, value_parser = parse_answers)]
-        answers: Option<serde_json::Value>,
-        /// 需求不完整时直接失败，不进入交互澄清
-        #[arg(long, default_value_t = false)]
-        non_interactive: bool,
-        /// 恢复当前 auto run
-        #[arg(long, default_value_t = false)]
-        resume: bool,
-        /// 重启 auto run
-        #[arg(long, default_value_t = false)]
-        restart: bool,
-        /// 停止当前 auto run
-        #[arg(long, default_value_t = false)]
-        stop: bool,
-        /// 查看 auto run 事件
-        #[arg(long, default_value_t = false)]
-        events: bool,
-        /// 事件条数（必须与 --events 一起使用）
-        #[arg(long)]
-        tail: Option<u64>,
-        /// 查看 auto loop 状态
-        #[arg(long, default_value_t = false)]
-        loop_status: bool,
-        /// 指定 run id（与 --resume 配合）
-        #[arg(long)]
-        run: Option<String>,
-    },
     /// 代码库上下文管理（status/doctor/index/query/rebuild）
     Codebase {
         /// 子命令：status/doctor/index/query/rebuild
@@ -262,23 +233,46 @@ fn render_and_exit(result: &CommandResult, json: bool) -> ExitCode {
 fn render_text(result: &CommandResult) -> String {
     let mut lines = Vec::new();
     if let Some(action) = &result.action_required {
-        lines.push(format!("任务：{}", action.task_id));
-        lines.push(format!("Context Pack：{}", action.context_pack));
-        lines.push(format!("结果传输：{}", action.result_transport));
-        lines.push(format!("允许文件：{}", action.allowed_files.join("、")));
-        if !action.verification.is_empty() {
-            let commands: Vec<String> = action
-                .verification
-                .iter()
-                .map(|v| {
-                    if v.args.is_empty() {
-                        v.command.clone()
-                    } else {
-                        format!("{} {}", v.command, v.args.join(" "))
-                    }
-                })
-                .collect();
-            lines.push(format!("验证命令：{}", commands.join("；")));
+        use sdd_core::contracts::AgentActionRequired;
+        match action {
+            AgentActionRequired::AgentPhaseExecution {
+                phase,
+                context_pack,
+                result_transport,
+                ..
+            } => {
+                lines.push(format!("阶段：{phase}"));
+                lines.push(format!("Context Pack：{context_pack}"));
+                lines.push(format!("结果传输：{result_transport}"));
+            }
+            AgentActionRequired::AgentTaskExecution {
+                task_id,
+                context_pack,
+                result_transport,
+                allowed_files,
+                verification,
+                ..
+            } => {
+                lines.push(format!("任务：{task_id}"));
+                lines.push(format!("Context Pack：{context_pack}"));
+                lines.push(format!("结果传输：{result_transport}"));
+                lines.push(format!("允许文件：{}", allowed_files.join("、")));
+                render_verification(&mut lines, verification);
+            }
+            AgentActionRequired::AgentFixExecution {
+                fix_id,
+                context_pack,
+                result_transport,
+                allowed_files,
+                verification,
+                ..
+            } => {
+                lines.push(format!("修复：{fix_id}"));
+                lines.push(format!("Context Pack：{context_pack}"));
+                lines.push(format!("结果传输：{result_transport}"));
+                lines.push(format!("允许文件：{}", allowed_files.join("、")));
+                render_verification(&mut lines, verification);
+            }
         }
         return lines.join("\n");
     }
@@ -319,6 +313,25 @@ fn render_text(result: &CommandResult) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn render_verification(
+    lines: &mut Vec<String>,
+    verification: &[sdd_core::contracts::VerificationCommand],
+) {
+    if verification.is_empty() {
+        return;
+    }
+    let commands = verification
+        .iter()
+        .map(|item| {
+            std::iter::once(item.command.as_str())
+                .chain(item.args.iter().map(String::as_str))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>();
+    lines.push(format!("验证命令：{}", commands.join("；")));
 }
 
 /// 将内部退出码约束到进程支持的 0..=255。
@@ -370,8 +383,7 @@ fn build_request(
         Command::Status => "status",
         Command::New {
             requirement,
-            answers,
-            non_interactive,
+            result_json,
         } => {
             if !requirement.is_empty() {
                 args.insert(
@@ -379,41 +391,35 @@ fn build_request(
                     serde_json::json!(requirement.join(" ")),
                 );
             }
-            if let Some(answers) = answers {
-                args.insert("answers".into(), answers.clone());
-            }
-            if *non_interactive {
-                args.insert("nonInteractive".into(), serde_json::json!(true));
+            if let Some(result_json) = result_json {
+                args.insert("resultJson".into(), serde_json::json!(result_json));
             }
             "new"
         }
         Command::Change {
-            change_id,
             requirement,
-            answers,
+            result_json,
         } => {
-            if g.change.is_some() {
-                return Err(SddError::new(
-                    "E_INVALID_PHASE_COMMAND",
-                    "sdd change 已使用位置参数指定变更 ID，不得同时传入全局 --change",
-                ));
-            }
-            args.insert("changeId".into(), serde_json::json!(change_id));
             if !requirement.is_empty() {
                 args.insert(
                     "requirement".into(),
                     serde_json::json!(requirement.join(" ")),
                 );
             }
-            if let Some(answers) = answers {
-                args.insert("answers".into(), answers.clone());
+            if let Some(result_json) = result_json {
+                args.insert("resultJson".into(), serde_json::json!(result_json));
             }
             "change"
         }
-        Command::Design => "design",
-        Command::Plan { dependencies } => {
-            if let Some(dependencies) = dependencies {
-                args.insert("dependencies".into(), dependencies.clone());
+        Command::Design { result_json } => {
+            if let Some(result_json) = result_json {
+                args.insert("resultJson".into(), serde_json::json!(result_json));
+            }
+            "design"
+        }
+        Command::Plan { result_json } => {
+            if let Some(result_json) = result_json {
+                args.insert("resultJson".into(), serde_json::json!(result_json));
             }
             "plan"
         }
@@ -433,56 +439,19 @@ fn build_request(
             }
             "build"
         }
-        Command::Verify => "verify",
-        Command::Review => "review",
-        Command::Archive => "archive",
-        Command::Auto {
-            requirement,
-            answers,
-            non_interactive,
-            resume,
-            restart,
-            stop,
-            events,
-            tail,
-            loop_status,
-            run,
+        Command::Verify {
+            continue_fix,
+            result_json,
         } => {
-            if !requirement.is_empty() {
-                args.insert(
-                    "requirement".into(),
-                    serde_json::json!(requirement.join(" ")),
-                );
+            if *continue_fix {
+                args.insert("continue".into(), serde_json::json!(true));
             }
-            if let Some(answers) = answers {
-                args.insert("answers".into(), answers.clone());
+            if let Some(result_json) = result_json {
+                args.insert("resultJson".into(), serde_json::json!(result_json));
             }
-            if *non_interactive {
-                args.insert("nonInteractive".into(), serde_json::json!(true));
-            }
-            if *resume {
-                args.insert("resume".into(), serde_json::json!(true));
-            }
-            if let Some(run) = run {
-                args.insert("run".into(), serde_json::json!(run));
-            }
-            if *restart {
-                args.insert("restart".into(), serde_json::json!(true));
-            }
-            if *stop {
-                args.insert("stop".into(), serde_json::json!(true));
-            }
-            if *events {
-                args.insert("events".into(), serde_json::json!(true));
-            }
-            if let Some(tail) = tail {
-                args.insert("tail".into(), serde_json::json!(tail));
-            }
-            if *loop_status {
-                args.insert("loopStatus".into(), serde_json::json!(true));
-            }
-            "auto"
+            "verify"
         }
+        Command::Archive => "archive",
         Command::Codebase {
             sub,
             query_parts,
@@ -503,15 +472,6 @@ fn build_request(
     Ok((command, serde_json::Value::Object(args)))
 }
 
-fn parse_answers(raw: &str) -> Result<serde_json::Value, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(raw).map_err(|error| format!("answers 不是合法 JSON：{error}"))?;
-    if !value.is_object() {
-        return Err("answers 必须是 JSON 对象".to_string());
-    }
-    Ok(value)
-}
-
 fn parse_timeout(raw: &str) -> Result<f64, String> {
     let seconds = raw
         .parse::<f64>()
@@ -520,13 +480,4 @@ fn parse_timeout(raw: &str) -> Result<f64, String> {
         return Err("timeout 必须是非负有限数字".to_string());
     }
     Ok(seconds)
-}
-
-fn parse_dependencies(raw: &str) -> Result<serde_json::Value, String> {
-    let value: serde_json::Value = serde_json::from_str(raw)
-        .map_err(|error| format!("dependencies 不是合法 JSON：{error}"))?;
-    if !value.is_array() {
-        return Err("dependencies 必须是 JSON 数组".to_string());
-    }
-    Ok(value)
 }

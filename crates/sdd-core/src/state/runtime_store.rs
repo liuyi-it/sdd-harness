@@ -1,7 +1,7 @@
 //! `.sdd/runtime.json` 统一保存 SDD 的机器可读数据。
 //!
 //! changes 下只保留可读 Markdown；状态、配置、制品索引、规格模型、计划任务、
-//! 报告、任务结果、知识索引和 auto loop 全部通过本模块原子更新。
+//! 报告、任务结果、独立 change 工作流和知识索引全部通过本模块原子更新。
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::error::SddError;
-use crate::state::state_store::{validate_run_id, WorkflowState};
+use crate::state::state_store::{validate_run_id, ChangeWorkflow, WorkflowState};
 
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_CHECKSUM_FILE: &str = "runtime.json.sha256";
-pub const RUNTIME_SCHEMA_VERSION: u32 = 5;
-const CONFIG_SCHEMA_VERSION: u32 = 3;
+pub const RUNTIME_SCHEMA_VERSION: u32 = 6;
+const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -27,8 +27,7 @@ pub struct RuntimeDocument {
     pub artifacts: Value,
     pub changes: BTreeMap<String, Value>,
     pub runs: BTreeMap<String, Value>,
-    #[serde(rename = "loop")]
-    pub loop_state: Value,
+    pub workflows: BTreeMap<String, ChangeWorkflow>,
     pub index: Value,
 }
 
@@ -43,9 +42,6 @@ impl Default for RuntimeDocument {
                 "workflow": {
                     "gitIsolation": false
                 },
-                "quality": {
-                    "ocr": { "mode": "auto", "command": "ocr" }
-                },
                 "contextPack": { "maxSizeKb": 30 },
                 "audit": { "maxSizeMb": 5, "maxFiles": 200 }
             }),
@@ -55,10 +51,7 @@ impl Default for RuntimeDocument {
             }),
             changes: BTreeMap::new(),
             runs: BTreeMap::new(),
-            loop_state: json!({
-                "runs": {},
-                "events": {},
-            }),
+            workflows: BTreeMap::new(),
             index: json!({}),
         }
     }
@@ -89,6 +82,7 @@ impl RuntimeStore {
         // 主文件或其校验和损坏时仅接受同样通过校验的备份。
         match self.read_path(&path) {
             Ok(document) => Ok((document, true)),
+            Err(error) if error.code == "E_STATE_VERSION_UNSUPPORTED" => Err(error),
             Err(primary_error) => {
                 let backup = dir.join("runtime.json.bak");
                 crate::safe_fs::reject_symlink(&backup, "runtime 备份")?;
@@ -125,6 +119,18 @@ impl RuntimeStore {
                 &format!("runtime.json 解析失败：{error}"),
             )
         })?;
+        let found_version = value
+            .get("schemaVersion")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 缺少 schemaVersion"))?;
+        if found_version != u64::from(RUNTIME_SCHEMA_VERSION) {
+            return Err(SddError::new(
+                "E_STATE_VERSION_UNSUPPORTED",
+                &format!(
+                    "当前 .sdd 使用 runtime schemaVersion {found_version}，sdd 仅支持版本 {RUNTIME_SCHEMA_VERSION}；请先备份并删除旧 .sdd，再重新执行 sdd init"
+                ),
+            ));
+        }
         crate::schema::validate_json("runtime", &value)?;
         let document: RuntimeDocument = serde_json::from_value(value).map_err(|error| {
             SddError::new(
@@ -132,15 +138,6 @@ impl RuntimeStore {
                 &format!("runtime.json 结构解析失败：{error}"),
             )
         })?;
-        if document.schema_version != RUNTIME_SCHEMA_VERSION {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!(
-                    "runtime schemaVersion {} 与当前版本 {} 不匹配",
-                    document.schema_version, RUNTIME_SCHEMA_VERSION
-                ),
-            ));
-        }
         validate_document(&document, &self.root)?;
         Ok(document)
     }
@@ -264,31 +261,34 @@ fn validate_document(document: &RuntimeDocument, root: &Path) -> Result<(), SddE
             ));
         }
     }
-    if let Some(change_id) = document.state.current_change_id.as_deref() {
-        if !document.changes.contains_key(change_id) {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                "currentChangeId 没有对应的运行数据",
-            ));
-        }
+    if document.workflows.len() != document.changes.len()
+        || document
+            .changes
+            .keys()
+            .any(|change_id| !document.workflows.contains_key(change_id))
+    {
+        return Err(SddError::new(
+            "E_STATE_CORRUPTED",
+            "changes 与 workflows 必须一一对应",
+        ));
     }
-    if let Some(run_id) = document.state.current_run_id.as_deref() {
-        let run = document
-            .runs
-            .get(run_id)
-            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "currentRunId 没有对应的运行数据"))?;
-        if run.get("changeId").and_then(Value::as_str)
-            != document.state.current_change_id.as_deref()
-        {
+    for (change_id, workflow) in &document.workflows {
+        crate::state::state_store::validate_change_workflow(workflow)?;
+        let run = document.runs.get(&workflow.run_id).ok_or_else(|| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("change {change_id} 的 workflow 缺少对应 run"),
+            )
+        })?;
+        if run.get("changeId").and_then(Value::as_str) != Some(change_id.as_str()) {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
-                "currentRunId 与 currentChangeId 不属于同一变更",
+                &format!("change {change_id} 的 workflow 与 run 不一致"),
             ));
         }
     }
     validate_artifacts(&document.artifacts)?;
     validate_index(document)?;
-    validate_loop(document)?;
     crate::schema::validate_json("config", &document.config)?;
     validate_workspace_binding(document, root)?;
     Ok(())
@@ -300,230 +300,71 @@ fn validate_workspace_binding(document: &RuntimeDocument, root: &Path) -> Result
         .pointer("/workflow/gitIsolation")
         .and_then(Value::as_bool)
         .expect("config schema 已确认 workflow.gitIsolation");
-    let workspace = match document.state.workspace.as_ref() {
-        Some(workspace) => workspace,
-        None if !isolated || document.state.current_change_id.is_none() => return Ok(()),
-        None => {
+    for (change_id, workflow) in &document.workflows {
+        let workspace = match workflow.workspace.as_ref() {
+            Some(workspace) => workspace,
+            None if !isolated => continue,
+            None => {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    &format!("启用 Git 隔离的变更 {change_id} 必须绑定受管 workspace"),
+                ));
+            }
+        };
+        if !isolated {
+            if workspace.branch_name.is_some() || workspace.worktree_path.is_some() {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "未启用 Git 隔离时 workspace 不得绑定分支或 worktree",
+                ));
+            }
+            continue;
+        }
+        let expected_branch = format!("sdd/{change_id}");
+        if workspace.branch_name.as_deref() != Some(expected_branch.as_str()) {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
-                "启用 Git 隔离的活动变更必须绑定受管 workspace",
+                "隔离 workspace 分支与 changeId 不一致",
             ));
         }
-    };
-    if !isolated {
-        if workspace.branch_name.is_some() || workspace.worktree_path.is_some() {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                "未启用 Git 隔离时 workspace 不得绑定分支或 worktree",
-            ));
-        }
-        return Ok(());
-    }
-    let change_id =
-        document.state.current_change_id.as_deref().ok_or_else(|| {
-            SddError::new("E_STATE_CORRUPTED", "隔离 workspace 缺少活动 changeId")
-        })?;
-    let expected_branch = format!("sdd/{change_id}");
-    if workspace.branch_name.as_deref() != Some(expected_branch.as_str()) {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "隔离 workspace 分支与活动 changeId 不一致",
-        ));
-    }
-    let stored_path = workspace
-        .worktree_path
-        .as_deref()
-        .expect("state 校验已确认 branch/worktree 成对存在");
-    let stored = Path::new(stored_path);
-    crate::safe_fs::reject_symlink(stored, "隔离 worktree")?;
-    let root_text = root.to_str().ok_or_else(|| {
-        SddError::new(
-            "E_PATH_OUTSIDE_REPO",
-            "项目根目录不是有效 UTF-8，无法验证隔离 worktree",
-        )
-    })?;
-    let expected = crate::state::paths::worktrees_dir(root_text, false)?.join(change_id);
-    crate::safe_fs::reject_symlink(&expected, "隔离 worktree")?;
-    let expected = expected.canonicalize().map_err(|error| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("解析预期隔离 worktree 失败：{error}"),
-        )
-    })?;
-    let stored = stored.canonicalize().map_err(|error| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("解析 workspace.worktreePath 失败：{error}"),
-        )
-    })?;
-    let control_root = root.canonicalize().map_err(|error| {
-        SddError::new(
-            "E_PATH_OUTSIDE_REPO",
-            &format!("解析项目根目录失败：{error}"),
-        )
-    })?;
-    if stored != expected || !stored.starts_with(control_root) {
-        return Err(SddError::new(
-            "E_SYMLINK_BLOCKED",
-            "workspace.worktreePath 与当前变更的受管 worktree 不一致",
-        ));
-    }
-    Ok(())
-}
-
-fn validate_loop(document: &RuntimeDocument) -> Result<(), SddError> {
-    let loop_root = document
-        .loop_state
-        .as_object()
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.loop 必须是对象"))?;
-    if loop_root.len() != 2 || !loop_root.contains_key("runs") || !loop_root.contains_key("events")
-    {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "runtime.loop 只能包含 runs 和 events",
-        ));
-    }
-    let loop_runs = document
-        .loop_state
-        .get("runs")
-        .and_then(Value::as_object)
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.loop.runs 必须是对象"))?;
-    for (run_id, run) in loop_runs {
-        validate_run_id(run_id)?;
-        validate_loop_run(run_id, run)?;
-    }
-    let loop_events = document
-        .loop_state
-        .get("events")
-        .and_then(Value::as_object)
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.loop.events 必须是对象"))?;
-    for (run_id, events) in loop_events {
-        validate_run_id(run_id)?;
-        if !loop_runs.contains_key(run_id) {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("auto run {run_id} 的事件缺少对应运行记录"),
-            ));
-        }
-        let events = events.as_array().ok_or_else(|| {
+        let stored_path = workspace
+            .worktree_path
+            .as_deref()
+            .expect("workflow 校验已确认 branch/worktree 成对存在");
+        let stored = Path::new(stored_path);
+        crate::safe_fs::reject_symlink(stored, "隔离 worktree")?;
+        let root_text = root.to_str().ok_or_else(|| {
             SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("auto run {run_id} 的事件必须是数组"),
+                "E_PATH_OUTSIDE_REPO",
+                "项目根目录不是有效 UTF-8，无法验证隔离 worktree",
             )
         })?;
-        let loop_id = loop_runs[run_id]["loopId"]
-            .as_str()
-            .expect("validate_loop_run 已确认 loopId");
-        for event in events {
-            validate_loop_event(run_id, loop_id, event)?;
-        }
-    }
-    if loop_runs.len() != loop_events.len() {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "runtime.loop 的 runs 与 events 必须一一对应",
-        ));
-    }
-    if let Some(active) = document.state.active_loop.as_ref() {
-        let run_id = active["runId"]
-            .as_str()
-            .expect("state schema 已验证 activeLoop.runId");
-        let run = loop_runs
-            .get(run_id)
-            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "activeLoop 缺少对应运行记录"))?;
-        if run["loopId"] != active["loopId"] || run["status"] != active["status"] {
-            return Err(SddError::new(
+        let expected = crate::state::paths::worktrees_dir(root_text, false)?.join(change_id);
+        crate::safe_fs::reject_symlink(&expected, "隔离 worktree")?;
+        let expected = expected.canonicalize().map_err(|error| {
+            SddError::new(
                 "E_STATE_CORRUPTED",
-                "activeLoop 与 loop 运行记录不一致",
+                &format!("解析预期隔离 worktree 失败：{error}"),
+            )
+        })?;
+        let stored = stored.canonicalize().map_err(|error| {
+            SddError::new(
+                "E_STATE_CORRUPTED",
+                &format!("解析 workspace.worktreePath 失败：{error}"),
+            )
+        })?;
+        let control_root = root.canonicalize().map_err(|error| {
+            SddError::new(
+                "E_PATH_OUTSIDE_REPO",
+                &format!("解析项目根目录失败：{error}"),
+            )
+        })?;
+        if stored != expected || !stored.starts_with(control_root) {
+            return Err(SddError::new(
+                "E_SYMLINK_BLOCKED",
+                "workspace.worktreePath 与当前变更的受管 worktree 不一致",
             ));
         }
-    }
-    Ok(())
-}
-
-fn validate_loop_run(run_id: &str, run: &Value) -> Result<(), SddError> {
-    let fields = run.as_object().ok_or_else(|| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("auto run {run_id} 必须是对象"),
-        )
-    })?;
-    let expected = ["schemaVersion", "loopId", "runId", "status", "updatedAt"];
-    if fields.len() != expected.len()
-        || fields
-            .keys()
-            .any(|field| !expected.contains(&field.as_str()))
-        || fields.get("schemaVersion").and_then(Value::as_str) != Some("1.3.0")
-        || fields.get("runId").and_then(Value::as_str) != Some(run_id)
-        || !fields
-            .get("loopId")
-            .and_then(Value::as_str)
-            .is_some_and(|loop_id| validate_run_id(loop_id).is_ok())
-        || !fields
-            .get("status")
-            .and_then(Value::as_str)
-            .is_some_and(|status| {
-                matches!(
-                    status,
-                    "RUNNING" | "PAUSED" | "WAITING_AGENT" | "SUCCEEDED" | "FAILED" | "ABORTED"
-                )
-            })
-        || !fields.get("updatedAt").is_some_and(Value::is_string)
-    {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("auto run {run_id} 结构无效"),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_loop_event(run_id: &str, loop_id: &str, event: &Value) -> Result<(), SddError> {
-    let fields = event.as_object().ok_or_else(|| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("auto run {run_id} 包含非对象事件"),
-        )
-    })?;
-    let expected = [
-        "schemaVersion",
-        "eventId",
-        "loopId",
-        "runId",
-        "type",
-        "phase",
-        "command",
-        "createdAt",
-    ];
-    let command_valid = fields
-        .get("command")
-        .is_some_and(|command| command.is_null() || command.is_string());
-    if fields.len() != expected.len()
-        || fields
-            .keys()
-            .any(|field| !expected.contains(&field.as_str()))
-        || fields.get("schemaVersion").and_then(Value::as_str) != Some("1.0.0")
-        || fields.get("runId").and_then(Value::as_str) != Some(run_id)
-        || fields.get("loopId").and_then(Value::as_str) != Some(loop_id)
-        || !fields
-            .get("eventId")
-            .and_then(Value::as_str)
-            .is_some_and(|event_id| validate_run_id(event_id).is_ok())
-        || !fields
-            .get("type")
-            .and_then(Value::as_str)
-            .is_some_and(|event_type| !event_type.is_empty())
-        || !fields
-            .get("phase")
-            .and_then(Value::as_str)
-            .is_some_and(|phase| crate::contracts::PHASES.contains(&phase))
-        || !command_valid
-        || !fields.get("createdAt").is_some_and(Value::is_string)
-    {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("auto run {run_id} 包含无效事件"),
-        ));
     }
     Ok(())
 }
@@ -717,7 +558,7 @@ fn validate_change(change_id: &str, change: &Value) -> Result<(), SddError> {
         ));
     }
     if fields.get("spec").is_some_and(|value| !value.is_object())
-        || fields.get("design").is_some_and(|value| !value.is_string())
+        || fields.get("design").is_some_and(|value| !value.is_object())
         || fields.get("plan").is_some_and(|value| !value.is_object())
         || fields
             .get("reports")
@@ -739,7 +580,7 @@ fn validate_change(change_id: &str, change: &Value) -> Result<(), SddError> {
     }
     if let Some(reports) = fields.get("reports").and_then(Value::as_object) {
         for (kind, report) in reports {
-            if !matches!(kind.as_str(), "verify" | "review") {
+            if kind != "quality" {
                 return Err(SddError::new(
                     "E_STATE_CORRUPTED",
                     &format!("change {change_id} 包含未知报告 {kind}"),
@@ -755,30 +596,19 @@ fn validate_run(run_id: &str, run: &Value) -> Result<(), SddError> {
     let fields = run
         .as_object()
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", &format!("run {run_id} 必须是对象")))?;
-    if fields.keys().any(|field| {
-        !matches!(
-            field.as_str(),
-            "changeId" | "input" | "answers" | "tasks" | "events"
-        )
-    }) || !fields
-        .get("changeId")
-        .and_then(Value::as_str)
-        .is_some_and(|change_id| crate::git::isolation::validate_change_id(change_id).is_ok())
+    if fields
+        .keys()
+        .any(|field| !matches!(field.as_str(), "changeId" | "input" | "tasks"))
+        || !fields
+            .get("changeId")
+            .and_then(Value::as_str)
+            .is_some_and(|change_id| crate::git::isolation::validate_change_id(change_id).is_ok())
         || !fields.get("input").is_some_and(Value::is_string)
-        || !fields.get("answers").is_some_and(Value::is_object)
+        || !fields.get("tasks").is_some_and(Value::is_object)
     {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
             &format!("run {run_id} 结构无效"),
-        ));
-    }
-    let answers = fields["answers"]
-        .as_object()
-        .expect("前置校验已确认 answers 是对象");
-    if answers.values().any(|answer| !answer.is_string()) {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            &format!("run {run_id}.answers 必须只包含字符串"),
         ));
     }
     if let Some(tasks) = fields.get("tasks") {

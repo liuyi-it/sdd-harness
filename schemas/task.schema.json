@@ -1,83 +1,62 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdd-harness.dev/schemas/task.schema.json",
-  "title": "SDD 任务定义",
+  "title": "SDD 纵向任务定义",
   "type": "object",
   "required": [
-    "id", "title", "phase", "requirements", "scenarios", "dependsOn",
-    "allowedFiles", "expectedNewFiles", "forbiddenFiles", "verification", "doneCriteria",
-    "sliceType", "userVisibleOutcome", "acceptanceCriteria", "testSeam"
+    "id", "title", "executionMode", "requirements", "scenarios", "dependsOn",
+    "allowedFiles", "expectedNewFiles", "forbiddenFiles", "interfaces", "steps",
+    "verification", "doneCriteria", "userVisibleOutcome", "acceptanceCriteria", "testSeam"
   ],
-  "$defs": {
-    "phase": {
-      "type": "string",
-      "enum": ["RED", "GREEN", "REFACTOR", "VERIFY"]
-    }
-  },
   "properties": {
-    "id": {
-      "type": "string",
-      "pattern": "^TASK-\\d{3}-(RED|GREEN|REFACTOR|VERIFY)$"
-    },
+    "id": { "type": "string", "pattern": "^TASK-[0-9]{3}$" },
     "title": { "type": "string", "minLength": 1 },
-    "phase": { "$ref": "#/$defs/phase" },
-    "allowedFiles": {
+    "executionMode": { "type": "string", "enum": ["TDD", "VERIFY_ONLY"] },
+    "requirements": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^REQ-[0-9]{3}$" } },
+    "scenarios": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^REQ-[0-9]{3}-SC-[0-9]{3}$" } },
+    "dependsOn": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^TASK-[0-9]{3}$" } },
+    "allowedFiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "expectedNewFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "forbiddenFiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "interfaces": {
+      "type": "object",
+      "required": ["consumes", "produces"],
+      "properties": {
+        "consumes": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "produces": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
+    "steps": {
       "type": "array",
       "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "expectedNewFiles": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "forbiddenFiles": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "object",
+        "required": ["kind", "instruction"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["TEST", "IMPLEMENT", "REFACTOR", "VERIFY"] },
+          "instruction": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
     },
     "verification": {
       "type": "array",
       "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
+      "items": {
+        "type": "object",
+        "required": ["command", "args", "expected"],
+        "properties": {
+          "command": { "type": "string", "minLength": 1 },
+          "args": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+          "expected": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
     },
-    "requirements": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "scenarios": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "dependsOn": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": { "type": "string", "pattern": "^TASK-\\d{3}-(RED|GREEN|REFACTOR|VERIFY)$" }
-    },
-    "doneCriteria": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
-    "sliceType": {
-      "type": "string",
-      "enum": ["VERTICAL", "EXPAND", "MIGRATE", "CONTRACT"]
-    },
+    "doneCriteria": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "userVisibleOutcome": { "type": "string", "minLength": 1 },
-    "acceptanceCriteria": {
-      "type": "array",
-      "minItems": 1,
-      "uniqueItems": true,
-      "items": { "type": "string", "minLength": 1 }
-    },
+    "acceptanceCriteria": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "testSeam": { "type": "string", "minLength": 1 }
   },
   "additionalProperties": false

@@ -62,7 +62,6 @@ pub fn run_codebase(
                     .with_next("sdd init"),
             );
         }
-        super::check_auto_loop_busy(cwd, &state, "codebase", Some(args))?;
     }
     let mut persisted_state = None;
     let (result, degraded): (serde_json::Value, bool) = match sub {

@@ -6,10 +6,10 @@ use serde_json::json;
 /// 合法的最小任务结果基座
 fn base() -> serde_json::Value {
     json!({
-        "taskId": "TASK-001-RED",
+        "taskId": "TASK-001",
         "status": "completed",
         "evidence": [{ "type": "command-run", "command": "cargo test", "output": "ok" }],
-        "verification": [{ "command": "cargo test", "passed": true }],
+        "verification": [{ "command": "cargo test", "args": [], "passed": true }],
         "filesChanged": []
     })
 }

@@ -1,7 +1,6 @@
 //! 命令实现层：每个公共命令的领域逻辑。
 
 pub mod archive;
-pub mod auto;
 pub mod build;
 pub mod change;
 pub mod codebase;
@@ -9,7 +8,6 @@ pub mod design;
 pub mod init;
 pub mod new;
 pub mod plan;
-pub mod review;
 pub mod status;
 pub mod verify;
 
@@ -71,43 +69,6 @@ pub(crate) fn bool_arg(
     }
 }
 
-pub(crate) fn u64_arg(
-    args: Option<&serde_json::Value>,
-    name: &str,
-) -> Result<Option<u64>, crate::error::SddError> {
-    match args.and_then(|value| value.get(name)) {
-        None => Ok(None),
-        Some(value) => value.as_u64().map(Some).ok_or_else(|| {
-            crate::error::SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                &format!("{name} 必须是非负整数"),
-            )
-        }),
-    }
-}
-
-pub(crate) fn validate_string_map_arg(
-    args: Option<&serde_json::Value>,
-    name: &str,
-) -> Result<(), crate::error::SddError> {
-    let Some(value) = args.and_then(|value| value.get(name)) else {
-        return Ok(());
-    };
-    let object = value.as_object().ok_or_else(|| {
-        crate::error::SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            &format!("{name} 必须是 JSON 对象"),
-        )
-    })?;
-    if let Some((key, _)) = object.iter().find(|(_, value)| !value.is_string()) {
-        return Err(crate::error::SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            &format!("{name}.{key} 必须是字符串"),
-        ));
-    }
-    Ok(())
-}
-
 pub(crate) fn timeout_ms(
     args: Option<&serde_json::Value>,
 ) -> Result<Option<u64>, crate::error::SddError> {
@@ -152,67 +113,122 @@ pub(crate) fn reports_mut(
         })
 }
 
-/// 在已持有 `.sdd` 写锁并读取最新 runtime 后执行公共状态门禁。
-pub(crate) fn ensure_phase(
-    cwd: &str,
+pub(crate) fn ensure_initialized(
     state: &crate::state::WorkflowState,
-    command: &str,
-    args: Option<&serde_json::Value>,
 ) -> Result<(), crate::error::SddError> {
-    check_auto_loop_busy(cwd, state, command, args)?;
-    let phase = state.current_phase.as_str();
-    if phase == "NOT_INITIALIZED" {
+    if !state.initialized {
         return Err(crate::error::SddError::new(
             "E_NOT_INITIALIZED",
             "请先运行 sdd init 再执行其他命令",
         )
         .with_next("sdd init"));
     }
-    if phase == "ARCHIVED" && command != "archive" && command != "new" && command != "auto" {
+    Ok(())
+}
+
+pub(crate) fn active_changes(
+    document: &crate::state::RuntimeDocument,
+) -> Vec<(&str, &crate::state::state_store::ChangeWorkflow)> {
+    document
+        .workflows
+        .iter()
+        .filter(|(_, workflow)| workflow.phase != "ARCHIVED")
+        .map(|(change_id, workflow)| (change_id.as_str(), workflow))
+        .collect()
+}
+
+/// 解析当前命令的 change。没有显式 change 时只允许唯一活动任务，绝不猜测最近任务。
+pub(crate) fn resolve_change_id(
+    document: &crate::state::RuntimeDocument,
+    args: Option<&serde_json::Value>,
+) -> Result<String, crate::error::SddError> {
+    ensure_initialized(&document.state)?;
+    if let Some(change_id) = string_arg(args, "changeId")? {
+        crate::git::isolation::validate_change_id(change_id)?;
+        if document.workflows.contains_key(change_id) {
+            return Ok(change_id.to_string());
+        }
+        return Err(crate::error::SddError::new(
+            "E_MISSING_CHANGE",
+            &format!("变更不存在：{change_id}"),
+        ));
+    }
+    let active = active_changes(document);
+    match active.as_slice() {
+        [] => Err(
+            crate::error::SddError::new("E_MISSING_CHANGE", "当前没有进行中的 SDD 任务")
+                .with_next("sdd new <需求>"),
+        ),
+        [(change_id, _)] => Ok((*change_id).to_string()),
+        _ => Err(crate::error::SddError::new(
+            "E_CHANGE_SELECTION_REQUIRED",
+            &format!(
+                "当前有多个进行中的 SDD 任务，请明确指定 --change：{}",
+                active
+                    .iter()
+                    .map(|(change_id, _)| *change_id)
+                    .collect::<Vec<_>>()
+                    .join("、")
+            ),
+        )
+        .with_next("sdd status --json")),
+    }
+}
+
+pub(crate) fn workflow<'a>(
+    document: &'a crate::state::RuntimeDocument,
+    change_id: &str,
+) -> Result<&'a crate::state::state_store::ChangeWorkflow, crate::error::SddError> {
+    document
+        .workflows
+        .get(change_id)
+        .ok_or_else(|| crate::error::SddError::new("E_STATE_CORRUPTED", "change 缺少 workflow"))
+}
+
+pub(crate) fn workflow_mut<'a>(
+    document: &'a mut crate::state::RuntimeDocument,
+    change_id: &str,
+) -> Result<&'a mut crate::state::state_store::ChangeWorkflow, crate::error::SddError> {
+    document
+        .workflows
+        .get_mut(change_id)
+        .ok_or_else(|| crate::error::SddError::new("E_STATE_CORRUPTED", "change 缺少 workflow"))
+}
+
+pub(crate) fn ensure_phase(
+    workflow: &crate::state::state_store::ChangeWorkflow,
+    command: &str,
+) -> Result<(), crate::error::SddError> {
+    let phase = workflow.phase.as_str();
+    if phase == "ARCHIVED" && command != "archive" && command != "change" {
         return Err(crate::error::SddError::new(
             "E_ARCHIVED_READONLY",
             "已归档的变更为只读状态",
         ));
     }
-
-    if let Some(requested) = args
-        .and_then(|value| value.get("changeId"))
-        .and_then(serde_json::Value::as_str)
-    {
-        crate::git::isolation::validate_change_id(requested)?;
-        let starts_new_change =
-            matches!(command, "new" | "auto") && matches!(phase, "INDEX_READY" | "ARCHIVED");
-        if !starts_new_change {
-            let active = state.current_change_id.as_deref().ok_or_else(|| {
-                crate::error::SddError::new("E_MISSING_CHANGE", "当前没有活动变更")
-                    .with_next("sdd new")
-            })?;
-            if requested != active {
-                return Err(crate::error::SddError::new(
-                    "E_MISSING_CHANGE",
-                    &format!("指定变更 {requested} 不是当前活动变更 {active}"),
-                ));
-            }
-        }
-    }
-
     let allowed = match command {
         "change" => matches!(
             phase,
-            "SPEC_READY"
+            "SPEC_WAITING_AGENT"
+                | "SPEC_READY"
                 | "DESIGN_READY"
                 | "PLAN_READY"
                 | "BUILD_WAITING_AGENT"
                 | "BUILD_READY"
-                | "VERIFY_READY"
-                | "REVIEW_READY"
+                | "QUALITY_WAITING_FIX"
+                | "QUALITY_BLOCKED"
+                | "QUALITY_READY"
+                | "ARCHIVED"
         ),
-        "design" => phase == "SPEC_READY" || phase == "DESIGN_READY",
-        "plan" => phase == "DESIGN_READY" || phase == "PLAN_READY",
+        "new" => phase == "SPEC_WAITING_AGENT",
+        "design" => matches!(phase, "SPEC_READY" | "DESIGN_WAITING_AGENT"),
+        "plan" => matches!(phase, "DESIGN_READY" | "PLAN_WAITING_AGENT"),
         "build" => matches!(phase, "PLAN_READY" | "BUILD_WAITING_AGENT" | "BUILD_READY"),
-        "verify" => phase == "BUILD_READY",
-        "review" => phase == "VERIFY_READY",
-        "archive" => phase == "REVIEW_READY" || phase == "ARCHIVED",
+        "verify" => matches!(
+            phase,
+            "BUILD_READY" | "QUALITY_WAITING_FIX" | "QUALITY_BLOCKED" | "QUALITY_READY"
+        ),
+        "archive" => phase == "QUALITY_READY" || phase == "ARCHIVED",
         _ => true,
     };
     if !allowed {
@@ -226,47 +242,9 @@ pub(crate) fn ensure_phase(
     Ok(())
 }
 
-pub(crate) fn check_auto_loop_busy(
-    cwd: &str,
-    state: &crate::state::WorkflowState,
-    command: &str,
-    args: Option<&serde_json::Value>,
-) -> Result<(), crate::error::SddError> {
-    let Some(active) = state.active_loop.as_ref() else {
-        return Ok(());
-    };
-    let status = active
-        .get("status")
-        .and_then(serde_json::Value::as_str)
-        .expect("state schema 已验证 activeLoop.status");
-    if status != "RUNNING" && status != "WAITING_AGENT" {
-        return Ok(());
-    }
-    if crate::state::file_lock::current_thread_holds_auto_lock(cwd)? {
-        return Ok(());
-    }
-    let busy = match command {
-        "init" | "new" | "change" | "design" | "plan" => true,
-        "codebase" => matches!(
-            args.and_then(|value| value.get("sub"))
-                .and_then(serde_json::Value::as_str),
-            Some("index") | Some("rebuild")
-        ),
-        _ => false,
-    };
-    if busy {
-        return Err(crate::error::SddError::new(
-            "E_CONCURRENT_RUN",
-            "auto loop 正在运行（RUNNING/WAITING_AGENT），请等待其结束或查看进度",
-        )
-        .with_next("sdd auto --events"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{bool_arg, string_arg, timeout_ms, u64_arg, validate_args};
+    use super::{bool_arg, string_arg, timeout_ms, validate_args};
 
     #[test]
     fn timeout_is_parsed_once_with_range_checks() {
@@ -297,6 +275,5 @@ mod tests {
         let args = serde_json::json!({ "value": 1 });
         assert!(string_arg(Some(&args), "value").is_err());
         assert!(bool_arg(Some(&args), "value").is_err());
-        assert_eq!(u64_arg(Some(&args), "value").unwrap(), Some(1));
     }
 }

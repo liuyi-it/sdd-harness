@@ -95,6 +95,8 @@ if ($actual -ne $expected) { throw "SHA-256 校验失败" }
 
 - 升级：重新执行对应平台的下载命令即可覆盖旧版本；Windows 升级前先结束运行中的 `sdd.exe`。
 
+v0.6 不迁移旧项目的 `.sdd`。升级 CLI 后若返回 `E_STATE_VERSION_UNSUPPORTED`，先备份目标项目的 `.sdd`，确认无需保留后删除该目录，再在项目根目录执行 `sdd init`。不要让 Agent 自动删除用户的旧状态。
+
 ## 从源码安装（备选）
 
 需要 Rust 工具链时，可克隆仓库后执行 `bash scripts/install.sh`，具体见 [README](../README.md)。

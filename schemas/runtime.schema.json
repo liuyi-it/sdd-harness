@@ -1,9 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "state", "config", "artifacts", "changes", "runs", "loop", "index"],
+  "required": ["schemaVersion", "state", "config", "artifacts", "changes", "runs", "workflows", "index"],
   "properties": {
-    "schemaVersion": { "type": "integer", "enum": [5] },
+    "schemaVersion": { "type": "integer", "enum": [6] },
     "state": { "type": "object" },
     "config": { "type": "object" },
     "artifacts": {
@@ -17,15 +17,7 @@
     },
     "changes": { "type": "object" },
     "runs": { "type": "object" },
-    "loop": {
-      "type": "object",
-      "required": ["runs", "events"],
-      "properties": {
-        "runs": { "type": "object" },
-        "events": { "type": "object" }
-      },
-      "additionalProperties": false
-    },
+    "workflows": { "type": "object" },
     "index": { "type": "object" }
   },
   "additionalProperties": false

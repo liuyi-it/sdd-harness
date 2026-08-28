@@ -1,16 +1,10 @@
-//! build 命令：获取下一个任务（build next）或提交 Agent 结果（build complete）。
-//!
-//! 核心裁决语义：
-//! - next：找下一个可执行任务，写 pendingAgentTask，返回 actionRequired
-//! - complete：校验结果结构/任务身份/TDD evidence，写运行级结果并推进任务状态
-//!
-//! 契约变更点：actionRequired.codebase.provider 为
-//! codegraph | fallback-file-scan。
+//! build 命令：逐个派发纵向任务，并校验 Agent 回传的执行证据。
 
-use serde_json::json;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
-use crate::commands::new::current_change_id;
+use serde_json::{json, Value};
+
 use crate::commands::plan::plan_tasks;
 use crate::contracts::{
     AgentActionRequired, CliWarning, CodebaseProviderInfo, CommandResult, VerificationCommand,
@@ -23,18 +17,18 @@ use crate::security::task_scope::validate_file_change;
 use crate::state::artifact_store::ArtifactRecord;
 use crate::state::file_lock::lock_initialized_sdd;
 use crate::state::state_store::{
-    TASK_STATUS_BUILDING, TASK_STATUS_DONE, TASK_STATUS_FAILED, TASK_STATUS_PENDING,
+    apply_workflow_update, ChangeWorkflow, TASK_STATUS_BUILDING, TASK_STATUS_DONE,
+    TASK_STATUS_FAILED, TASK_STATUS_PENDING,
 };
 
 const MAX_RESULT_JSON_BYTES: usize = 4 * 1024 * 1024;
 
-pub fn run_build(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
+pub fn run_build(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddError> {
     super::validate_args(args, &["timeout", "changeId", "sub", "task", "resultJson"])?;
-    let empty = serde_json::Value::Null;
+    let empty = Value::Null;
     let args = args.unwrap_or(&empty);
     let timeout_ms = super::timeout_ms(Some(args))?;
-    let sub = super::string_arg(Some(args), "sub")?.unwrap_or("next");
-    match sub {
+    match super::string_arg(Some(args), "sub")?.unwrap_or("next") {
         "next" => {
             if args.get("task").is_some() || args.get("resultJson").is_some() {
                 return Err(SddError::new(
@@ -42,347 +36,189 @@ pub fn run_build(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandR
                     "build next 不接受 task 或 resultJson",
                 ));
             }
-            run_build_next(cwd, args, timeout_ms)
+            next(cwd, args, timeout_ms)
         }
         "complete" => {
             let task_id = super::string_arg(Some(args), "task")?.ok_or_else(|| {
                 SddError::new("E_INVALID_PHASE_COMMAND", "build complete 需要 --task <id>")
             })?;
-            let result_json = super::string_arg(Some(args), "resultJson")?
+            let raw = super::string_arg(Some(args), "resultJson")?
                 .filter(|value| !value.trim().is_empty())
                 .ok_or_else(|| {
                     SddError::new(
                         "E_INVALID_PHASE_COMMAND",
-                        "build complete 需要 --result-json '<TaskExecutionResult JSON>'",
+                        "build complete 需要 --result-json '<JSON>'",
                     )
                 })?;
-            if result_json.len() > MAX_RESULT_JSON_BYTES {
+            if raw.len() > MAX_RESULT_JSON_BYTES {
                 return Err(SddError::new(
                     "E_TDD_EVIDENCE_REQUIRED",
                     &format!("resultJson 超过 {MAX_RESULT_JSON_BYTES} 字节上限"),
                 ));
             }
-            run_build_complete(cwd, args, task_id, result_json, timeout_ms)
+            complete(cwd, args, task_id, raw, timeout_ms)
         }
-        _ => Err(SddError::new(
+        sub => Err(SddError::new(
             "E_INVALID_PHASE_COMMAND",
             &format!("未知 build 子命令：{sub}"),
         )),
     }
 }
 
-/// build next：返回下一个任务的 actionRequired
-fn run_build_next(
-    cwd: &str,
-    args: &serde_json::Value,
-    timeout_ms: Option<u64>,
-) -> Result<CommandResult, SddError> {
-    let _guard = lock_initialized_sdd(cwd, "sdd build next", None, timeout_ms)?;
+fn next(cwd: &str, args: &Value, timeout_ms: Option<u64>) -> Result<CommandResult, SddError> {
+    let requested = super::string_arg(Some(args), "changeId")?;
+    let _guard = lock_initialized_sdd(cwd, "sdd build next", requested, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
-    let state = runtime.state.clone();
-    super::ensure_phase(cwd, &state, "build", Some(args))?;
-    let business_cwd = business_root(cwd, &state);
-    let change_id = current_change_id(&state)?;
-    crate::state::artifact_store::verify_artifacts_in(
-        cwd,
-        &runtime,
-        [
-            format!("{change_id}:spec"),
-            format!("{change_id}:design"),
-            format!("{change_id}:plan"),
-            format!("{change_id}:plan-md"),
-            format!("{change_id}:tasks-md"),
-        ],
-    )?;
-    let plan = runtime
-        .changes
-        .get(&change_id)
-        .and_then(|change| change.get("plan"))
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
-    let tasks = plan_tasks(plan)?;
-    validate_runtime_task_state(&state, &tasks)?;
+    let change_id = super::resolve_change_id(&runtime, Some(args))?;
+    let workflow = super::workflow(&runtime, &change_id)?;
+    super::ensure_phase(workflow, "build")?;
+    verify_plan_artifacts(cwd, &runtime, &change_id)?;
+    let tasks = read_tasks(&runtime, &change_id)?;
+    validate_runtime_task_state(workflow, &tasks)?;
 
-    // 续跑：已有 pendingAgentTask 时直接返回
-    if state.current_phase == "BUILD_WAITING_AGENT" && state.pending_agent_task.is_some() {
-        if let Some(pending) = &state.pending_agent_task {
-            let task_id = pending
-                .get("taskId")
-                .and_then(|value| value.as_str())
-                .ok_or_else(|| {
-                    SddError::new("E_STATE_CORRUPTED", "pendingAgentTask 缺少 taskId")
-                })?;
-            let task = tasks
-                .iter()
-                .find(|task| task.id == task_id)
-                .cloned()
-                .ok_or_else(|| {
-                    SddError::new("E_MISSING_ARTIFACT", &format!("计划中不存在任务 {task_id}"))
-                })?;
-            validate_task_verification(&task)?;
-            let context_pack = render_context_pack(cwd, &change_id, &task, &runtime)?;
-            return Ok(action_required_result(
-                task,
-                change_id,
-                context_pack,
-                state.codebase_provider.clone(),
-                state.degraded,
-            ));
-        }
+    if workflow.phase == "BUILD_WAITING_AGENT" {
+        let pending = pending(workflow)?;
+        let task_id = pending_task_id(pending)?;
+        let task = find_task(&tasks, task_id)?.clone();
+        return action(cwd, &runtime, &change_id, task);
     }
-    if state.current_phase != "PLAN_READY" && state.current_phase != "BUILD_WAITING_AGENT" {
-        // 错误建议改用阶段表：全部任务完成后（BUILD_READY）应提示 sdd verify
-        let next = crate::commands::status::next_command(&state.current_phase)
-            .unwrap_or_else(|| "sdd plan".to_string());
-        return Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            &format!("无法在 {} 状态下获取任务", state.current_phase),
-        )
-        .with_next(&next));
+    if workflow.phase == "BUILD_READY" {
+        return Err(
+            SddError::new("E_INVALID_PHASE_COMMAND", "所有计划任务均已完成")
+                .with_next(&format!("sdd verify --change {change_id}")),
+        );
     }
 
-    // 找下一个可执行任务：以运行时状态（state.tasks）为准，
-    // 所有依赖 DONE、自身 PENDING
-    let next_task = tasks
+    let task = tasks
         .iter()
         .find(|task| {
-            let runtime_status = state
-                .tasks
-                .get(&task.id)
-                .map(|s| s.as_str())
-                .expect("validate_runtime_task_state 已确认任务状态存在");
-            // PENDING 或 FAILED（失败后允许重新派发）且依赖已完成
-            (runtime_status == TASK_STATUS_PENDING || runtime_status == TASK_STATUS_FAILED)
-                && task.depends_on.iter().all(|dep| {
-                    state
-                        .tasks
-                        .get(dep)
-                        .map(|s| s == TASK_STATUS_DONE)
-                        .unwrap_or(false)
-                })
+            matches!(
+                workflow.tasks.get(&task.id).map(String::as_str),
+                Some(TASK_STATUS_PENDING | TASK_STATUS_FAILED)
+            ) && task.depends_on.iter().all(|dependency| {
+                workflow.tasks.get(dependency).map(String::as_str) == Some(TASK_STATUS_DONE)
+            })
         })
+        .cloned()
         .ok_or_else(|| {
             SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                "没有可执行的 PENDING 任务（任务可能全部完成或存在循环依赖）",
+                "E_STATE_CORRUPTED",
+                "没有可执行任务：任务依赖或运行状态不一致",
             )
         })?;
-    // 派发前校验每条验证命令（防计划被篡改为任意命令）
-    validate_task_verification(next_task)?;
-    // 写 pendingAgentTask + 状态推进
+    validate_task_verification(&task)?;
+    let business_cwd = business_root(cwd, workflow);
     let git_baseline = if GitInspector::is_git_repo(&business_cwd)? {
-        let head = GitInspector::head(&business_cwd)?;
-        let changed_files = business_changes(&business_cwd)?;
+        let changed_files = GitInspector::business_changes(&business_cwd)?;
         json!({
             "available": true,
-            "head": head,
+            "head": GitInspector::head(&business_cwd)?,
             "changedFiles": changed_files,
             "changedFileHashes": GitInspector::file_hashes(&business_cwd, &changed_files)?,
         })
     } else {
         json!({ "available": false })
     };
-    let context_pack = render_context_pack(cwd, &change_id, next_task, &runtime)?;
-    let task_id = next_task.id.clone();
-    let pending_task = json!({
-        "taskId": task_id,
+    let pending = json!({
+        "taskId": task.id,
         "since": crate::state::state_store::now_iso(),
         "gitBaseline": git_baseline,
     });
-    crate::state::RuntimeStore::new(cwd.to_string()).try_update(move |document| {
-        crate::state::state_store::apply_state_update(&mut document.state, |state| {
-            state.current_phase = "BUILD_WAITING_AGENT".to_string();
-            state.in_progress_phase = Some("BUILDING".to_string());
-            state.clear_failure();
-            state.suggested_command = Some("sdd build complete".to_string());
-            state.last_command = Some("sdd build next".to_string());
-            state.pending_agent_task = Some(pending_task);
-            state
+    let task_id = task.id.clone();
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        let workflow = super::workflow_mut(document, &change_id)?;
+        apply_workflow_update(workflow, |workflow| {
+            workflow.phase = "BUILD_WAITING_AGENT".to_string();
+            workflow.in_progress_phase = Some("BUILDING".to_string());
+            workflow.pending_agent_action = Some(pending.clone());
+            workflow
                 .tasks
-                .insert(task_id, TASK_STATUS_BUILDING.to_string());
-        })?;
-        Ok(())
-    })?;
-    Ok(action_required_result(
-        next_task.clone(),
-        change_id,
-        context_pack,
-        state.codebase_provider,
-        state.degraded,
-    ))
-}
-
-/// 构造 actionRequired 结果（结果通过 inline JSON 提交）。
-fn action_required_result(
-    task: TaskDefinition,
-    change_id: String,
-    context_pack: String,
-    provider: String,
-    degraded: bool,
-) -> CommandResult {
-    let verification: Vec<VerificationCommand> = task
-        .verification
-        .iter()
-        .map(|cmd| {
-            let mut parts = cmd.split_whitespace();
-            VerificationCommand {
-                command: parts
-                    .next()
-                    .expect("validate_task_verification 已拒绝空命令")
-                    .to_string(),
-                args: parts.map(String::from).collect(),
-            }
+                .insert(task_id.clone(), TASK_STATUS_BUILDING.to_string());
+            workflow.suggested_command = Some(format!(
+                "sdd build complete --change {change_id} --task {task_id} --result-json '<JSON>'"
+            ));
+            workflow.last_command = Some("sdd build next".to_string());
+            workflow.clear_failure();
         })
-        .collect();
-    let policies = crate::policies::builtin_build_policies();
-    let policy_bundle = json!({
-        "policies": policies.iter().map(|policy| json!({
-            "name": policy.name,
-            "digest": policy.digest,
-            "prompt": policy.source,
-        })).collect::<Vec<_>>()
-    });
-    let TaskDefinition {
-        id,
-        allowed_files,
-        expected_new_files,
-        forbidden_files,
-        ..
-    } = task;
-    CommandResult {
-        ok: true,
-        state: "BUILD_WAITING_AGENT".to_string(),
-        exit_code: 0,
-        change_id: Some(change_id.clone()),
-        next: Some("sdd build complete".to_string()),
-        data: None,
-        rendered: None,
-        warnings: None,
-        action_required: Some(AgentActionRequired {
-            action_type: "AGENT_TASK_EXECUTION".to_string(),
-            task_id: id,
-            change_id,
-            context_pack,
-            allowed_files,
-            expected_new_files,
-            forbidden_files,
-            verification,
-            result_transport: "inline-json".to_string(),
-            codebase: CodebaseProviderInfo { provider, degraded },
-            policy_bundle: Some(policy_bundle),
-        }),
-        error: None,
-    }
+    })?;
+    let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    action(cwd, &current, &change_id, task)
 }
 
-/// build complete：校验并推进任务
-fn run_build_complete(
+fn complete(
     cwd: &str,
-    args: &serde_json::Value,
+    args: &Value,
     task_id: &str,
-    result_json: &str,
+    raw: &str,
     timeout_ms: Option<u64>,
 ) -> Result<CommandResult, SddError> {
-    let _guard = lock_initialized_sdd(cwd, "sdd build complete", None, timeout_ms)?;
+    let requested = super::string_arg(Some(args), "changeId")?;
+    let _guard = lock_initialized_sdd(cwd, "sdd build complete", requested, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
-    let state = runtime.state.clone();
-    super::ensure_phase(cwd, &state, "build", Some(args))?;
-    let business_cwd = business_root(cwd, &state);
-    let change_id = current_change_id(&state)?;
-    crate::state::artifact_store::verify_artifacts_in(
-        cwd,
-        &runtime,
-        [format!("{change_id}:plan")],
-    )?;
-    if state.current_phase != "BUILD_WAITING_AGENT" {
-        return Err(SddError::new(
-            "E_INVALID_PHASE_COMMAND",
-            &format!("无法在 {} 状态下提交任务结果", state.current_phase),
-        )
-        .with_next("sdd build next"));
+    let change_id = super::resolve_change_id(&runtime, Some(args))?;
+    let workflow = super::workflow(&runtime, &change_id)?;
+    super::ensure_phase(workflow, "build")?;
+    if workflow.phase != "BUILD_WAITING_AGENT" {
+        return Err(
+            SddError::new("E_INVALID_PHASE_COMMAND", "当前没有等待提交的构建任务")
+                .with_next(&format!("sdd build next --change {change_id}")),
+        );
     }
-    // 任务身份校验：pendingAgentTask 必须匹配
-    let pending = state.pending_agent_task.as_ref().ok_or_else(|| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            "BUILD_WAITING_AGENT 状态缺少 pendingAgentTask",
-        )
-    })?;
-    let pending_task_id = pending
-        .get("taskId")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentTask 缺少 taskId"))?;
-    if pending_task_id != task_id {
+    let pending = pending(workflow)?;
+    let expected_task_id = pending_task_id(pending)?;
+    if expected_task_id != task_id {
         return Err(SddError::new(
             "E_AGENT_TASK_FAILED",
-            &format!("任务 {task_id} 与当前等待的任务 {pending_task_id} 不一致"),
-        )
-        .with_next("sdd build next"));
+            &format!("当前等待任务是 {expected_task_id}，不是 {task_id}"),
+        ));
     }
 
-    // 读取并校验 inline JSON 结果。
-    let result: serde_json::Value = serde_json::from_str(result_json).map_err(|e| {
+    let result: Value = serde_json::from_str(raw).map_err(|error| {
         SddError::new(
             "E_TDD_EVIDENCE_REQUIRED",
-            &format!("任务 {task_id} 的执行结果结构无效：{e}"),
+            &format!("任务结果不是合法 JSON：{error}"),
         )
     })?;
-    let mut warnings = Vec::new();
     let parsed = validate_task_result(&result)?;
     if parsed.task_id != task_id {
         return Err(SddError::new(
             "E_AGENT_TASK_FAILED",
-            &format!(
-                "执行结果中的 taskId（{}）与请求的任务（{task_id}）不一致",
-                parsed.task_id
-            ),
+            "resultJson.taskId 与当前任务不一致",
         ));
     }
-    let status = parsed.status.as_str();
-
-    let plan = runtime
-        .changes
-        .get(&change_id)
-        .and_then(|change| change.get("plan"))
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
-    let tasks = plan_tasks(plan)?;
-    validate_runtime_task_state(&state, &tasks)?;
-    let task = tasks.iter().find(|t| t.id == task_id).ok_or_else(|| {
-        SddError::new("E_MISSING_ARTIFACT", &format!("计划中不存在任务 {task_id}"))
-    })?;
-
-    // TDD evidence 校验（RED 需要失败证据、GREEN 需要通过证据）
+    let tasks = read_tasks(&runtime, &change_id)?;
+    validate_runtime_task_state(workflow, &tasks)?;
+    let task = find_task(&tasks, task_id)?;
     validate_task_evidence(task, &parsed)?;
 
+    let business_cwd = business_root(cwd, workflow);
     for path in &parsed.files_changed {
         GitInspector::resolve_repo_path(&business_cwd, path)?;
     }
+    let mut warnings = Vec::new();
     let actual_files = if GitInspector::is_git_repo(&business_cwd)? {
-        let actual = task_changes(&business_cwd, pending)?;
+        let mut actual = task_changes(&business_cwd, pending)?;
         let mut declared = parsed.files_changed.clone();
-        let mut actual_sorted = actual.clone();
+        actual.sort();
+        actual.dedup();
         declared.sort();
         declared.dedup();
-        actual_sorted.sort();
-        actual_sorted.dedup();
-        if declared != actual_sorted {
+        if actual != declared {
             return Err(SddError::new(
                 "E_UNDECLARED_FILE_CHANGE",
                 &format!(
-                    "Agent 声明的 filesChanged 与 Git 事实不一致（声明：{}；实际：{}）",
+                    "filesChanged 与 Git 事实不一致（声明：{}；实际：{}）",
                     declared.join("、"),
-                    actual_sorted.join("、")
+                    actual.join("、")
                 ),
             ));
         }
         actual
     } else {
-        // 非 git 仓库：沿用声明 filesChanged，但明确提示缺少 Git 事实核对
-        if !parsed.files_changed.is_empty() {
-            warnings.push(CliWarning::new(
-                "W_NO_GIT_FACTS",
-                "当前目录不是 git 仓库，无法用 Git 事实核对 filesChanged 声明",
-            ));
-        }
+        warnings.push(CliWarning::new(
+            "W_NO_GIT_FACTS",
+            "当前目录不是 Git 仓库，只能校验 Agent 声明的文件范围",
+        ));
         parsed.files_changed.clone()
     };
     validate_file_change(
@@ -392,42 +228,26 @@ fn run_build_complete(
         &task.forbidden_files,
     )?;
 
-    // 写入 runtime 的 runs.<runId>.tasks.<taskId>。
-    let run_id = state.current_run_id.clone().ok_or_else(|| {
-        SddError::new(
-            "E_STATE_CORRUPTED",
-            "BUILD_WAITING_AGENT 状态缺少 currentRunId",
-        )
-    })?;
-    let task_status = if status == "completed" {
-        TASK_STATUS_DONE
-    } else {
-        TASK_STATUS_FAILED
-    };
-    let all_done = tasks.iter().all(|t| {
-        if t.id == task_id {
-            status == "completed"
+    let completed = parsed.status == "completed";
+    let all_done = tasks.iter().all(|task| {
+        if task.id == task_id {
+            completed
         } else {
-            state
-                .tasks
-                .get(&t.id)
-                .map(|s| s == TASK_STATUS_DONE)
-                .unwrap_or(false)
+            workflow.tasks.get(&task.id).map(String::as_str) == Some(TASK_STATUS_DONE)
         }
     });
+    let run_id = workflow.run_id.clone();
     let artifact_key = format!("{run_id}:{task_id}:result");
     let content_path = format!("runtime://runs/{run_id}/tasks/{task_id}");
-    crate::state::RuntimeStore::new(cwd.to_string()).try_update(move |document| {
-        {
-            let tasks = document
-                .runs
-                .get_mut(&run_id)
-                .and_then(serde_json::Value::as_object_mut)
-                .and_then(|run| run.get_mut("tasks"))
-                .and_then(serde_json::Value::as_object_mut)
-                .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "当前 run.tasks 必须是对象"))?;
-            tasks.insert(task_id.to_string(), result);
-        }
+    crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        document
+            .runs
+            .get_mut(&run_id)
+            .and_then(Value::as_object_mut)
+            .and_then(|run| run.get_mut("tasks"))
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "run.tasks 必须是对象"))?
+            .insert(task_id.to_string(), result.clone());
         crate::state::artifact_store::record_artifacts_in(
             cwd,
             document,
@@ -438,199 +258,215 @@ fn run_build_complete(
                 inputs: json!({ "taskId": task_id }),
             }],
         )?;
-        crate::state::state_store::apply_state_update(&mut document.state, |state| {
-            state
-                .tasks
-                .insert(task_id.to_string(), task_status.to_string());
-            state.pending_agent_task = None;
-            if status == "failed" {
-                // 任务失败：回到 PLAN_READY，FAILED 任务可由 build next 重新派发
-                state.current_phase = "PLAN_READY".to_string();
-                state.record_failure("sdd build complete", format!("任务 {task_id} 执行失败"));
-                state.suggested_command = Some("sdd build next".to_string());
+        let workflow = super::workflow_mut(document, &change_id)?;
+        apply_workflow_update(workflow, |workflow| {
+            workflow.tasks.insert(
+                task_id.to_string(),
+                if completed {
+                    TASK_STATUS_DONE
+                } else {
+                    TASK_STATUS_FAILED
+                }
+                .to_string(),
+            );
+            workflow.pending_agent_action = None;
+            workflow.in_progress_phase = None;
+            workflow.last_command = Some("sdd build complete".to_string());
+            if !completed {
+                workflow.phase = "PLAN_READY".to_string();
+                workflow.record_failure("sdd build complete", format!("任务 {task_id} 执行失败"));
+                workflow.suggested_command = Some(format!("sdd build next --change {change_id}"));
             } else if all_done {
-                state.current_phase = "BUILD_READY".to_string();
-                state.in_progress_phase = None;
-                state.clear_failure();
-                state.suggested_command = Some("sdd verify".to_string());
+                workflow.phase = "BUILD_READY".to_string();
+                workflow.clear_failure();
+                workflow.suggested_command = Some(format!("sdd verify --change {change_id}"));
             } else {
-                state.current_phase = "PLAN_READY".to_string();
-                state.clear_failure();
-                state.suggested_command = Some("sdd build next".to_string());
+                workflow.phase = "PLAN_READY".to_string();
+                workflow.clear_failure();
+                workflow.suggested_command = Some(format!("sdd build next --change {change_id}"));
             }
-            state.last_command = Some("sdd build complete".to_string());
-        })?;
-        Ok(())
+        })
     })?;
 
-    let next = if status == "failed" {
-        "sdd build next"
-    } else if all_done {
-        "sdd verify"
+    let phase = if all_done {
+        "BUILD_READY"
     } else {
-        "sdd build next"
+        "PLAN_READY"
+    };
+    let next = if all_done {
+        format!("sdd verify --change {change_id}")
+    } else {
+        format!("sdd build next --change {change_id}")
     };
     Ok(CommandResult {
-        ok: status == "completed",
-        state: if all_done {
-            "BUILD_READY".to_string()
-        } else {
-            "PLAN_READY".to_string()
-        },
-        exit_code: if status == "failed" { 7 } else { 0 },
+        ok: completed,
+        state: phase.to_string(),
+        exit_code: if completed { 0 } else { 7 },
         change_id: Some(change_id),
-        next: Some(next.to_string()),
-        data: Some(json!({ "taskId": task_id, "status": task_status })),
+        next: Some(next),
+        data: Some(json!({
+            "taskId": task_id,
+            "status": if completed { TASK_STATUS_DONE } else { TASK_STATUS_FAILED },
+        })),
         rendered: None,
-        warnings: if warnings.is_empty() {
-            None
-        } else {
-            Some(warnings)
-        },
+        warnings: (!warnings.is_empty()).then_some(warnings),
         action_required: None,
         error: None,
     })
 }
 
-/// 校验任务声明中的每条验证命令都在允许范围内（防计划被篡改后派发任意命令）。
+fn action(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+    task: TaskDefinition,
+) -> Result<CommandResult, SddError> {
+    validate_task_verification(&task)?;
+    let context_pack = render_context_pack(cwd, change_id, &task, runtime)?;
+    let verification = task
+        .verification
+        .iter()
+        .map(|item| VerificationCommand {
+            command: item.command.clone(),
+            args: item.args.clone(),
+        })
+        .collect();
+    let policies = crate::policies::builtin_build_policies();
+    let policy_bundle = json!({
+        "policies": policies.iter().map(|policy| json!({
+            "name": policy.name,
+            "digest": policy.digest,
+            "prompt": policy.source,
+        })).collect::<Vec<_>>()
+    });
+    Ok(CommandResult {
+        ok: true,
+        state: "BUILD_WAITING_AGENT".to_string(),
+        exit_code: 0,
+        change_id: Some(change_id.to_string()),
+        next: Some(format!(
+            "sdd build complete --change {change_id} --task {} --result-json '<JSON>'",
+            task.id
+        )),
+        data: None,
+        rendered: None,
+        warnings: None,
+        action_required: Some(AgentActionRequired::AgentTaskExecution {
+            task_id: task.id,
+            change_id: change_id.to_string(),
+            context_pack,
+            allowed_files: task.allowed_files,
+            expected_new_files: task.expected_new_files,
+            forbidden_files: task.forbidden_files,
+            verification,
+            result_transport: "inline-json".to_string(),
+            codebase: CodebaseProviderInfo {
+                provider: runtime.state.codebase_provider.clone(),
+                degraded: runtime.state.degraded,
+            },
+            policy_bundle: Some(policy_bundle),
+        }),
+        error: None,
+    })
+}
+
 fn validate_task_verification(task: &TaskDefinition) -> Result<(), SddError> {
     for verification in &task.verification {
-        crate::security::verification_command::validate_verification_command(verification)?;
+        crate::security::verification_command::validate_verification_command(&verification_text(
+            &verification.command,
+            &verification.args,
+        ))?;
     }
     Ok(())
 }
 
 pub(crate) fn validate_runtime_task_state(
-    state: &crate::state::WorkflowState,
+    workflow: &ChangeWorkflow,
     tasks: &[TaskDefinition],
 ) -> Result<(), SddError> {
-    if state.tasks.len() != tasks.len()
-        || tasks.iter().any(|task| !state.tasks.contains_key(&task.id))
+    if workflow.tasks.len() != tasks.len()
+        || tasks
+            .iter()
+            .any(|task| !workflow.tasks.contains_key(&task.id))
     {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
-            "工作流任务状态与当前计划不一致",
+            "change 的任务状态与当前计划不一致",
         ));
     }
     Ok(())
 }
 
-/// TDD evidence 裁决矩阵。
-///
-/// 全阶段强制：
-/// - verification 必须非空，且每条 command+args ∈ task.verification；
-/// - evidence ≤ 64 条、evidence.command ∈ task.verification、output ≤ 8192 字符；
-/// - 顶层 message ≤ 2048 字符；filesChanged ≤ 500 条、每条 ≤ 512 字符；
-/// - RED 额外要求：至少一条 verification.passed == false；
-/// - 阶段矩阵：RED 需要预期失败证据，GREEN/REFACTOR 需要通过证据，VERIFY 需要全部通过。
 pub(crate) fn validate_task_evidence(
     task: &TaskDefinition,
     parsed: &TaskExecutionResult,
 ) -> Result<(), SddError> {
-    let verification = &parsed.verification;
-    if verification.is_empty() {
-        return Err(SddError::new(
-            "E_TDD_EVIDENCE_REQUIRED",
-            &format!(
-                "任务 {} 缺少验证命令结果，请提供 verification 中各命令的执行结果",
-                task.id
-            ),
-        ));
-    }
-    let mut submitted_commands = std::collections::BTreeSet::new();
-    for item in verification {
-        let rendered = std::iter::once(item.command.as_str())
-            .chain(item.args.iter().map(String::as_str))
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if !task.verification.iter().any(|allowed| allowed == &rendered) {
+    let planned = task
+        .verification
+        .iter()
+        .map(|item| verification_text(&item.command, &item.args))
+        .collect::<BTreeSet<_>>();
+    let mut submitted = BTreeSet::new();
+    for result in &parsed.verification {
+        let command = verification_text(&result.command, &result.args);
+        if !planned.contains(&command) {
             return Err(SddError::new(
                 "E_SECURITY_BLOCKED",
-                &format!("任务结果包含未授权的验证命令：{rendered}"),
+                &format!("任务结果包含未授权验证命令：{command}"),
             ));
         }
-        if !submitted_commands.insert(rendered) {
+        if !submitted.insert(command) {
             return Err(SddError::new(
                 "E_TDD_EVIDENCE_REQUIRED",
-                "verification 不得重复提交同一命令",
+                "同一验证命令不得重复提交",
             ));
         }
     }
-    if submitted_commands.len() != task.verification.len()
-        || task
-            .verification
-            .iter()
-            .any(|command| !submitted_commands.contains(command))
-    {
+    if submitted != planned {
         return Err(SddError::new(
             "E_TDD_EVIDENCE_REQUIRED",
-            &format!("任务 {} 必须提交全部计划验证命令的结果", task.id),
+            &format!("任务 {} 必须提交全部计划验证命令", task.id),
         ));
     }
-    // RED 阶段额外要求：至少一条验证命令结果 passed=false（证明先看到失败）
-    if task.phase == "RED" && !verification.iter().any(|item| !item.passed) {
+    if parsed.status == "completed" && parsed.verification.iter().any(|item| !item.passed) {
         return Err(SddError::new(
-            "E_TDD_EVIDENCE_REQUIRED",
-            &format!(
-                "任务 {}（RED）的验证结果必须包含 passed=false 的失败验证",
-                task.id
-            ),
+            "E_VERIFY_FAILED",
+            &format!("任务 {} 声明完成，但仍有验证失败", task.id),
         ));
     }
-    for item in &parsed.evidence {
-        if !task
-            .verification
-            .iter()
-            .any(|allowed| allowed == &item.command)
-        {
+    for evidence in &parsed.evidence {
+        if !planned.contains(&evidence.command) {
             return Err(SddError::new(
                 "E_SECURITY_BLOCKED",
-                &format!("任务结果包含未授权的证据命令：{}", item.command),
+                &format!("任务证据包含未授权命令：{}", evidence.command),
             ));
         }
     }
-    let verification_passed = verification.iter().all(|item| item.passed);
-    match task.phase.as_str() {
-        "RED" => {
-            if !parsed
-                .evidence
-                .iter()
-                .any(|item| item.passed == Some(false) && item.expected_failure == Some(true))
-            {
-                return Err(SddError::new(
-                    "E_TDD_EVIDENCE_REQUIRED",
-                    &format!(
-                        "任务 {}（RED）必须提供 passed=false 且 expectedFailure=true 的预期失败证据",
-                        task.id
-                    ),
-                ));
-            }
-        }
-        "GREEN" | "REFACTOR" => {
-            if !parsed
-                .evidence
-                .iter()
-                .any(|item| item.passed == Some(true) && item.expected_failure != Some(true))
-            {
-                return Err(SddError::new(
-                    "E_TDD_EVIDENCE_REQUIRED",
-                    &format!(
-                        "任务 {}（{}）必须提供 passed=true 的通过证据",
-                        task.id, task.phase
-                    ),
-                ));
-            }
-        }
-        "VERIFY" if !verification_passed => {
+    if task.execution_mode == "TDD" && parsed.status == "completed" {
+        let expected_failure = parsed
+            .evidence
+            .iter()
+            .any(|item| item.passed == Some(false) && item.expected_failure == Some(true));
+        let passing = parsed
+            .evidence
+            .iter()
+            .any(|item| item.passed == Some(true) && item.expected_failure != Some(true));
+        if !expected_failure || !passing {
             return Err(SddError::new(
-                "E_VERIFY_FAILED",
-                &format!("任务 {}（VERIFY）的完整验证未通过", task.id),
+                "E_TDD_EVIDENCE_REQUIRED",
+                &format!("TDD 任务 {} 必须同时提供预期失败和最终通过证据", task.id),
             ));
         }
-        _ => {}
     }
     Ok(())
+}
+
+fn verification_text(command: &str, args: &[String]) -> String {
+    std::iter::once(command)
+        .chain(args.iter().map(String::as_str))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn render_context_pack(
@@ -639,204 +475,135 @@ fn render_context_pack(
     task: &TaskDefinition,
     runtime: &crate::state::RuntimeDocument,
 ) -> Result<String, SddError> {
-    let policies = crate::policies::builtin_build_policies();
-    let policy_summary = policies
-        .iter()
-        .map(|policy| format!("- {}: {}", policy.name, policy.digest))
-        .collect::<Vec<_>>()
-        .join("\n");
     let change_dir = crate::state::paths::change_dir(cwd, change_id, false)?;
-    let references = ["spec.md", "design.md", "plan.md", "tasks.md"]
+    let documents = ["spec.md", "design.md", "plan.md", "tasks.md"]
         .iter()
         .map(|name| {
             let path = change_dir.join(name);
             crate::safe_fs::reject_symlink(&path, name)?;
-            let source = fs::read_to_string(&path).map_err(|e| {
-                SddError::new("E_MISSING_ARTIFACT", &format!("读取 {name} 失败：{e}"))
-            })?;
-            Ok(format!(
-                "- .sdd/changes/{change_id}/{name}: {}",
-                crate::policies::digest::digest(&source)
-            ))
+            fs::read_to_string(path)
+                .map(|content| format!("## {name}\n\n{content}"))
+                .map_err(|error| {
+                    SddError::new("E_MISSING_ARTIFACT", &format!("读取 {name} 失败：{error}"))
+                })
         })
-        .collect::<Result<Vec<_>, SddError>>()?
-        .join("\n");
-    let mut codebase = runtime
+        .collect::<Result<Vec<_>, _>>()?
+        .join("\n\n");
+    let task_json = serde_json::to_string_pretty(task)
+        .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.to_string()))?;
+    let codebase = runtime
         .index
         .get("summary")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?
+        .and_then(Value::as_str)
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime 缺少代码库摘要"))?
         .replace(
             "END_UNTRUSTED_CODEBASE_CONTEXT",
             "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
         );
-    // 代码库上下文截断上限按 UTF-8 字节计算，避免多字节文本突破 KB 契约。
-    let max_bytes = runtime
-        .config
-        .pointer("/contextPack/maxSizeKb")
-        .and_then(|value| value.as_u64())
-        .filter(|kb| *kb > 0)
-        .and_then(|kb| usize::try_from(kb).ok())
-        .and_then(|kb| kb.checked_mul(1024))
-        .ok_or_else(|| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                "contextPack.maxSizeKb 必须是可表示的正整数",
-            )
-        })?;
-    if codebase.len() > max_bytes {
-        let mut boundary = max_bytes;
-        while !codebase.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        codebase.truncate(boundary);
-    }
     Ok(format!(
-        "{}\n\n## References\n\n{}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n## Policy Bundle\n\n{}",
-        crate::engines::tdd::planner::render_context_pack(task),
-        references,
-        codebase,
-        policy_summary
+        "# 纵向实施任务\n\n{task_json}\n\n# 已批准文档\n\n{documents}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{codebase}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n只修改 allowedFiles；按 steps 在一个任务内完成测试、实现和最终验证，并通过 inline JSON 回传全部证据。"
     ))
 }
 
-fn business_changes(cwd: &str) -> Result<Vec<String>, SddError> {
-    GitInspector::business_changes(cwd)
-}
-
-fn task_changes(cwd: &str, pending: &serde_json::Value) -> Result<Vec<String>, SddError> {
-    let baseline = pending
-        .get("gitBaseline")
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentTask 缺少 gitBaseline"))?;
-    if baseline
-        .get("available")
-        .and_then(serde_json::Value::as_bool)
-        != Some(true)
-    {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "Git 仓库的 pendingAgentTask.gitBaseline 必须可用",
-        ));
-    }
-    let baseline_files: std::collections::BTreeSet<String> = baseline
-        .get("changedFiles")
-        .and_then(|value| value.as_array())
-        .ok_or_else(|| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                "pendingAgentTask.gitBaseline 缺少 changedFiles",
-            )
-        })?
-        .iter()
-        .map(|value| {
-            value.as_str().map(String::from).ok_or_else(|| {
-                SddError::new(
-                    "E_STATE_CORRUPTED",
-                    "gitBaseline.changedFiles 必须是字符串数组",
-                )
-            })
-        })
-        .collect::<Result<_, _>>()?;
-    let baseline_hashes: std::collections::BTreeMap<String, Option<String>> = baseline
-        .get("changedFileHashes")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                "pendingAgentTask.gitBaseline 缺少 changedFileHashes",
-            )
-        })?
-        .iter()
-        .map(|(path, value)| {
-            let hash = if value.is_null() {
-                None
-            } else {
-                Some(value.as_str().map(String::from).ok_or_else(|| {
-                    SddError::new(
-                        "E_STATE_CORRUPTED",
-                        "gitBaseline.changedFileHashes 的值必须是字符串或 null",
-                    )
-                })?)
-            };
-            Ok((path.clone(), hash))
-        })
-        .collect::<Result<_, SddError>>()?;
-    GitInspector::changes_since(
+fn verify_plan_artifacts(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+) -> Result<(), SddError> {
+    crate::state::artifact_store::verify_artifacts_in(
         cwd,
-        &baseline_files.into_iter().collect::<Vec<_>>(),
-        &baseline_hashes,
+        runtime,
+        [
+            format!("{change_id}:spec"),
+            format!("{change_id}:design"),
+            format!("{change_id}:plan"),
+            format!("{change_id}:plan-md"),
+            format!("{change_id}:tasks-md"),
+        ],
     )
 }
 
-fn business_root(cwd: &str, state: &crate::state::WorkflowState) -> String {
-    state
+fn read_tasks(
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+) -> Result<Vec<TaskDefinition>, SddError> {
+    let plan = runtime
+        .changes
+        .get(change_id)
+        .and_then(|change| change.get("plan"))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime 缺少 plan"))?;
+    plan_tasks(plan)
+}
+
+fn find_task<'a>(
+    tasks: &'a [TaskDefinition],
+    task_id: &str,
+) -> Result<&'a TaskDefinition, SddError> {
+    tasks
+        .iter()
+        .find(|task| task.id == task_id)
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", &format!("计划中不存在任务 {task_id}")))
+}
+
+fn pending(workflow: &ChangeWorkflow) -> Result<&Value, SddError> {
+    workflow.pending_agent_action.as_ref().ok_or_else(|| {
+        SddError::new(
+            "E_STATE_CORRUPTED",
+            "BUILD_WAITING_AGENT 缺少 pendingAgentAction",
+        )
+    })
+}
+
+fn pending_task_id(pending: &Value) -> Result<&str, SddError> {
+    pending
+        .get("taskId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentAction 缺少 taskId"))
+}
+
+fn business_root(cwd: &str, workflow: &ChangeWorkflow) -> String {
+    workflow
         .workspace
         .as_ref()
         .and_then(|workspace| workspace.worktree_path.clone())
         .unwrap_or_else(|| cwd.to_string())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::protocol::validate::{TaskResultEvidence, TaskResultVerification};
-
-    fn green_task() -> TaskDefinition {
-        TaskDefinition {
-            id: "TASK-001-GREEN".to_string(),
-            title: "最小实现".to_string(),
-            phase: "GREEN".to_string(),
-            requirements: vec!["REQ-001".to_string()],
-            scenarios: vec!["SCN-001".to_string()],
-            depends_on: Vec::new(),
-            allowed_files: vec!["src/lib.rs".to_string()],
-            expected_new_files: Vec::new(),
-            forbidden_files: vec![".sdd/**".to_string()],
-            verification: vec!["cargo test".to_string(), "cargo clippy".to_string()],
-            done_criteria: vec!["测试通过".to_string()],
-            slice_type: "VERTICAL".to_string(),
-            user_visible_outcome: "用户行为正确".to_string(),
-            acceptance_criteria: vec!["SCN-001：用户行为正确".to_string()],
-            test_seam: "src/lib.rs".to_string(),
-        }
+fn task_changes(cwd: &str, pending: &Value) -> Result<Vec<String>, SddError> {
+    let baseline = pending
+        .get("gitBaseline")
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "任务缺少 Git 基线"))?;
+    if baseline.get("available").and_then(Value::as_bool) != Some(true) {
+        return Err(SddError::new("E_STATE_CORRUPTED", "任务 Git 基线不可用"));
     }
-
-    #[test]
-    fn task_evidence_requires_each_planned_verification_exactly_once() {
-        let mut result = TaskExecutionResult {
-            task_id: "TASK-001-GREEN".to_string(),
-            status: "completed".to_string(),
-            evidence: vec![TaskResultEvidence {
-                command: "cargo test".to_string(),
-                passed: Some(true),
-                expected_failure: None,
-            }],
-            verification: vec![TaskResultVerification {
-                command: "cargo".to_string(),
-                args: vec!["test".to_string()],
-                passed: true,
-            }],
-            files_changed: Vec::new(),
-        };
-
-        assert_eq!(
-            validate_task_evidence(&green_task(), &result)
-                .unwrap_err()
-                .code,
-            "E_TDD_EVIDENCE_REQUIRED"
-        );
-        result.verification.push(TaskResultVerification {
-            command: "cargo".to_string(),
-            args: vec!["clippy".to_string()],
-            passed: true,
-        });
-        assert!(validate_task_evidence(&green_task(), &result).is_ok());
-        result.verification.push(result.verification[0].clone());
-        assert_eq!(
-            validate_task_evidence(&green_task(), &result)
-                .unwrap_err()
-                .code,
-            "E_TDD_EVIDENCE_REQUIRED"
-        );
-    }
+    let baseline_files = baseline
+        .get("changedFiles")
+        .and_then(Value::as_array)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "Git 基线缺少 changedFiles"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(String::from)
+                .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "changedFiles 必须是字符串"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let baseline_hashes = baseline
+        .get("changedFileHashes")
+        .and_then(Value::as_object)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "Git 基线缺少文件哈希"))?
+        .iter()
+        .map(|(path, value)| {
+            let hash =
+                if value.is_null() {
+                    None
+                } else {
+                    Some(value.as_str().map(String::from).ok_or_else(|| {
+                        SddError::new("E_STATE_CORRUPTED", "文件哈希必须是字符串")
+                    })?)
+                };
+            Ok((path.clone(), hash))
+        })
+        .collect::<Result<BTreeMap<_, _>, SddError>>()?;
+    GitInspector::changes_since(cwd, &baseline_files, &baseline_hashes)
 }

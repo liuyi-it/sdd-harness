@@ -7,24 +7,9 @@
       "properties": {
         "id": { "type": "string", "pattern": "^REQ-[0-9]{3}-SC-[0-9]{3}$" },
         "title": { "type": "string", "minLength": 1 },
-        "given": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "when": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "then": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        }
+        "given": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "when": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "then": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false
     },
@@ -35,71 +20,36 @@
         "id": { "type": "string", "pattern": "^REQ-[0-9]{3}$" },
         "title": { "type": "string", "minLength": 1 },
         "statement": { "type": "string", "minLength": 1 },
-        "scenarios": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/scenario" }
-        }
-      },
-      "additionalProperties": false
-    },
-    "model": {
-      "type": "object",
-      "required": ["requirements"],
-      "properties": {
-        "requirements": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/requirement" }
-        }
-      },
-      "additionalProperties": false
-    },
-    "question": {
-      "type": "object",
-      "required": ["id", "round", "title", "severity", "question", "recommendation"],
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "round": { "type": "integer", "minimum": 1 },
-        "title": { "type": "string", "minLength": 1 },
-        "severity": { "type": "string", "const": "BLOCKER" },
-        "question": { "type": "string", "minLength": 1 },
-        "recommendation": { "type": "string", "minLength": 1 }
+        "scenarios": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/scenario" } }
       },
       "additionalProperties": false
     }
   },
-  "oneOf": [
-    {
+  "type": "object",
+  "required": ["schemaVersion", "status", "requirement", "goal", "scope", "constraints", "model"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "4.0.0" },
+    "status": { "type": "string", "const": "READY" },
+    "requirement": { "type": "string", "minLength": 1 },
+    "goal": { "type": "string", "minLength": 1 },
+    "scope": {
       "type": "object",
-      "required": ["schemaVersion", "status", "requirement", "questions"],
+      "required": ["included", "excluded"],
       "properties": {
-        "schemaVersion": { "type": "string", "const": "3.0.0" },
-        "status": { "type": "string", "const": "CLARIFYING" },
-        "requirement": { "type": "string", "minLength": 1 },
-        "questions": {
-          "type": "array",
-          "minItems": 1,
-          "items": { "$ref": "#/$defs/question" }
-        }
+        "included": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "excluded": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
       },
       "additionalProperties": false
     },
-    {
+    "constraints": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "model": {
       "type": "object",
-      "required": ["schemaVersion", "status", "requirement", "impact", "answers", "model"],
+      "required": ["requirements"],
       "properties": {
-        "schemaVersion": { "type": "string", "const": "3.0.0" },
-        "status": { "type": "string", "const": "READY" },
-        "requirement": { "type": "string", "minLength": 1 },
-        "impact": { "type": "string", "minLength": 1 },
-        "answers": {
-          "type": "object",
-          "additionalProperties": { "type": "string" }
-        },
-        "model": { "$ref": "#/$defs/model" }
+        "requirements": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/requirement" } }
       },
       "additionalProperties": false
     }
-  ]
+  },
+  "additionalProperties": false
 }

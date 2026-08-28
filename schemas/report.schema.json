@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdd-harness.dev/schemas/report.schema.json",
-  "title": "SDD 验证/审查报告",
+  "title": "SDD 质量报告",
   "type": "object",
   "required": ["kind", "summary", "passed", "changeId", "issues"],
   "properties": {
     "kind": {
       "type": "string",
-      "enum": ["verify", "review"]
+      "const": "quality"
     },
     "summary": { "type": "string" },
     "passed": { "type": "boolean" },

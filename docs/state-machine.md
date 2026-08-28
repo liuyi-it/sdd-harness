@@ -1,59 +1,49 @@
-# 状态机说明
+# 状态机
 
-Core 是唯一允许推进状态的组件。稳定主路径为：
+## 项目状态
+
+项目级状态只有三个初始化阶段：
 
 ```text
-NOT_INITIALIZED → INITIALIZING → INDEX_READY → NEW_STARTED → [CLARIFYING]
-→ SPEC_READY → DESIGN_READY → PLAN_READY → BUILD_WAITING_AGENT
-↔ BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
+NOT_INITIALIZED → INITIALIZING → INDEX_READY
 ```
 
-## 过程状态
+完成初始化后，项目级 state 保持 `INDEX_READY`；具体进度由每个 change 的 workflow 保存。
 
-- 初始化：`INITIALIZING`。
-- 规格：`NEW_STARTED`、`CLARIFYING`。
-- Agent 边界：`BUILD_WAITING_AGENT`。
-- 异常控制：`PAUSED`。
+## Change 状态
 
-状态枚举只包含真实持久化路径，不保留未实现的过程状态或预留兼容值。命令内部正在执行的动作由 `inProgressPhase` 表示，不伪造额外工作流阶段。
+```text
+SPEC_WAITING_AGENT → SPEC_READY
+  → DESIGN_WAITING_AGENT → DESIGN_READY
+  → PLAN_WAITING_AGENT → PLAN_READY
+  → BUILD_WAITING_AGENT ↔ PLAN_READY → BUILD_READY
+  → QUALITY_WAITING_FIX → QUALITY_READY
+                       ↘ QUALITY_BLOCKED
+  → ARCHIVED
+```
 
-信息不足时 `new` 进入 `CLARIFYING`；`NEW_STARTED` 表示 `new` 已记录当前 `changeId`/`runId` 但尚未完成规格生成，恢复建议为 `sdd auto --resume`。用户可用 `sdd new --answers '<JSON>'` 或 `sdd auto --resume --answers '<JSON>'` 继续，不得新建第二个变更或直接编辑 `.sdd/`；`build next` 返回 Agent 任务后进入 `BUILD_WAITING_AGENT`；auto 步骤失败或用户 `--stop` 时进入 `PAUSED`（保留 `failedCommand` / `failedReason` / `suggestedCommand`，`sdd auto --resume` 恢复）。
-## 恢复信息
+- `*_WAITING_AGENT`：Core 已准备上下文和 Schema，等待宿主回传 inline JSON。
+- `PLAN_READY`：存在可派发或可重试的纵向任务。
+- `BUILD_WAITING_AGENT`：恰好一个任务为 BUILDING，pendingAgentAction 必须指向同一 taskId。
+- `BUILD_READY`：所有计划任务为 DONE。
+- `QUALITY_WAITING_FIX`：统一质量门禁失败，等待当前受控修复结果。
+- `QUALITY_BLOCKED`：自动修复预算已用完，必须询问用户；明确授权后 `sdd verify --continue` 开启下一轮。
+- `QUALITY_READY`：统一质量报告通过，可归档。
+- `ARCHIVED`：只读终态；`change` 可显式修订并重新进入规格阶段。
 
-`.sdd/runtime.json` 的 `state` 节点提供以下恢复字段；命令只在对应失败或中断信息存在时写入：
+## 多任务选择
 
-- `previousPhase`：最近一次稳定阶段（阶段推进时由 Core 自动维护）。
-- `inProgressPhase`：被中断或失败的执行阶段。
-- `failedCommand`：需要恢复的失败命令。
-- `failedReason`：与 `failedCommand` 成对存在的非空失败原因。
-- `suggestedCommand`：`sdd status` 返回的下一步建议。
-- `tasks`：与当前机器计划一一对应的任务状态；制品事实只保存在 runtime 的 `artifacts` 注册表中。
+活动任务是 phase 不为 `ARCHIVED` 的 workflow。
 
-任务状态只允许 `PENDING` / `BUILDING` / `DONE` / `FAILED`。`BUILDING` 必须且只能对应 `pendingAgentTask.taskId`；pending 中的 Git 基线文件、哈希和 HEAD 必须结构完整且互相一致，离开 Agent 等待阶段后不得残留 BUILDING 任务。
+- 0 个：阶段命令返回 `E_MISSING_CHANGE`。
+- 1 个：未传 `--change` 时可唯一解析。
+- 多个：任何需要 change 的命令返回 `E_CHANGE_SELECTION_REQUIRED`；宿主必须展示候选并询问用户。
+- `status`：不触发错误，返回 `MULTIPLE_CHANGES` 和全部 `activeChanges`。
 
-命令重试必须通过相同的状态校验，不能直接编辑 runtime 文件绕过前置条件。`initialized`、阶段、索引状态、活动 ID、任务状态和失败字段必须彼此一致；需要活动变更的阶段若缺少对应 `changeId`、`runId` 或聚合数据，runtime 在读取边界直接返回 `E_STATE_CORRUPTED`。
+禁止依据更新时间、创建时间、目录顺序或“最近使用”自动选择。
 
-## Loop 状态
+## 修订与归档
 
-`activeLoop` 摘要记录在 `state`，auto 运行记录与事件一一对应地保存在 `loop.runs` / `loop.events`；普通需求修订事件与任务结果归属对应的 `runs` 聚合。
+`sdd change <新需求> --change <id>` 更新 run 的原始需求并进入 `SPEC_WAITING_AGENT`。新规格完成时，旧 design、plan、reports、archive、任务结果和对应制品索引同时作废，Git 负责历史。
 
-归档完成后的幂等 `auto` 仍复用最后一次成功 run；一旦携带新需求开启新变更，必须创建新的 loop/run，不覆盖上一变更的成功运行历史。
-
-`auto` 在以下边界停止：
-
-- `CLARIFYING`：等待用户回答。
-- `BUILD_WAITING_AGENT`：等待 Agent 执行任务。
-- `PAUSED`：auto 步骤失败或用户停止，等待恢复或人工决策。
-- `ARCHIVED`：流程完成。
-
-`activeLoop.status` 为 `RUNNING`/`WAITING_AGENT` 期间，会切换变更或阶段规划的手动写命令（`init`、`new`、`change`、`design`、`plan`、`codebase index/rebuild`）返回 `E_CONCURRENT_RUN`；`build`、`verify`、`review`、`archive` 与只读命令不受影响。
-
-## Git 工作区
-
-启用隔离时，`workspace` 保存 `branchName`、`worktreePath` 和 `baselineCommit`。`build`、`verify`、`review`、`archive` 以 worktree 为业务目录，但状态和制品仍写入控制根目录的 `.sdd/`。
-
-## 注意事项
-
-- 空项目初始化仍进入 `INDEX_READY`，未指定 `--structurePolicy` 时返回 `W_EMPTY_PROJECT`；显式选择 `free-design` 或 `user-defined` 后写入配置并消除该警告。
-- 归档 marker 已成功写入但状态更新中断时，再次执行 `archive` 会验证哈希并收敛到 `ARCHIVED`。
-- 状态损坏或版本不受支持时返回 `E_STATE_CORRUPTED`，不会自动猜测恢复。
+归档前会重新比较质量报告中的 Git 指纹；验证后发生新改动时退回 `BUILD_READY`，必须重新 verify。归档生成 `archive.md` 后删除该 change 的其他人读文档，但机器模型保留在 Runtime。

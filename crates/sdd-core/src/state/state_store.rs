@@ -14,7 +14,7 @@ use crate::state::runtime_store::{RuntimeStore, RUNTIME_FILE};
 pub const SDD_DIR: &str = ".sdd";
 
 /// 当前状态节点 schema 版本。
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 pub const TASK_STATUS_PENDING: &str = "PENDING";
 pub const TASK_STATUS_BUILDING: &str = "BUILDING";
@@ -43,17 +43,22 @@ pub struct WorkflowState {
     pub version: u32,
     pub updated_at: String,
     pub initialized: bool,
-    pub current_change_id: Option<String>,
-    pub current_run_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active_loop: Option<serde_json::Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pending_agent_task: Option<serde_json::Value>,
     pub current_phase: String,
     pub index_status: String,
     pub codebase_provider: String,
     pub degraded: bool,
     pub degraded_reason: Option<String>,
+    pub last_command: Option<String>,
+}
+
+/// 单个 change 的独立工作流。顶层 state 只保存项目初始化与索引状态，允许多个
+/// change 同时处于未完成阶段。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ChangeWorkflow {
+    pub run_id: String,
+    pub phase: String,
+    pub updated_at: String,
     pub last_command: Option<String>,
     pub previous_phase: Option<String>,
     pub in_progress_phase: Option<String>,
@@ -61,8 +66,11 @@ pub struct WorkflowState {
     pub failed_reason: Option<String>,
     pub suggested_command: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_agent_action: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceInfo>,
     pub tasks: HashMap<String, String>,
+    pub quality_fix_rounds: u8,
 }
 
 impl Default for WorkflowState {
@@ -78,24 +86,43 @@ impl WorkflowState {
             version: 1,
             updated_at: now_iso(),
             initialized: false,
-            current_change_id: None,
-            current_run_id: None,
-            active_loop: None,
-            pending_agent_task: None,
             current_phase: "NOT_INITIALIZED".to_string(),
             index_status: INDEX_STATUS_MISSING.to_string(),
             codebase_provider: "codegraph".to_string(),
             degraded: false,
             degraded_reason: None,
             last_command: None,
+        }
+    }
+}
+
+impl ChangeWorkflow {
+    pub fn new(run_id: String, workspace: Option<WorkspaceInfo>) -> Self {
+        Self {
+            run_id,
+            phase: "SPEC_WAITING_AGENT".to_string(),
+            updated_at: now_iso(),
+            last_command: Some("sdd new".to_string()),
             previous_phase: None,
-            in_progress_phase: None,
+            in_progress_phase: Some("SPECIFICATION".to_string()),
             failed_command: None,
             failed_reason: None,
-            suggested_command: Some("sdd init".to_string()),
-            workspace: None,
+            suggested_command: Some("sdd new --result-json '<JSON>'".to_string()),
+            pending_agent_action: None,
+            workspace,
             tasks: HashMap::new(),
+            quality_fix_rounds: 0,
         }
+    }
+
+    pub(crate) fn clear_failure(&mut self) {
+        self.failed_command = None;
+        self.failed_reason = None;
+    }
+
+    pub(crate) fn record_failure(&mut self, command: impl Into<String>, reason: impl Into<String>) {
+        self.failed_command = Some(command.into());
+        self.failed_reason = Some(reason.into());
     }
 }
 
@@ -136,12 +163,7 @@ pub(crate) fn apply_state_update<F>(state: &mut WorkflowState, update: F) -> Res
 where
     F: FnOnce(&mut WorkflowState),
 {
-    let old_phase = state.current_phase.clone();
     update(state);
-    // 阶段推进时自动维护 previousPhase（恢复字段，供 sdd status 展示恢复上下文）。
-    if state.current_phase != old_phase {
-        state.previous_phase = Some(old_phase);
-    }
     state.updated_at = now_iso();
     state.version = state.version.checked_add(1).ok_or_else(|| {
         SddError::new(
@@ -149,6 +171,22 @@ where
             "状态版本号已达到 u32 上限，无法继续更新",
         )
     })?;
+    Ok(())
+}
+
+pub(crate) fn apply_workflow_update<F>(
+    workflow: &mut ChangeWorkflow,
+    update: F,
+) -> Result<(), SddError>
+where
+    F: FnOnce(&mut ChangeWorkflow),
+{
+    let old_phase = workflow.phase.clone();
+    update(workflow);
+    if workflow.phase != old_phase {
+        workflow.previous_phase = Some(old_phase);
+    }
+    workflow.updated_at = now_iso();
     Ok(())
 }
 
@@ -161,18 +199,6 @@ pub(crate) fn validate_state(state: &WorkflowState) -> Result<(), SddError> {
                 "状态 schemaVersion {} 与当前版本 {} 不兼容",
                 state.schema_version, CURRENT_SCHEMA_VERSION
             ),
-        ));
-    }
-    if let Some(change_id) = state.current_change_id.as_deref() {
-        crate::git::isolation::validate_change_id(change_id)?;
-    }
-    if let Some(run_id) = state.current_run_id.as_deref() {
-        validate_run_id(run_id)?;
-    }
-    if state.current_change_id.is_some() != state.current_run_id.is_some() {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "currentChangeId 与 currentRunId 必须同时存在或同时为空",
         ));
     }
     if (!state.initialized
@@ -215,26 +241,6 @@ pub(crate) fn validate_state(state: &WorkflowState) -> Result<(), SddError> {
             return Err(SddError::new("E_STATE_CORRUPTED", "未知代码库索引状态"));
         }
     }
-    let requires_active_change = matches!(
-        state.current_phase.as_str(),
-        "NEW_STARTED"
-            | "CLARIFYING"
-            | "SPEC_READY"
-            | "DESIGN_READY"
-            | "PLAN_READY"
-            | "BUILD_WAITING_AGENT"
-            | "BUILD_READY"
-            | "VERIFY_READY"
-            | "REVIEW_READY"
-            | "ARCHIVED"
-            | "PAUSED"
-    );
-    if requires_active_change != state.current_change_id.is_some() {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "当前工作流阶段与活动 change/run 不一致",
-        ));
-    }
     if state.degraded {
         if state.codebase_provider != "fallback-file-scan"
             || !state
@@ -253,18 +259,25 @@ pub(crate) fn validate_state(state: &WorkflowState) -> Result<(), SddError> {
             "非降级状态必须使用 codegraph 且不得保留降级原因",
         ));
     }
-    if (state.current_phase == "BUILD_WAITING_AGENT") != state.pending_agent_task.is_some() {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "BUILD_WAITING_AGENT 与 pendingAgentTask 状态不一致",
-        ));
+    let value = serde_json::to_value(state)
+        .map_err(|error| SddError::new("E_STATE_CORRUPTED", &format!("序列化状态失败：{error}")))?;
+    crate::schema::validate_json("state", &value)
+}
+
+pub(crate) fn validate_change_workflow(workflow: &ChangeWorkflow) -> Result<(), SddError> {
+    validate_run_id(&workflow.run_id)?;
+    if !crate::contracts::PHASES.contains(&workflow.phase.as_str())
+        || matches!(
+            workflow.phase.as_str(),
+            "NOT_INITIALIZED" | "INITIALIZING" | "INDEX_READY"
+        )
+    {
+        return Err(SddError::new("E_STATE_CORRUPTED", "change 工作流阶段无效"));
     }
-    let mut building_tasks = state
-        .tasks
-        .iter()
-        .filter(|(_, status)| status.as_str() == TASK_STATUS_BUILDING)
-        .map(|(task_id, _)| task_id.as_str());
-    for task_id in state.tasks.keys() {
+    if let Some(workspace) = workflow.workspace.as_ref() {
+        validate_workspace(workspace)?;
+    }
+    for task_id in workflow.tasks.keys() {
         if !crate::engines::tdd::valid_task_id(task_id) {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
@@ -272,43 +285,79 @@ pub(crate) fn validate_state(state: &WorkflowState) -> Result<(), SddError> {
             ));
         }
     }
-    if let Some(pending) = state.pending_agent_task.as_ref() {
-        let task_id = validate_pending_agent_task(pending)?;
-        if building_tasks.next() != Some(task_id) || building_tasks.next().is_some() {
+    let building = workflow
+        .tasks
+        .iter()
+        .filter(|(_, status)| status.as_str() == TASK_STATUS_BUILDING)
+        .count();
+    match workflow.phase.as_str() {
+        "SPEC_WAITING_AGENT" | "DESIGN_WAITING_AGENT" | "PLAN_WAITING_AGENT" => {
+            validate_pending_phase_action(
+                workflow
+                    .pending_agent_action
+                    .as_ref()
+                    .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "生成阶段缺少待处理行动"))?,
+                match workflow.phase.as_str() {
+                    "SPEC_WAITING_AGENT" => "SPECIFICATION",
+                    "DESIGN_WAITING_AGENT" => "DESIGN",
+                    "PLAN_WAITING_AGENT" => "PLAN",
+                    _ => unreachable!("match 分支已限定生成阶段"),
+                },
+            )?;
+            if building != 0 {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "生成阶段不得存在 BUILDING 任务",
+                ));
+            }
+        }
+        "BUILD_WAITING_AGENT" => {
+            let task_id =
+                validate_pending_agent_task(workflow.pending_agent_action.as_ref().ok_or_else(
+                    || SddError::new("E_STATE_CORRUPTED", "构建阶段缺少待处理行动"),
+                )?)?;
+            if building != 1
+                || workflow.tasks.get(task_id).map(String::as_str) != Some(TASK_STATUS_BUILDING)
+            {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "BUILD_WAITING_AGENT 必须对应唯一 BUILDING 任务",
+                ));
+            }
+        }
+        "QUALITY_WAITING_FIX" => {
+            validate_pending_fix_action(
+                workflow
+                    .pending_agent_action
+                    .as_ref()
+                    .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "质量阶段缺少待处理修复"))?,
+            )?;
+            if building != 0 {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "质量阶段不得存在 BUILDING 任务",
+                ));
+            }
+        }
+        _ if workflow.pending_agent_action.is_some() || building != 0 => {
             return Err(SddError::new(
                 "E_STATE_CORRUPTED",
-                "pendingAgentTask 必须对应唯一 BUILDING 任务",
+                "稳定阶段不得保留待处理行动或 BUILDING 任务",
             ));
         }
-    } else if building_tasks.next().is_some() {
+        _ => {}
+    }
+    if workflow.failed_command.is_some() != workflow.failed_reason.is_some() {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
-            "没有 pendingAgentTask 时不得保留 BUILDING 任务",
-        ));
-    }
-    if let Some(workspace) = state.workspace.as_ref() {
-        validate_workspace(workspace)?;
-    }
-    if state.failed_command.is_some() != state.failed_reason.is_some()
-        || state
-            .failed_command
-            .as_deref()
-            .is_some_and(|command| command.trim().is_empty())
-        || state
-            .failed_reason
-            .as_deref()
-            .is_some_and(|reason| reason.trim().is_empty())
-    {
-        return Err(SddError::new(
-            "E_STATE_CORRUPTED",
-            "failedCommand 与 failedReason 必须同时存在且非空",
+            "failedCommand 与 failedReason 必须同时存在",
         ));
     }
     for (label, value) in [
-        ("lastCommand", state.last_command.as_deref()),
-        ("previousPhase", state.previous_phase.as_deref()),
-        ("inProgressPhase", state.in_progress_phase.as_deref()),
-        ("suggestedCommand", state.suggested_command.as_deref()),
+        ("lastCommand", workflow.last_command.as_deref()),
+        ("previousPhase", workflow.previous_phase.as_deref()),
+        ("inProgressPhase", workflow.in_progress_phase.as_deref()),
+        ("suggestedCommand", workflow.suggested_command.as_deref()),
     ] {
         if value.is_some_and(|value| value.trim().is_empty()) {
             return Err(SddError::new(
@@ -317,15 +366,54 @@ pub(crate) fn validate_state(state: &WorkflowState) -> Result<(), SddError> {
             ));
         }
     }
-    let value = serde_json::to_value(state)
-        .map_err(|error| SddError::new("E_STATE_CORRUPTED", &format!("序列化状态失败：{error}")))?;
-    crate::schema::validate_json("state", &value)
+    Ok(())
+}
+
+fn validate_pending_phase_action(pending: &serde_json::Value, phase: &str) -> Result<(), SddError> {
+    let fields = pending
+        .as_object()
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "阶段行动必须是对象"))?;
+    if fields.get("type").and_then(serde_json::Value::as_str) != Some("AGENT_PHASE_EXECUTION")
+        || fields.get("phase").and_then(serde_json::Value::as_str) != Some(phase)
+        || !fields
+            .get("since")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(SddError::new("E_STATE_CORRUPTED", "阶段行动内容无效"));
+    }
+    Ok(())
+}
+
+fn validate_pending_fix_action(pending: &serde_json::Value) -> Result<(), SddError> {
+    let fields = pending
+        .as_object()
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "修复行动必须是对象"))?;
+    let fix_id = fields
+        .get("fixId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    if fields.get("type").and_then(serde_json::Value::as_str) != Some("AGENT_FIX_EXECUTION")
+        || !fix_id.strip_prefix("FIX-").is_some_and(|sequence| {
+            sequence.len() == 3 && sequence.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        || !fields
+            .get("since")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+        || !fields
+            .get("userAuthorized")
+            .is_some_and(serde_json::Value::is_boolean)
+    {
+        return Err(SddError::new("E_STATE_CORRUPTED", "修复行动内容无效"));
+    }
+    Ok(())
 }
 
 fn validate_pending_agent_task(pending: &serde_json::Value) -> Result<&str, SddError> {
     let fields = pending
         .as_object()
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentTask 必须是对象"))?;
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentAction 必须是对象"))?;
     let expected = ["taskId", "since", "gitBaseline"];
     if fields.len() != expected.len()
         || fields
@@ -334,14 +422,14 @@ fn validate_pending_agent_task(pending: &serde_json::Value) -> Result<&str, SddE
     {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
-            "pendingAgentTask 字段无效",
+            "pendingAgentAction 字段无效",
         ));
     }
     let task_id = fields
         .get("taskId")
         .and_then(serde_json::Value::as_str)
         .filter(|task_id| crate::engines::tdd::valid_task_id(task_id))
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentTask.taskId 无效"))?;
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "pendingAgentAction.taskId 无效"))?;
     if !fields
         .get("since")
         .and_then(serde_json::Value::as_str)
@@ -349,7 +437,7 @@ fn validate_pending_agent_task(pending: &serde_json::Value) -> Result<&str, SddE
     {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
-            "pendingAgentTask.since 无效",
+            "pendingAgentAction.since 无效",
         ));
     }
     validate_git_baseline(
@@ -364,7 +452,7 @@ fn validate_git_baseline(baseline: &serde_json::Value) -> Result<(), SddError> {
     let fields = baseline.as_object().ok_or_else(|| {
         SddError::new(
             "E_STATE_CORRUPTED",
-            "pendingAgentTask.gitBaseline 必须是对象",
+            "pendingAgentAction.gitBaseline 必须是对象",
         )
     })?;
     let available = fields
@@ -373,7 +461,7 @@ fn validate_git_baseline(baseline: &serde_json::Value) -> Result<(), SddError> {
         .ok_or_else(|| {
             SddError::new(
                 "E_STATE_CORRUPTED",
-                "pendingAgentTask.gitBaseline.available 必须是布尔值",
+                "pendingAgentAction.gitBaseline.available 必须是布尔值",
             )
         })?;
     if !available {
@@ -513,18 +601,6 @@ pub(crate) fn validate_run_id(run_id: &str) -> Result<(), SddError> {
         ));
     }
     Ok(())
-}
-
-impl WorkflowState {
-    pub(crate) fn clear_failure(&mut self) {
-        self.failed_command = None;
-        self.failed_reason = None;
-    }
-
-    pub(crate) fn record_failure(&mut self, command: impl Into<String>, reason: impl Into<String>) {
-        self.failed_command = Some(command.into());
-        self.failed_reason = Some(reason.into());
-    }
 }
 
 pub(crate) fn now_iso() -> String {

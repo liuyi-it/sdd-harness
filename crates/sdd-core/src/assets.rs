@@ -18,7 +18,7 @@ pub(crate) struct AdapterWriteResult {
     pub(crate) overwritten: Vec<&'static str>,
 }
 
-const ADAPTER_ASSETS: [AssetFile; 20] = [
+const ADAPTER_ASSETS: [AssetFile; 33] = [
     AssetFile {
         adapter: HostAdapter::Omp,
         target: ".omp/skills/sdd-harness/SKILL.md",
@@ -26,8 +26,53 @@ const ADAPTER_ASSETS: [AssetFile; 20] = [
     },
     AssetFile {
         adapter: HostAdapter::Omp,
-        target: ".omp/config.yml",
-        content: include_str!("../../../assets/adapters/omp/config.yml"),
+        target: ".omp/skills/sdd-init/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-init/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-status/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-status/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-new/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-new/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-change/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-change/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-design/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-design/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-plan/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-plan/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-build/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-build/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-verify/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-verify/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-archive/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-archive/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-codebase/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-codebase/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,
@@ -61,13 +106,18 @@ const ADAPTER_ASSETS: [AssetFile; 20] = [
     },
     AssetFile {
         adapter: HostAdapter::Omp,
-        target: ".omp/commands/sdd.verify.md",
-        content: include_str!("../../../assets/adapters/omp/commands/sdd.verify.md"),
+        target: ".omp/commands/sdd.design.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.design.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,
-        target: ".omp/commands/sdd.review.md",
-        content: include_str!("../../../assets/adapters/omp/commands/sdd.review.md"),
+        target: ".omp/commands/sdd.build.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.build.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/commands/sdd.verify.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.verify.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,
@@ -76,18 +126,8 @@ const ADAPTER_ASSETS: [AssetFile; 20] = [
     },
     AssetFile {
         adapter: HostAdapter::Omp,
-        target: ".omp/agents/sdd-worker.md",
-        content: include_str!("../../../assets/adapters/omp/agents/sdd-worker.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/agents/sdd-worker-simple.md",
-        content: include_str!("../../../assets/adapters/omp/agents/sdd-worker-simple.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/agents/sdd-worker-complex.md",
-        content: include_str!("../../../assets/adapters/omp/agents/sdd-worker-complex.md"),
+        target: ".omp/commands/sdd.codebase.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.codebase.md"),
     },
     AssetFile {
         adapter: HostAdapter::Codex,
@@ -96,28 +136,53 @@ const ADAPTER_ASSETS: [AssetFile; 20] = [
     },
     AssetFile {
         adapter: HostAdapter::Codex,
-        target: ".codex/agents/sdd-explorer.toml",
-        content: include_str!("../../../assets/adapters/codex/agents/sdd-explorer.toml"),
+        target: ".agents/skills/sdd-init/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-init/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Codex,
-        target: ".codex/agents/sdd-worker.toml",
-        content: include_str!("../../../assets/adapters/codex/agents/sdd-worker.toml"),
+        target: ".agents/skills/sdd-status/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-status/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Codex,
-        target: ".codex/agents/sdd-worker-complex.toml",
-        content: include_str!("../../../assets/adapters/codex/agents/sdd-worker-complex.toml"),
+        target: ".agents/skills/sdd-new/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-new/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Codex,
-        target: ".codex/agents/sdd-reviewer.toml",
-        content: include_str!("../../../assets/adapters/codex/agents/sdd-reviewer.toml"),
+        target: ".agents/skills/sdd-change/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-change/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Codex,
-        target: ".codex/agents/sdd-architect.toml",
-        content: include_str!("../../../assets/adapters/codex/agents/sdd-architect.toml"),
+        target: ".agents/skills/sdd-design/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-design/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-plan/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-plan/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-build/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-build/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-verify/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-verify/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-archive/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-archive/SKILL.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-codebase/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-codebase/SKILL.md"),
     },
 ];
 

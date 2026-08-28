@@ -82,24 +82,6 @@ pub(crate) fn lock_initialized_sdd(
     lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms, false)
 }
 
-/// auto 使用独立协调锁串行化整条 loop，同时允许内部命令继续获取 `.sdd/lock`。
-pub(crate) fn lock_auto(
-    cwd: &str,
-    command: &str,
-    change_id: Option<&str>,
-    timeout_ms: Option<u64>,
-) -> Result<SddLockGuard, SddError> {
-    lock_named(cwd, "auto.lock", command, change_id, timeout_ms, false)
-}
-
-pub(crate) fn current_thread_holds_auto_lock(cwd: &str) -> Result<bool, SddError> {
-    let Some(dir) = crate::state::paths::existing_sdd_dir(Path::new(cwd))? else {
-        return Ok(false);
-    };
-    let path = dir.join("auto.lock");
-    Ok(HELD_LOCKS.with(|locks| locks.borrow().get(&path).and_then(Weak::upgrade).is_some()))
-}
-
 fn lock_named(
     cwd: &str,
     file_name: &str,

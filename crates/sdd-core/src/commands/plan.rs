@@ -1,109 +1,73 @@
-//! plan 命令：生成供人工审核的 plan.md/tasks.md，并把机器计划存入 runtime.json。
+//! plan 命令：派发并接收宿主 Agent 生成的结构化纵向实施计划。
 
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 
-use serde_json::json;
+use serde_json::{json, Value};
 
-use crate::commands::new::current_change_id;
-use crate::contracts::CommandResult;
-use crate::engines::tdd::tdd_engine::TddEngine;
-use crate::engines::tdd::{PlanningInput, TaskDefinition};
+use crate::contracts::{AgentActionRequired, CodebaseProviderInfo, CommandResult};
+use crate::engines::documents::{parse_plan, render_plan, render_tasks, PlanPhaseResult};
+use crate::engines::tdd::TaskDefinition;
 use crate::error::SddError;
 use crate::state::artifact_store::ArtifactRecord;
 use crate::state::file_lock::lock_initialized_sdd;
+use crate::state::state_store::{apply_workflow_update, TASK_STATUS_PENDING};
 
-pub fn run_plan(
-    cwd: &str,
-    args: Option<&serde_json::Value>,
-    engine: &TddEngine,
-) -> Result<CommandResult, SddError> {
+pub fn run_plan(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddError> {
+    super::validate_args(args, &["timeout", "changeId", "resultJson"])?;
     let timeout_ms = super::timeout_ms(args)?;
-    let _guard = lock_initialized_sdd(cwd, "sdd plan", None, timeout_ms)?;
-
-    let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
-    let state = runtime.state.clone();
-    super::ensure_phase(cwd, &state, "plan", args)?;
-    super::validate_args(args, &["timeout", "changeId", "dependencies"])?;
-    let dependencies = args
-        .and_then(|value| value.get("dependencies"))
-        .cloned()
-        .unwrap_or_else(|| json!([]));
-    validate_dependencies(&dependencies)?;
-    let change_id = current_change_id(&state)?;
-    let change_dir = crate::state::paths::change_dir(cwd, &change_id, false)?;
-    crate::state::artifact_store::verify_artifacts_in(
+    let _guard = lock_initialized_sdd(
         cwd,
-        &runtime,
-        [format!("{change_id}:spec"), format!("{change_id}:design")],
+        "sdd plan",
+        super::string_arg(args, "changeId")?,
+        timeout_ms,
     )?;
-
-    let change = runtime
-        .changes
-        .get(&change_id)
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少当前变更"))?;
-    let spec_value = change
-        .get("spec")
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 spec"))?;
-    let specification = crate::engines::spec::model_from_record(spec_value)?;
-    let spec_path = change_dir.join("spec.md");
-    crate::safe_fs::reject_symlink(&spec_path, "spec.md")?;
-    let spec = fs::read_to_string(spec_path)
-        .map_err(|e| SddError::new("E_MISSING_ARTIFACT", &format!("读取 spec.md 失败：{e}")))?;
-    let design = change
-        .get("design")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 design 字段"))?;
-    let impact = spec_value
-        .get("impact")
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "runtime.json 的 spec 缺少 impact"))?;
-    let codebase_summary = runtime
-        .index
-        .get("summary")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少代码库摘要"))?;
-    let spec_digest = crate::policies::digest::digest(&spec);
-    let design_digest = crate::policies::digest::digest(design);
-
-    let artifacts = engine.generate_plan(&PlanningInput {
-        specification: &specification,
-        design,
-        impact,
-        codebase_summary,
-    })?;
-
-    // 写任务前校验每条验证命令：任务进入 build 派发后不再拦截，
-    // 必须在计划落盘时就把"任意命令"挡在门外
-    for task in &artifacts.tasks {
-        for verification in &task.verification {
-            crate::security::verification_command::validate_verification_command(verification)?;
+    let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    let change_id = super::resolve_change_id(&runtime, args)?;
+    let workflow = super::workflow(&runtime, &change_id)?;
+    super::ensure_phase(workflow, "plan")?;
+    if let Some(raw) = super::string_arg(args, "resultJson")? {
+        if workflow.phase != "PLAN_WAITING_AGENT" {
+            return Err(SddError::new(
+                "E_INVALID_PHASE_COMMAND",
+                "必须先执行 sdd plan 获取计划行动",
+            ));
         }
+        return complete(cwd, &runtime, &change_id, raw);
     }
+    if workflow.phase == "DESIGN_READY" {
+        crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+            let workflow = super::workflow_mut(document, &change_id)?;
+            apply_workflow_update(workflow, |workflow| {
+                workflow.phase = "PLAN_WAITING_AGENT".to_string();
+                workflow.in_progress_phase = Some("PLANNING".to_string());
+                workflow.pending_agent_action = Some(json!({
+                    "type": "AGENT_PHASE_EXECUTION",
+                    "phase": "PLAN",
+                    "since": crate::state::state_store::now_iso(),
+                }));
+                workflow.suggested_command = Some(format!(
+                    "sdd plan --change {change_id} --result-json '<JSON>'"
+                ));
+                workflow.last_command = Some("sdd plan".to_string());
+            })
+        })?;
+    }
+    let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    action(cwd, &current, &change_id)
+}
 
-    let plan_markdown = render_plan_document(design, &artifacts.test_plan, &dependencies);
-    let tasks_markdown = artifacts.tasks_markdown.clone();
-    let plan_value = json!({
-        "schemaVersion": "2.0.0",
-        "changeId": change_id,
-        "tasks": artifacts.tasks,
-        "dependencies": dependencies,
-    });
-    plan_tasks(&plan_value)?;
-    let task_statuses = artifacts
-        .tasks
-        .iter()
-        .map(|task| {
-            (
-                task.id.clone(),
-                crate::state::state_store::TASK_STATUS_PENDING.to_string(),
-            )
-        })
-        .collect();
-    let run_id = state
-        .current_run_id
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "DESIGN_READY 状态缺少 currentRunId"))?;
-    let plan_text = serde_json::to_string_pretty(&plan_value)
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("序列化机器计划失败：{e}")))?;
+fn complete(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+    raw: &str,
+) -> Result<CommandResult, SddError> {
+    let result = super::new::parse_phase_result(raw, parse_plan)?;
+    validate_plan(runtime, change_id, &result)?;
+    let plan_markdown = render_plan(&result);
+    let tasks_markdown = render_tasks(&result.tasks);
+    let change_dir = crate::state::paths::change_dir(cwd, change_id, false)?;
     crate::safe_fs::atomic_write(
         &change_dir.join("plan.md"),
         plan_markdown.as_bytes(),
@@ -114,7 +78,19 @@ pub fn run_plan(
         tasks_markdown.as_bytes(),
         "tasks.md",
     )?;
-    let plan_digest = crate::policies::digest::digest(&plan_text);
+    let plan_value = json!({
+        "schemaVersion": "3.0.0",
+        "changeId": change_id,
+        "summary": result.summary,
+        "globalConstraints": result.global_constraints,
+        "dependencies": result.dependencies,
+        "tasks": result.tasks,
+    });
+    let task_statuses = result
+        .tasks
+        .iter()
+        .map(|task| (task.id.clone(), TASK_STATUS_PENDING.to_string()))
+        .collect::<std::collections::HashMap<_, _>>();
     let plan_key = format!("{change_id}:plan");
     let plan_path = format!("runtime://changes/{change_id}/plan");
     let plan_md_key = format!("{change_id}:plan-md");
@@ -122,14 +98,14 @@ pub fn run_plan(
     let tasks_md_key = format!("{change_id}:tasks-md");
     let tasks_md_path = format!(".sdd/changes/{change_id}/tasks.md");
     crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
-        let change = super::change_mut(document, &change_id)?;
-        change.insert("plan".to_string(), plan_value);
-        let run = document
+        super::change_mut(document, change_id)?.insert("plan".to_string(), plan_value.clone());
+        let run_id = super::workflow(document, change_id)?.run_id.clone();
+        document
             .runs
             .get_mut(&run_id)
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "当前 run 必须是对象"))?;
-        run.insert("tasks".to_string(), json!({}));
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "plan 缺少 run"))?
+            .insert("tasks".to_string(), json!({}));
         crate::state::artifact_store::record_artifacts_in(
             cwd,
             document,
@@ -138,41 +114,40 @@ pub fn run_plan(
                     key: &plan_key,
                     artifact_type: "plan",
                     content_path: &plan_path,
-                    inputs: json!({ "spec": spec_digest, "design": design_digest }),
+                    inputs: json!({ "design": format!("{change_id}:design") }),
                 },
                 ArtifactRecord {
                     key: &plan_md_key,
                     artifact_type: "plan",
                     content_path: &plan_md_path,
-                    inputs: json!({ "plan": &plan_digest }),
+                    inputs: json!({ "plan": &plan_key }),
                 },
                 ArtifactRecord {
                     key: &tasks_md_key,
                     artifact_type: "plan",
                     content_path: &tasks_md_path,
-                    inputs: json!({ "plan": &plan_digest }),
+                    inputs: json!({ "plan": &plan_key }),
                 },
             ],
         )?;
-        crate::state::state_store::apply_state_update(&mut document.state, |state| {
-            state.current_phase = "PLAN_READY".to_string();
-            state.in_progress_phase = None;
-            state.clear_failure();
-            state.suggested_command = Some("sdd build next".to_string());
-            state.last_command = Some("sdd plan".to_string());
-            state.tasks = task_statuses;
-            state.pending_agent_task = None;
-        })?;
-        Ok(())
+        let workflow = super::workflow_mut(document, change_id)?;
+        apply_workflow_update(workflow, |workflow| {
+            workflow.phase = "PLAN_READY".to_string();
+            workflow.in_progress_phase = None;
+            workflow.pending_agent_action = None;
+            workflow.tasks = task_statuses.clone();
+            workflow.suggested_command = Some(format!("sdd build next --change {change_id}"));
+            workflow.last_command = Some("sdd plan".to_string());
+            workflow.clear_failure();
+        })
     })?;
-
     Ok(CommandResult {
         ok: true,
         state: "PLAN_READY".to_string(),
         exit_code: 0,
-        change_id: Some(change_id),
-        next: Some("sdd build next".to_string()),
-        data: Some(json!({ "taskCount": artifacts.tasks.len() })),
+        change_id: Some(change_id.to_string()),
+        next: Some(format!("sdd build next --change {change_id}")),
+        data: Some(json!({ "taskCount": result.tasks.len() })),
         rendered: None,
         warnings: None,
         action_required: None,
@@ -180,175 +155,225 @@ pub fn run_plan(
     })
 }
 
-fn render_plan_document(design: &str, test_plan: &str, dependencies: &serde_json::Value) -> String {
-    let design = design
-        .strip_prefix("# Design")
-        .expect("TddEngine 设计文档必须以 # Design 开头")
-        .trim();
-    let test_plan = test_plan
-        .strip_prefix("# Test Plan")
-        .expect("TddEngine 测试计划必须以 # Test Plan 开头")
-        .trim();
-    let mut lines = vec![
-        "# 实施计划".to_string(),
-        String::new(),
-        "## 技术方案与架构".to_string(),
-        String::new(),
-        design.to_string(),
-        String::new(),
-        "## 实施顺序".to_string(),
-        String::new(),
-        "1. 按 tasks.md 的任务依赖顺序执行。".to_string(),
-        "2. 每个需求依次完成 RED、GREEN、REFACTOR、VERIFY。".to_string(),
-        String::new(),
-        "## 测试计划".to_string(),
-        String::new(),
-        test_plan.to_string(),
-        String::new(),
-        "## 依赖决策".to_string(),
-        String::new(),
-    ];
-    let entries = dependencies
-        .as_array()
-        .expect("validate_dependencies 已确认 dependencies 是数组");
-    if entries.is_empty() {
-        lines.push("- 无新增依赖。".to_string());
-    } else {
-        for entry in entries {
-            let name = entry["name"]
-                .as_str()
-                .expect("validate_dependencies 已确认 name 是字符串");
-            let action = entry["action"]
-                .as_str()
-                .expect("validate_dependencies 已确认 action 是字符串");
-            let reason = entry["reason"]
-                .as_str()
-                .expect("validate_dependencies 已确认 reason 是字符串");
-            lines.push(format!("- {name}（{action}）：{reason}"));
-        }
+fn validate_plan(
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+    result: &PlanPhaseResult,
+) -> Result<(), SddError> {
+    for task in &result.tasks {
+        let value = serde_json::to_value(task).expect("TaskDefinition 必须可序列化");
+        crate::schema::validate_json("task", &value)
+            .map_err(|error| SddError::new("E_INVALID_PHASE_COMMAND", &error.message))?;
+        validate_task(task)?;
     }
-    lines.join("\n") + "\n"
-}
-
-pub(crate) fn validate_dependencies(dependencies: &serde_json::Value) -> Result<(), SddError> {
-    let entries = dependencies
-        .as_array()
-        .ok_or_else(|| SddError::new("E_INVALID_PHASE_COMMAND", "dependencies 必须是 JSON 数组"))?;
-    for (index, entry) in entries.iter().enumerate() {
-        let object = entry.as_object().ok_or_else(|| {
-            SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                &format!("dependencies[{index}] 必须是对象"),
-            )
-        })?;
-        let expected = ["name", "manifest", "action", "reason", "requirements"];
-        if object.len() != expected.len()
-            || object
-                .keys()
-                .any(|field| !expected.contains(&field.as_str()))
-        {
-            return Err(SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                &format!("dependencies[{index}] 包含未知或缺失字段"),
-            ));
-        }
-        for field in ["name", "manifest", "reason"] {
-            if !object
-                .get(field)
-                .and_then(|value| value.as_str())
-                .is_some_and(|value| !value.trim().is_empty())
-            {
-                return Err(SddError::new(
-                    "E_INVALID_PHASE_COMMAND",
-                    &format!("dependencies[{index}].{field} 必须是非空字符串"),
-                ));
-            }
-        }
-        if !matches!(
-            object.get("action").and_then(|value| value.as_str()),
-            Some("ADD" | "UPDATE" | "REMOVE")
-        ) {
-            return Err(SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                &format!("dependencies[{index}].action 非法"),
-            ));
-        }
-        if !object
-            .get("requirements")
-            .and_then(|value| value.as_array())
-            .is_some_and(|values| {
-                !values.is_empty()
-                    && values
-                        .iter()
-                        .all(|value| value.as_str().is_some_and(|value| !value.trim().is_empty()))
-            })
-        {
-            return Err(SddError::new(
-                "E_INVALID_PHASE_COMMAND",
-                &format!("dependencies[{index}].requirements 必须是字符串数组"),
-            ));
-        }
+    validate_task_graph(&result.tasks)?;
+    let spec = runtime
+        .changes
+        .get(change_id)
+        .and_then(|change| change.get("spec"))
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "plan 缺少 spec"))?;
+    let model = crate::engines::spec::model_from_record(spec)?;
+    let expected_requirements = model
+        .requirements
+        .iter()
+        .map(|requirement| requirement.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let expected_scenarios = model
+        .requirements
+        .iter()
+        .flat_map(|requirement| requirement.scenarios.iter())
+        .map(|scenario| scenario.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let covered_requirements = result
+        .tasks
+        .iter()
+        .flat_map(|task| task.requirements.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let covered_scenarios = result
+        .tasks
+        .iter()
+        .flat_map(|task| task.scenarios.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    if covered_requirements != expected_requirements || covered_scenarios != expected_scenarios {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "计划任务必须完整且仅覆盖当前规格中的需求和场景",
+        ));
     }
     Ok(())
 }
 
-/// 读取 runtime 中的计划任务（供 build、verify 和 review 复用）。
+fn validate_task(task: &TaskDefinition) -> Result<(), SddError> {
+    let allowed = task.allowed_files.iter().collect::<HashSet<_>>();
+    if task
+        .expected_new_files
+        .iter()
+        .any(|path| !allowed.contains(path))
+        || !allowed.contains(&task.test_seam)
+        || task
+            .forbidden_files
+            .iter()
+            .any(|path| allowed.contains(path))
+    {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            &format!("任务 {} 的文件范围互相矛盾", task.id),
+        ));
+    }
+    for path in task
+        .allowed_files
+        .iter()
+        .chain(task.expected_new_files.iter())
+        .chain(task.forbidden_files.iter())
+    {
+        crate::state::artifact_store::validate_content_path(path)?;
+    }
+    let kinds = task
+        .steps
+        .iter()
+        .map(|step| step.kind.as_str())
+        .collect::<BTreeSet<_>>();
+    let steps_valid = if task.execution_mode == "TDD" {
+        ["TEST", "IMPLEMENT", "VERIFY"]
+            .iter()
+            .all(|kind| kinds.contains(kind))
+    } else {
+        kinds.contains("VERIFY")
+    };
+    if !steps_valid {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            &format!("任务 {} 缺少执行模式要求的步骤", task.id),
+        ));
+    }
+    for verification in &task.verification {
+        let rendered = std::iter::once(verification.command.as_str())
+            .chain(verification.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" ");
+        crate::security::verification_command::validate_verification_command(&rendered)?;
+    }
+    Ok(())
+}
+
+fn validate_task_graph(tasks: &[TaskDefinition]) -> Result<(), SddError> {
+    let by_id = tasks
+        .iter()
+        .map(|task| (task.id.as_str(), task))
+        .collect::<BTreeMap<_, _>>();
+    if by_id.len() != tasks.len() {
+        return Err(SddError::new("E_INVALID_PHASE_COMMAND", "任务 ID 不得重复"));
+    }
+    if tasks.iter().any(|task| {
+        task.depends_on
+            .iter()
+            .any(|dependency| dependency == &task.id || !by_id.contains_key(dependency.as_str()))
+    }) {
+        return Err(SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            "任务依赖包含自身或不存在的任务",
+        ));
+    }
+    fn visit<'a>(
+        id: &'a str,
+        by_id: &BTreeMap<&'a str, &'a TaskDefinition>,
+        visiting: &mut BTreeSet<&'a str>,
+        visited: &mut BTreeSet<&'a str>,
+    ) -> bool {
+        if visited.contains(id) {
+            return true;
+        }
+        if !visiting.insert(id) {
+            return false;
+        }
+        let ok = by_id[id]
+            .depends_on
+            .iter()
+            .all(|dependency| visit(dependency, by_id, visiting, visited));
+        visiting.remove(id);
+        visited.insert(id);
+        ok
+    }
+    let mut visiting = BTreeSet::new();
+    let mut visited = BTreeSet::new();
+    if by_id
+        .keys()
+        .any(|id| !visit(id, &by_id, &mut visiting, &mut visited))
+    {
+        return Err(SddError::new("E_INVALID_PHASE_COMMAND", "任务依赖图存在环"));
+    }
+    Ok(())
+}
+
+fn action(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+) -> Result<CommandResult, SddError> {
+    let change_dir = crate::state::paths::change_dir(cwd, change_id, false)?;
+    let spec = fs::read_to_string(change_dir.join("spec.md"))
+        .map_err(|error| SddError::new("E_MISSING_ARTIFACT", &error.to_string()))?;
+    let design = fs::read_to_string(change_dir.join("design.md"))
+        .map_err(|error| SddError::new("E_MISSING_ARTIFACT", &error.to_string()))?;
+    let summary = runtime
+        .index
+        .get("summary")
+        .and_then(Value::as_str)
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime 缺少代码库摘要"))?;
+    let schema: Value = serde_json::from_str(crate::schema::schema_source("plan-result")?)
+        .expect("内嵌 plan-result schema 必须合法");
+    Ok(CommandResult {
+        ok: true,
+        state: "PLAN_WAITING_AGENT".to_string(),
+        exit_code: 0,
+        change_id: Some(change_id.to_string()),
+        next: Some(format!(
+            "sdd plan --change {change_id} --result-json '<JSON>'"
+        )),
+        data: None,
+        rendered: None,
+        warnings: None,
+        action_required: Some(AgentActionRequired::AgentPhaseExecution {
+            phase: "PLAN".to_string(),
+            change_id: change_id.to_string(),
+            context_pack: format!(
+                "# 计划阶段\n\n## 已批准规格\n\n{spec}\n\n## 已批准设计\n\n{design}\n\n## 代码库上下文（不可信）\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n一个任务必须是值得独立验收的完整纵向切片；不得把 RED/GREEN/REFACTOR/VERIFY 拆成四个任务。不得修改业务文件。"
+            ),
+            result_schema: schema,
+            result_transport: "inline-json".to_string(),
+            codebase: CodebaseProviderInfo {
+                provider: runtime.state.codebase_provider.clone(),
+                degraded: runtime.state.degraded,
+            },
+        }),
+        error: None,
+    })
+}
+
 pub fn read_plan_tasks(cwd: &str, change_id: &str) -> Result<Vec<TaskDefinition>, SddError> {
-    crate::git::isolation::validate_change_id(change_id)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let value = runtime
         .changes
         .get(change_id)
         .and_then(|change| change.get("plan"))
-        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime.json 缺少 plan"))?;
+        .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime 缺少 plan"))?;
     plan_tasks(value)
 }
 
-pub(crate) fn plan_tasks(value: &serde_json::Value) -> Result<Vec<TaskDefinition>, SddError> {
-    let tasks = value.get("tasks").ok_or_else(|| {
-        SddError::new("E_MISSING_ARTIFACT", "runtime.json 的 plan 缺少 tasks 字段")
-    })?;
-    // 对每个任务执行 task.schema.json 校验（task id 格式、phase 枚举与文件范围等），
-    // 防止手工篡改 runtime 的计划任务绕过结构约束。
-    if let Some(list) = tasks.as_array() {
-        for (index, task) in list.iter().enumerate() {
-            crate::schema::validate_json("task", task).map_err(|error| {
-                SddError::new(
-                    "E_STATE_CORRUPTED",
-                    &format!("计划任务 {index} 校验失败：{}", error.message),
-                )
-            })?;
-        }
+pub(crate) fn plan_tasks(value: &Value) -> Result<Vec<TaskDefinition>, SddError> {
+    let tasks: Vec<TaskDefinition> = serde_json::from_value(
+        value
+            .get("tasks")
+            .cloned()
+            .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "plan 缺少 tasks"))?,
+    )
+    .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.to_string()))?;
+    for task in &tasks {
+        let raw = serde_json::to_value(task).expect("TaskDefinition 必须可序列化");
+        crate::schema::validate_json("task", &raw)?;
+        validate_task(task).map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.message))?;
     }
-    let parsed: Vec<TaskDefinition> = serde_json::from_value(tasks.clone())
-        .map_err(|e| SddError::new("E_STATE_CORRUPTED", &format!("tasks 解析失败：{e}")))?;
-    crate::engines::tdd::planner::validate_task_graph(&parsed)?;
-    for task in &parsed {
-        let allowed: std::collections::HashSet<&str> =
-            task.allowed_files.iter().map(String::as_str).collect();
-        if task
-            .expected_new_files
-            .iter()
-            .any(|path| !allowed.contains(path.as_str()))
-            || !allowed.contains(task.test_seam.as_str())
-        {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!(
-                    "任务 {} 的新增文件或 testSeam 不在 allowedFiles 中",
-                    task.id
-                ),
-            ));
-        }
-        for verification in &task.verification {
-            crate::security::verification_command::validate_verification_command(verification)
-                .map_err(|error| {
-                    SddError::new(
-                        "E_STATE_CORRUPTED",
-                        &format!("任务 {} 的验证命令非法：{}", task.id, error.message),
-                    )
-                })?;
-        }
-    }
-    Ok(parsed)
+    validate_task_graph(&tasks)
+        .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.message))?;
+    Ok(tasks)
 }

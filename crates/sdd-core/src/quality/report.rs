@@ -1,4 +1,4 @@
-//! 报告模型：verify/review 报告（对应 report.schema.json）。
+//! 报告模型：统一质量报告（对应 report.schema.json）。
 
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +27,7 @@ pub struct Issue {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Report {
-    pub kind: String, // verify | review
+    pub kind: String,
     pub summary: String,
     pub passed: bool,
     pub change_id: String,
@@ -119,9 +119,9 @@ mod tests {
     use super::Issue;
 
     #[test]
-    fn issue_serializes_ocr_location_and_suggestion_fields() {
+    fn issue_serializes_location_and_suggestion_fields() {
         let issue = Issue {
-            code: "OCR_FINDING".into(),
+            code: "QUALITY_FINDING".into(),
             severity: "high".into(),
             message: "输入未校验".into(),
             file: Some("src/handler.rs".into()),
@@ -130,7 +130,7 @@ mod tests {
             end_line: Some(43),
             existing_code: Some("old".into()),
             suggestion_code: Some("new".into()),
-            origin: Some("ocr".into()),
+            origin: Some("agent".into()),
         };
         let value = serde_json::to_value(&issue).unwrap();
         assert_eq!(value["startLine"], 42);
@@ -138,19 +138,19 @@ mod tests {
         assert_eq!(value["suggestionCode"], "new");
         assert_eq!(value["existingCode"], "old");
         assert_eq!(value["category"], "security");
-        assert_eq!(value["origin"], "ocr");
+        assert_eq!(value["origin"], "agent");
         assert!(value.get("start_line").is_none());
         assert!(value.get("end_line").is_none());
         assert!(value.get("suggestion_code").is_none());
     }
 
     #[test]
-    fn report_with_ocr_fields_passes_schema_validation() {
-        let mut report = super::Report::new("review", "change-1".to_string());
-        report.summary = "发现 1 个审查发现".to_string();
+    fn quality_report_fields_pass_schema_validation() {
+        let mut report = super::Report::new("quality", "change-1".to_string());
+        report.summary = "发现 1 个质量问题".to_string();
         report.passed = false;
         report.issues = vec![Issue {
-            code: "OCR_FINDING".into(),
+            code: "QUALITY_FINDING".into(),
             severity: "high".into(),
             message: "输入未校验".into(),
             file: Some("src/handler.rs".into()),
@@ -159,7 +159,7 @@ mod tests {
             end_line: Some(43),
             existing_code: Some("old".into()),
             suggestion_code: Some("new".into()),
-            origin: Some("ocr".into()),
+            origin: Some("agent".into()),
         }];
         let value = serde_json::to_value(&report).unwrap();
         assert!(crate::schema::validate_json("report", &value).is_ok());
@@ -189,11 +189,11 @@ mod tests {
         assert!(value.get("origin").is_none());
     }
     #[test]
-    fn renders_ocr_location_and_metadata_in_same_finding() {
-        let mut report = super::Report::new("review", "change-1".to_string());
+    fn renders_location_and_metadata_in_same_finding() {
+        let mut report = super::Report::new("quality", "change-1".to_string());
         report.passed = false;
         report.issues.push(Issue {
-            code: "OCR_FINDING".into(),
+            code: "QUALITY_FINDING".into(),
             severity: "high".into(),
             message: "输入未校验".into(),
             file: Some("src/handler.rs".into()),
@@ -202,11 +202,11 @@ mod tests {
             end_line: Some(43),
             existing_code: None,
             suggestion_code: Some("return Err(err);".into()),
-            origin: Some("ocr".into()),
+            origin: Some("agent".into()),
         });
         let markdown = super::render_report_markdown(&report);
         assert!(markdown.contains("src/handler.rs:42-43"));
-        assert!(markdown.contains("origin=ocr"));
+        assert!(markdown.contains("origin=agent"));
         assert!(markdown.contains("category=security"));
     }
 }

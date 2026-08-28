@@ -34,25 +34,26 @@ impl HostAdapter {
 }
 
 /// 当前工作流会真实持久化的阶段枚举。
-pub const PHASES: [&str; 14] = [
+pub const PHASES: [&str; 15] = [
     "NOT_INITIALIZED",
     "INITIALIZING",
     "INDEX_READY",
-    "NEW_STARTED",
-    "CLARIFYING",
+    "SPEC_WAITING_AGENT",
     "SPEC_READY",
+    "DESIGN_WAITING_AGENT",
     "DESIGN_READY",
+    "PLAN_WAITING_AGENT",
     "PLAN_READY",
     "BUILD_WAITING_AGENT",
     "BUILD_READY",
-    "VERIFY_READY",
-    "REVIEW_READY",
+    "QUALITY_WAITING_FIX",
+    "QUALITY_BLOCKED",
+    "QUALITY_READY",
     "ARCHIVED",
-    "PAUSED",
 ];
 
 /// 错误码 → 退出码的唯一映射表，未登记错误统一按内部错误退出。
-const ERROR_EXIT_CODES: [(&str, i32); 30] = [
+const ERROR_EXIT_CODES: [(&str, i32); 26] = [
     ("E_NOT_INITIALIZED", 3),
     ("E_INVALID_PHASE_COMMAND", 3),
     ("E_ACTIVE_CHANGE_EXISTS", 3),
@@ -61,18 +62,14 @@ const ERROR_EXIT_CODES: [(&str, i32); 30] = [
     ("E_INVALID_REQUIREMENT", 6),
     ("E_COMPONENT_UNAVAILABLE", 5),
     ("E_COMPONENT_INTEGRITY_FAILED", 10),
-    ("E_UNRESOLVED_BLOCKER", 6),
+    ("E_CHANGE_SELECTION_REQUIRED", 3),
     ("E_VERIFY_REQUIRED", 3),
-    ("E_REVIEW_REQUIRED", 3),
+    ("E_QUALITY_REQUIRED", 3),
     ("E_VERIFY_FAILED", 7),
     ("E_TDD_EVIDENCE_REQUIRED", 7),
     ("E_AGENT_TASK_FAILED", 7),
     ("E_UNDECLARED_FILE_CHANGE", 10),
-    ("E_REVIEW_FAILED", 8),
-    ("E_REVIEW_BACKEND_UNAVAILABLE", 5),
-    ("E_REVIEW_BACKEND_TIMEOUT", 124),
-    ("E_REVIEW_BACKEND_FAILED", 8),
-    ("E_REVIEW_BACKEND_INVALID_OUTPUT", 8),
+    ("E_QUALITY_FAILED", 8),
     ("E_UNPLANNED_DEPENDENCY", 8),
     ("E_ARCHIVED_READONLY", 3),
     ("E_CONCURRENT_RUN", 9),
@@ -82,7 +79,7 @@ const ERROR_EXIT_CODES: [(&str, i32); 30] = [
     ("E_SECURITY_BLOCKED", 10),
     ("E_PATH_OUTSIDE_REPO", 10),
     ("E_SYMLINK_BLOCKED", 10),
-    ("E_GENERATION_FAILED", 5),
+    ("E_STATE_VERSION_UNSUPPORTED", 3),
 ];
 
 /// 错误码到退出码的映射。
@@ -138,25 +135,57 @@ pub struct CodebaseProviderInfo {
     pub degraded: bool,
 }
 
-/// Agent 行动要求（build next 返回此结构，结果通过 inline JSON 提交）。
+/// Agent 行动要求。生成阶段、构建任务和质量修复均通过 inline JSON 回传。
 #[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct AgentActionRequired {
-    #[serde(rename = "type")]
-    pub action_type: String,
-    pub task_id: String,
-    pub change_id: String,
-    /// 完整 Context Pack 内容；不再返回 `.sdd/context-packs` 文件路径。
-    pub context_pack: String,
-    pub allowed_files: Vec<String>,
-    pub expected_new_files: Vec<String>,
-    pub forbidden_files: Vec<String>,
-    pub verification: Vec<VerificationCommand>,
-    /// 固定为 `inline-json`，提示 Adapter 使用 `build complete --result-json`。
-    pub result_transport: String,
-    pub codebase: CodebaseProviderInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub policy_bundle: Option<serde_json::Value>,
+#[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum AgentActionRequired {
+    AgentPhaseExecution {
+        phase: String,
+        #[serde(rename = "changeId")]
+        change_id: String,
+        #[serde(rename = "contextPack")]
+        context_pack: String,
+        #[serde(rename = "resultSchema")]
+        result_schema: serde_json::Value,
+        #[serde(rename = "resultTransport")]
+        result_transport: String,
+        codebase: CodebaseProviderInfo,
+    },
+    AgentTaskExecution {
+        #[serde(rename = "taskId")]
+        task_id: String,
+        #[serde(rename = "changeId")]
+        change_id: String,
+        #[serde(rename = "contextPack")]
+        context_pack: String,
+        #[serde(rename = "allowedFiles")]
+        allowed_files: Vec<String>,
+        #[serde(rename = "expectedNewFiles")]
+        expected_new_files: Vec<String>,
+        #[serde(rename = "forbiddenFiles")]
+        forbidden_files: Vec<String>,
+        verification: Vec<VerificationCommand>,
+        #[serde(rename = "resultTransport")]
+        result_transport: String,
+        codebase: CodebaseProviderInfo,
+        #[serde(rename = "policyBundle", skip_serializing_if = "Option::is_none")]
+        policy_bundle: Option<serde_json::Value>,
+    },
+    AgentFixExecution {
+        #[serde(rename = "fixId")]
+        fix_id: String,
+        #[serde(rename = "changeId")]
+        change_id: String,
+        #[serde(rename = "contextPack")]
+        context_pack: String,
+        #[serde(rename = "allowedFiles")]
+        allowed_files: Vec<String>,
+        verification: Vec<VerificationCommand>,
+        #[serde(rename = "resultSchema")]
+        result_schema: serde_json::Value,
+        #[serde(rename = "resultTransport")]
+        result_transport: String,
+    },
 }
 
 /// Core 请求结构

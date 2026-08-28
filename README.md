@@ -1,32 +1,23 @@
 # sdd-harness
 
-面向 AI Coding Agent 的规格驱动开发（SDD）工程支架。它用统一 CLI 管理需求澄清、设计、任务拆解、构建、验证、审查和归档，并通过状态机、Git 变更事实、安全边界与质量门禁约束 Agent。
+面向 Codex 与 Oh My Pi（OMP）的轻量规格驱动开发工具。`sdd` Core 只负责确定性状态、Schema、文件范围、证据和质量门禁；宿主 Agent 基于真实代码生成规格、设计、计划并执行任务。
 
-## 核心能力
+## 设计原则
 
-- CLI-first：`sdd` 是唯一确定性入口，Core 是唯一状态与门禁执行层。
-- Agent 原生接入：默认生成 Codex 仓库级 Skill 与专用 subagent，另保留 OMP 的原生命令与角色配置。
-- 规格与 TDD：Requirement/Scenario 规格模型驱动 RED、GREEN、REFACTOR、VERIFY 任务链。
-- 代码库理解：自动探测并索引 CodeGraph 知识图谱，按 intent 查询；不可用时显式降级到受限文件扫描。
-- 安全可追溯：受管文件原子写入且拒绝符号链接，严格校验路径、命令、Git delta、TDD 证据和敏感信息。
-- 最小正确实现：按复用、标准库、平台能力和既有依赖的顺序决策；未计划新增依赖会阻断审查。
-- 精简制品：活动需求只保留人工审核的 `spec.md`、可选 `proposal.md`、`design.md`、`plan.md`、`tasks.md` 与质量报告，机器状态写入统一 runtime；归档后整合为一个 `archive.md`。
-
-## 环境要求
-
-- 预编译二进制运行不需要 Rust；从源码构建才需要 Rust 工具链（cargo，edition 2021）
-- Git
-- CodeGraph CLI（可选；`sdd codebase doctor` 可诊断，缺失时自动降级文件扫描）
-  - CodeGraph 是 npm CLI，需要 Node.js；`sdd` 预编译二进制本身不依赖 Node.js。
-- Codex（默认；`sdd init` 写入 `.agents/skills` 和 `.codex/agents`）
-- Oh My Pi（OMP；宿主初始化时写入项目级 Skill、精简 slash 命令集、subagent profiles 和角色模型配置）
-- macOS、Windows（Git Bash）或 Linux
+- 所有软件变更都有规格，但文档深度和任务数量按复杂度调整。
+- 只有一条逐阶段流程：`new → design → plan → build → verify → archive`。
+- 不提供 `auto`，不单独提供 `review`；验证与审查合并在 `verify`。
+- 不依赖 Superpowers、OpenSpec 或 mattpocock-skills，只吸收“先明确需求、再设计、再计划、证据后完成”的理念。
+- 同一项目可同时维护多个 change。阶段命令未指定 change 且只有一个活动任务时可继续；存在多个活动任务时返回 `E_CHANGE_SELECTION_REQUIRED`，宿主必须询问用户，绝不猜测最近任务。
+- 规格、设计和计划由宿主 Agent 生成；Core 校验结构、拒绝占位内容、渲染 Markdown 并持久化。
+- 一个 build 任务是可独立验收的纵向切片，测试、实现、重构和最终验证是任务内部步骤，不拆成四个流程任务。
+- `verify` 失败时最多自动派发一轮受控修复；仍失败则停止，只有用户明确授权才能 `--continue`。
 
 ## 安装
 
 ### 预编译二进制（推荐）
 
-从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载对应平台的 `sdd` 二进制并放入 PATH：
+从 [GitHub Releases](https://github.com/liuyi-it/sdd-harness/releases/latest) 下载对应文件并放入 PATH：
 
 | 平台 | 文件 |
 | --- | --- |
@@ -36,18 +27,19 @@
 | macOS Apple Silicon | `sdd-macos-arm64` |
 | Windows x64 | `sdd-windows-x64.exe` |
 
-macOS 示例：
+macOS Apple Silicon 示例：
 
 ```bash
 install_dir="$HOME/.local/bin"
 mkdir -p "$install_dir"
-curl -fL -o "$install_dir/sdd" https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-macos-arm64
+curl -fL -o "$install_dir/sdd" \
+  https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-macos-arm64
 chmod +x "$install_dir/sdd"
 export PATH="$install_dir:$PATH"
 sdd --version
 ```
 
-### 从源码安装
+从源码安装需要 Rust：
 
 ```bash
 git clone https://github.com/liuyi-it/sdd-harness.git
@@ -55,146 +47,137 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-安装脚本会先备份已有的全局 `sdd`，再通过 `cargo build --release` 构建并注册全局命令 `sdd`。安装完成时会显示实际命令位置并验证其可运行；若 `PREFIX` 不在 PATH 中会给出提示。安装失败时恢复原版本。项目通过 GitHub Releases 分发预编译二进制，不发布到 crates.io。
+卸载 CLI：`bash scripts/uninstall.sh`。卸载不会删除业务项目的 `.sdd/`。
 
-卸载：
+## 初始化与宿主资产
 
-```bash
-bash scripts/uninstall.sh
-```
-
-卸载脚本会移除全局 CLI 与构建产物。业务项目中的 `.sdd/` 保存用户规格、任务和归档，不属于安装残留，不会自动删除。
-
-## 快速开始
-
-在需要管理的项目根目录执行：
+在业务项目根目录执行：
 
 ```bash
 sdd init
-sdd auto "实现订单取消功能"
 ```
 
-在 Codex 中可用 `$sdd-harness` 显式启用，也可直接描述软件任务让 Skill 自动匹配；主 Agent 会把只读调用链探索交给 `sdd-explorer`，按复杂度把单个 build 任务交给 `sdd-worker` 或 `sdd-worker-complex`，将高风险架构与并发问题交给 `sdd-architect`，再用 `sdd-reviewer` 独立复核。OMP 中仍可直接描述需求静默触发，或使用 `/sdd 需求` 显式调用。
+终端直接执行时默认安装 Codex 资产。Codex 会得到 `.agents/skills/sdd-harness` 编排 Skill，以及每个命令独立的 Skill：
 
-也可以逐阶段推进：
-
-```bash
-sdd new "实现订单取消功能"
-sdd design
-sdd plan
-sdd build next --json
-sdd verify
-sdd review
-sdd archive
+```text
+sdd-init  sdd-status  sdd-new  sdd-change  sdd-design
+sdd-plan  sdd-build   sdd-verify  sdd-archive  sdd-codebase
 ```
 
-`sdd auto` 在需要 Agent 编码或用户澄清时暂停，不会绕过交互边界自动修改代码。
+OMP 宿主使用内部参数 `sdd init --host-adapter omp`，安装同一组 11 个 Skill，并注册 `/sdd` 和所有 `/sdd.<command>`。用户无需在初始化时交互选择宿主；宿主适配器负责传入自身标识。
 
-首次调用 `sdd new` 或 `sdd auto` 必须携带非空需求；没有需求时，Agent 应先询问用户。不要默认添加 `--non-interactive`，它仅适用于允许需求不完整时直接失败的无人值守流程。若命令进入澄清状态，收集用户回答后使用 `sdd new --answers '<JSON answers>' --json` 继续。
+初始化同时探测 CodeGraph。CodeGraph 可用时建立或复用 `.codegraph/` 索引；不可用时显式降级为受限文件扫描。预编译 `sdd` 本身不依赖 Node.js 或 Rust。
 
-## Agent 构建协议
+## 使用
+
+推荐在 Codex 或 OMP 中直接描述软件需求，由安装的 Skill 逐阶段执行。手工查看流程时可运行：
 
 ```bash
-# 获取下一个任务及其按需生成的 Context Pack
-sdd build next --json
+sdd new "实现订单取消功能" --json
+# 宿主根据 actionRequired 生成规格 JSON 并回传
+sdd design --change <change-id> --json
+sdd plan --change <change-id> --json
+sdd build next --change <change-id> --json
+sdd verify --change <change-id> --json
+sdd archive --change <change-id> --json
+```
 
-# Agent 完成编码后以内联 JSON 提交 TaskExecutionResult
+`new`、`change`、`design`、`plan` 返回 `AGENT_PHASE_EXECUTION`，其中包含阶段上下文和 resultSchema。宿主完成调查或必要提问后，用同一命令的 `--result-json` 回传。
+
+`build next` 返回 `AGENT_TASK_EXECUTION`。宿主只能修改 `allowedFiles`，执行全部 `verification`，然后提交：
+
+```bash
 sdd build complete \
-  --task TASK-001-RED \
+  --change <change-id> \
+  --task TASK-001 \
   --result-json '<TaskExecutionResult JSON>' \
   --json
 ```
 
-Core 会验证任务状态、允许/禁止文件、实际 Git delta、TDD evidence、verification 是否不重不漏、用户可见结果、验收条件和测试接缝；内联任务结果上限为 4 MiB。Agent 不应直接修改 `.sdd/runtime.json`。
+`verify` 统一执行规格/场景覆盖、任务证据、Git 实际范围、敏感信息和依赖计划检查。若返回 `AGENT_FIX_EXECUTION`，宿主修复并以 `sdd verify --result-json` 回传；首轮后仍失败时必须询问用户。
 
-## 工作流程
+## 多任务选择
 
-```text
-NOT_INITIALIZED → INITIALIZING → INDEX_READY → NEW_STARTED → [CLARIFYING]
-→ SPEC_READY → DESIGN_READY → PLAN_READY → BUILD_WAITING_AGENT
-↔ BUILD_READY → VERIFY_READY → REVIEW_READY → ARCHIVED
+```bash
+sdd status --json
 ```
 
-主要命令：
+`status` 的 `activeChanges` 会列出所有未归档任务。读取状态不需要选择；`codebase` 也是项目级命令。其他阶段命令在多个活动任务下必须显式传入 `--change <id>`。宿主 Skill 需要先把候选任务的标题和阶段转换为简短中文，再询问用户选择。
 
-| 命令                      | 作用                                        |
-| ------------------------- | ------------------------------------------- |
-| `sdd init`                | 默认接入 Codex，初始化 `.sdd`、代码库索引和接入文件 |
-| `sdd status`              | 查看当前阶段、错误和下一步建议              |
-| `sdd new <需求>`          | 澄清需求并生成规格                          |
-| `sdd change <id> <需求>`  | 修订当前需求并清除旧的派生设计与计划        |
-| `sdd design`              | 生成技术设计                                |
-| `sdd plan`                | 生成任务、测试计划和上下文摘要              |
-| `sdd build next/complete` | 获取任务或提交 Agent 结果                   |
-| `sdd verify`              | 验证规格、任务和证据覆盖                    |
-| `sdd review`              | 审查范围、安全、依赖计划、改动规模与债务    |
-| `sdd archive`             | 校验并压缩归档，保留简洁性与来源追踪        |
-| `sdd auto <需求>`         | 按状态机自动推进流程                        |
-| `sdd codebase ...`        | 查看、诊断、查询或重建代码库索引            |
+## 状态与制品
 
-完整参数见 [CLI 命令参考](docs/cli-reference.md)。
+```text
+INDEX_READY
+  └─ SPEC_WAITING_AGENT → SPEC_READY
+       → DESIGN_WAITING_AGENT → DESIGN_READY
+       → PLAN_WAITING_AGENT → PLAN_READY
+       → BUILD_WAITING_AGENT ↔ PLAN_READY → BUILD_READY
+       → QUALITY_WAITING_FIX | QUALITY_BLOCKED | QUALITY_READY
+       → ARCHIVED
+```
 
-## 代码库理解与降级
-
-`sdd init` 时自动探测 PATH 中的 `codegraph` 命令并索引 `.codegraph/`。所有 intent 都通过 CodeGraph 查询：
-
-| intent | 主路由 | 兜底 |
-| ------ | ------ | ---- |
-| 全部 intent | CodeGraph | 文件扫描 |
-
-CodeGraph 不可用、未建立真实索引或返回空/非法文本时，Core 使用 `fallback-file-scan` 受限文件扫描，同时写入诊断并返回 warning；查询不会在索引缺失时启动外部进程，索引成功还要通过目录后置条件。降级不会被静默隐藏。诊断与路由状态可用 `sdd codebase status` / `sdd codebase doctor` 查看。
-
-## 制品结构
-
-`.sdd/` 只保留统一机器事实源和人工审核文档：
+每个 change 都有独立 workflow、run、任务状态和质量修复轮次。项目级 state 只保存初始化与代码库索引信息。
 
 ```text
 .sdd/
-├── runtime.json       # 状态、配置、制品、规格、计划、报告、结果、loop、索引和归档
-├── runtime.json.bak   # runtime 崩溃恢复备份（不是需求修订历史）
-├── runtime.json.sha256 # runtime 损坏检测校验和
-├── runtime.json.bak.sha256 # 备份的校验和
+├── runtime.json
+├── runtime.json.sha256
+├── runtime.json.bak
+├── runtime.json.bak.sha256
 └── changes/<change-id>/
     ├── spec.md
-    ├── proposal.md    # sdd change 后保留
     ├── design.md
     ├── plan.md
     ├── tasks.md
-    ├── verify-report.md
-    ├── review-report.md
-    └── archive.md     # archive 后仅保留
+    ├── quality-report.md
+    └── archive.md       # 归档后仅保留该文件
 ```
 
-首次 `sdd new` 会从需求文本生成可读的需求词组 change ID；同名变更在已有目录后追加序号。英文词组使用 kebab-case，中文词组保留原文可读性。`sdd change` 直接更新当前 `spec.md`/`proposal.md`，不生成需求级备份或修订目录，Git 是历史来源；位置 change ID 与全局 `--change` 不得同时出现。`build next` 先验证全部 Context Pack 引用制品，再返回内联内容；`build complete --result-json` 以内联 JSON 提交任务结果，不生成结果文件路径。
+v0.6 不迁移旧 `.sdd`。检测到旧 runtime schema 时会直接返回 `E_STATE_VERSION_UNSUPPORTED`；请先备份并删除旧 `.sdd`，再重新执行 `sdd init`。
+
+## 命令
+
+| 命令 | 作用 |
+| --- | --- |
+| `sdd init` | 初始化 runtime、代码库索引和宿主资产 |
+| `sdd status` | 查看项目状态和所有活动任务 |
+| `sdd new <需求>` | 创建 change 并进入规格生成 |
+| `sdd change <新需求> --change <id>` | 修订需求并作废派生制品 |
+| `sdd design` | 生成技术设计 |
+| `sdd plan` | 生成纵向任务计划 |
+| `sdd build next/complete` | 派发任务或提交证据 |
+| `sdd verify` | 统一验证、审查和受控修复 |
+| `sdd archive` | 归档已通过质量门禁的 change |
+| `sdd codebase ...` | 管理或查询代码库上下文 |
+
+完整参数见 [CLI 命令参考](docs/cli-reference.md)。
 
 ## 项目结构
 
-| 路径                          | 职责                              |
-| ----------------------------- | --------------------------------- |
-| `crates/sdd-cli`              | 参数解析和命令路由（bin: sdd）    |
-| `crates/sdd-core`             | 状态机、制品、Git、安全与质量门禁 |
-| `crates/sdd-core/src/knowledge` | CodeGraph 探测、路由与降级 |
-| `assets/adapters/omp` / `codex` | OMP / Codex 的原生 Skill、命令和 subagent 模板（编译期嵌入） |
-| `assets/policies`             | 构建阶段按需下发的受控 Policy |
-| `schemas`                     | Runtime、状态、规格、任务和报告的 JSON Schema |
-| `docs`                        | 当前架构、CLI、状态机、安全与接入文档 |
-| `fixtures`                    | 测试样例项目                       |
+| 路径 | 职责 |
+| --- | --- |
+| `crates/sdd-cli` | CLI 参数与输出 |
+| `crates/sdd-core` | 多 change 状态机、Schema、制品、Git 与质量门禁 |
+| `assets/adapters/codex` | Codex 编排及全命令 Skill |
+| `assets/adapters/omp` | OMP 编排、全命令 Skill 与 slash 命令 |
+| `assets/policies` | build 阶段下发的受控 Policy |
+| `schemas` | runtime、阶段结果、任务、修复和报告 Schema |
+| `docs` | 架构、CLI、状态机、安全、Schema 与宿主接入 |
 
 ## 文档
 
 - [CLI 命令参考](docs/cli-reference.md)
-- [架构说明](docs/architecture.md)
+- [架构](docs/architecture.md)
 - [状态机](docs/state-machine.md)
-- [安全策略](docs/security.md)
+- [安全](docs/security.md)
 - [Schema](docs/schemas.md)
 - [Agent 接入](docs/adapters.md)
 - [AI Agent 自举安装](docs/agent-install.md)
-- [第三方来源声明](THIRD_PARTY_NOTICES.md)
+- [第三方工具声明](THIRD_PARTY_NOTICES.md)
 
-## 开发与验证
+## 开发验证
 
 ```bash
-cargo build --workspace
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace

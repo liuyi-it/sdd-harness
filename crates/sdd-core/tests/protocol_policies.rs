@@ -11,14 +11,14 @@ fn invalid_task_result_rejected() {
     let err = validate_task_result(&raw).unwrap_err();
     assert_eq!(err.code, "E_TDD_EVIDENCE_REQUIRED");
     // status 非法
-    let raw = json!({ "taskId": "TASK-001-RED", "status": "done" });
+    let raw = json!({ "taskId": "TASK-001", "status": "done" });
     assert!(validate_task_result(&raw).is_err());
 }
 
 #[test]
 fn valid_task_result_accepted() {
     let raw = json!({
-        "taskId": "TASK-001-RED",
+        "taskId": "TASK-001",
         "status": "completed",
         "evidence": [
             { "type": "command-run", "command": "cargo test", "output": "FAIL",
@@ -30,7 +30,7 @@ fn valid_task_result_accepted() {
         "filesChanged": ["src/lib.rs"]
     });
     let result = validate_task_result(&raw).unwrap();
-    assert_eq!(result.task_id, "TASK-001-RED");
+    assert_eq!(result.task_id, "TASK-001");
     assert_eq!(result.evidence.len(), 1);
     assert_eq!(result.verification[0].args, vec!["--workspace"]);
     assert!(result.verification[0].passed);

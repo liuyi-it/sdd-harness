@@ -12,8 +12,8 @@ use regex::Regex;
 
 use crate::error::SddError;
 
-/// 已注册的 8 个 schema（内嵌编译期内容）
-pub const SCHEMAS: [(&str, &str); 8] = [
+/// 已注册的 schema（内嵌编译期内容）
+pub const SCHEMAS: [(&str, &str); 12] = [
     (
         "state",
         include_str!("../../../../schemas/state.schema.json"),
@@ -22,6 +22,10 @@ pub const SCHEMAS: [(&str, &str); 8] = [
     (
         "task-result",
         include_str!("../../../../schemas/task-result.schema.json"),
+    ),
+    (
+        "fix-result",
+        include_str!("../../../../schemas/fix-result.schema.json"),
     ),
     (
         "report",
@@ -40,6 +44,18 @@ pub const SCHEMAS: [(&str, &str); 8] = [
         include_str!("../../../../schemas/config.schema.json"),
     ),
     ("spec", include_str!("../../../../schemas/spec.schema.json")),
+    (
+        "spec-result",
+        include_str!("../../../../schemas/spec-result.schema.json"),
+    ),
+    (
+        "design-result",
+        include_str!("../../../../schemas/design-result.schema.json"),
+    ),
+    (
+        "plan-result",
+        include_str!("../../../../schemas/plan-result.schema.json"),
+    ),
 ];
 
 fn parsed_schemas() -> &'static [serde_json::Value; SCHEMAS.len()] {
@@ -67,6 +83,14 @@ pub fn validate_json(name: &str, doc: &serde_json::Value) -> Result<(), SddError
         )),
         None => Ok(()),
     }
+}
+
+pub fn schema_source(name: &str) -> Result<&'static str, SddError> {
+    SCHEMAS
+        .iter()
+        .find(|(candidate, _)| *candidate == name)
+        .map(|(_, source)| *source)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", &format!("未知 schema：{name}")))
 }
 
 /// 解析同文档根内引用（如 "#/properties/foo"）；不支持外部文档引用。

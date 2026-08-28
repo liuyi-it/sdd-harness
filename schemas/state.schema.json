@@ -1,24 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sdd-harness.dev/schemas/state.schema.json",
-  "title": "SDD 状态事实源",
+  "title": "SDD 项目状态",
   "type": "object",
   "required": [
-    "schemaVersion", "version", "updatedAt", "initialized", "currentChangeId",
-    "currentRunId", "currentPhase", "indexStatus", "codebaseProvider", "degraded",
-    "degradedReason", "lastCommand", "previousPhase", "inProgressPhase",
-    "failedCommand", "failedReason", "suggestedCommand", "tasks"
+    "schemaVersion", "version", "updatedAt", "initialized", "currentPhase",
+    "indexStatus", "codebaseProvider", "degraded", "degradedReason", "lastCommand"
   ],
   "properties": {
-    "schemaVersion": { "type": "integer", "enum": [3] },
+    "schemaVersion": { "type": "integer", "enum": [4] },
     "version": { "type": "integer", "minimum": 1 },
     "updatedAt": { "type": "string", "minLength": 1 },
     "initialized": { "type": "boolean" },
-    "currentChangeId": { "type": ["string", "null"] },
-    "currentRunId": { "type": ["string", "null"] },
     "currentPhase": {
       "type": "string",
-      "enum": ["NOT_INITIALIZED", "INITIALIZING", "INDEX_READY", "NEW_STARTED", "CLARIFYING", "SPEC_READY", "DESIGN_READY", "PLAN_READY", "BUILD_WAITING_AGENT", "BUILD_READY", "VERIFY_READY", "REVIEW_READY", "ARCHIVED", "PAUSED"]
+      "enum": ["NOT_INITIALIZED", "INITIALIZING", "INDEX_READY"]
     },
     "indexStatus": {
       "type": "string",
@@ -30,137 +26,7 @@
     },
     "degraded": { "type": "boolean" },
     "degradedReason": { "type": ["string", "null"] },
-    "lastCommand": { "type": ["string", "null"] },
-    "previousPhase": { "type": ["string", "null"] },
-    "inProgressPhase": { "type": ["string", "null"] },
-    "failedCommand": { "type": ["string", "null"] },
-    "failedReason": { "type": ["string", "null"] },
-    "suggestedCommand": { "type": ["string", "null"] },
-    "activeLoop": {
-      "type": "object",
-      "required": ["loopId", "runId", "status", "waiting"],
-      "properties": {
-        "loopId": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
-        "runId": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
-        "status": {
-          "type": "string",
-          "enum": ["RUNNING", "PAUSED", "WAITING_AGENT", "SUCCEEDED", "FAILED", "ABORTED"]
-        },
-        "waiting": {
-          "type": ["object", "null"],
-          "required": ["reason", "since"],
-          "properties": {
-            "reason": { "type": "string", "minLength": 1 },
-            "since": { "type": "string", "minLength": 1 }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "pendingAgentTask": {
-      "type": "object",
-      "required": ["taskId", "since", "gitBaseline"],
-      "properties": {
-        "taskId": {
-          "type": "string",
-          "pattern": "^TASK-[0-9]{3}-(RED|GREEN|REFACTOR|VERIFY)$"
-        },
-        "since": { "type": "string", "minLength": 1 },
-        "gitBaseline": {
-          "oneOf": [
-            {
-              "type": "object",
-              "required": ["available"],
-              "properties": { "available": { "const": false } },
-              "additionalProperties": false
-            },
-            {
-              "type": "object",
-              "required": ["available", "head", "changedFiles", "changedFileHashes"],
-              "properties": {
-                "available": { "const": true },
-                "head": {
-                  "type": "string",
-                  "pattern": "^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$"
-                },
-                "changedFiles": {
-                  "type": "array",
-                  "uniqueItems": true,
-                  "items": { "type": "string", "minLength": 1 }
-                },
-                "changedFileHashes": {
-                  "type": "object",
-                  "additionalProperties": {
-                    "oneOf": [
-                      { "type": "null" },
-                      { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" }
-                    ]
-                  }
-                }
-              },
-              "additionalProperties": false
-            }
-          ]
-        }
-      },
-      "additionalProperties": false
-    },
-    "workspace": {
-      "type": "object",
-      "required": [
-        "branchName", "worktreePath", "baselineCommit", "baselineChangedFiles",
-        "baselineFileHashes", "baselineCargoManifest"
-      ],
-      "properties": {
-        "branchName": { "type": ["string", "null"], "minLength": 1 },
-        "worktreePath": { "type": ["string", "null"], "minLength": 1 },
-        "baselineCommit": {
-          "type": "string",
-          "pattern": "^([0-9A-Fa-f]{40}|[0-9A-Fa-f]{64})$"
-        },
-        "baselineChangedFiles": {
-          "type": "array",
-          "uniqueItems": true,
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "baselineFileHashes": {
-          "type": "object",
-          "additionalProperties": {
-            "oneOf": [
-              { "type": "null" },
-              { "type": "string", "pattern": "^[0-9A-Fa-f]{64}$" }
-            ]
-          }
-        },
-        "baselineCargoManifest": { "type": ["string", "null"] }
-      },
-      "oneOf": [
-        {
-          "properties": {
-            "branchName": { "type": "null" },
-            "worktreePath": { "type": "null" }
-          }
-        },
-        {
-          "properties": {
-            "branchName": { "type": "string", "minLength": 1 },
-            "worktreePath": { "type": "string", "minLength": 1 }
-          }
-        }
-      ],
-      "additionalProperties": false
-    },
-    "tasks": {
-      "type": "object",
-      "propertyNames": {
-        "pattern": "^TASK-[0-9]{3}-(RED|GREEN|REFACTOR|VERIFY)$"
-      },
-      "additionalProperties": {
-        "type": "string",
-        "enum": ["PENDING", "BUILDING", "DONE", "FAILED"]
-      }
-    }
+    "lastCommand": { "type": ["string", "null"] }
   },
   "additionalProperties": false
 }

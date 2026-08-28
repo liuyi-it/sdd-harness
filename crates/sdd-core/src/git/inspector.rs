@@ -169,7 +169,7 @@ impl GitInspector {
             }
             ResolvedRepoEntry::File(path) => {
                 let maximum_u64 = u64::try_from(maximum)
-                    .map_err(|_| SddError::new("E_REVIEW_FAILED", "审计读取上限超出 u64 范围"))?;
+                    .map_err(|_| SddError::new("E_QUALITY_FAILED", "审计读取上限超出 u64 范围"))?;
                 if std::fs::metadata(&path)
                     .map_err(|error| read_entry_error(relative, error))?
                     .len()
@@ -179,7 +179,7 @@ impl GitInspector {
                 }
                 let read_limit = maximum_u64
                     .checked_add(1)
-                    .ok_or_else(|| SddError::new("E_REVIEW_FAILED", "审计读取上限溢出"))?;
+                    .ok_or_else(|| SddError::new("E_QUALITY_FAILED", "审计读取上限溢出"))?;
                 let mut content = Vec::new();
                 let bytes = std::fs::File::open(&path)
                     .map_err(|error| read_entry_error(relative, error))?
@@ -308,7 +308,7 @@ fn resolve_repo_path(root: &Path, normalized: &str, original: &str) -> Result<Pa
 
 fn read_entry_error(relative: &str, error: std::io::Error) -> SddError {
     SddError::new(
-        "E_REVIEW_FAILED",
+        "E_QUALITY_FAILED",
         &format!("读取 Git 变更文件 {relative} 失败：{error}"),
     )
 }
