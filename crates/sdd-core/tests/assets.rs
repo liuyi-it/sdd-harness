@@ -113,30 +113,28 @@ fn omp_commands_route_without_deleted_skill_references() {
 }
 
 #[test]
-fn spec_skills_require_interactive_clarification_before_writing_spec() {
+fn spec_skill_is_installed_and_refreshed_from_the_current_template() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for path in [
-        "assets/adapters/codex/skills/sdd-spec/SKILL.md",
-        "assets/adapters/omp/skills/sdd-spec/SKILL.md",
+    for (adapter, source, target) in [
+        (
+            HostAdapter::Codex,
+            "assets/adapters/codex/skills/sdd-spec/SKILL.md",
+            ".agents/skills/sdd-spec/SKILL.md",
+        ),
+        (
+            HostAdapter::Omp,
+            "assets/adapters/omp/skills/sdd-spec/SKILL.md",
+            ".omp/skills/sdd-spec/SKILL.md",
+        ),
     ] {
-        let source = std::fs::read_to_string(root.join(path)).unwrap();
-        assert!(
-            source.contains("交互式选择控件"),
-            "{path} 必须要求交互式澄清"
-        );
-        assert!(
-            source.contains("不得提交 spec result"),
-            "{path} 不得在澄清完成前写入规格"
-        );
-        assert!(source.contains("已有回答和授权"), "{path} 应复用已知决策");
-        assert!(
-            source.contains("已明确的决策不重复提问"),
-            "{path} 不应机械提问"
-        );
-        assert!(source.contains("尚未初始化"), "{path} 应引导首次使用");
-        assert!(
-            source.contains("继续 sdd-plan、sdd-build、sdd-verify、sdd-archive"),
-            "{path} 应持续完成完整实现请求"
-        );
+        let expected = std::fs::read_to_string(root.join(source)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let installed = dir.path().join(target);
+        init(&dir, adapter);
+        assert_eq!(std::fs::read_to_string(&installed).unwrap(), expected);
+
+        std::fs::write(&installed, "# 旧规格模板\n").unwrap();
+        init(&dir, adapter);
+        assert_eq!(std::fs::read_to_string(&installed).unwrap(), expected);
     }
 }

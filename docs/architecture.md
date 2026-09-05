@@ -49,9 +49,13 @@ init → spec → plan → build → verify → archive
 
 ## 持久化与并发
 
-所有写命令先获取 `.sdd/lock`。同一线程嵌套事务复用 OS 文件锁，进程间仍保持排他。Runtime 使用临时文件原子替换，并维护主文件/备份各自的 SHA-256。主文件损坏时只接受通过自身校验和的备份。
+所有写命令先获取稳定的 `.sdd/lock`。同一线程嵌套事务复用 OS 文件锁，线程与进程间保持排他，最后一个 guard 或进程退出时释放。锁不随 Runtime 原子替换而变化，不记录持有者文件；冲突只提示其他写操作占用，不能靠删除锁文件抢占。
 
-当前版本使用 runtime schema 7、state schema 4、config schema 4，不执行旧状态迁移。版本不符在读取最前端返回 `E_STATE_VERSION_UNSUPPORTED`，避免把旧文件误判为可恢复损坏。
+Runtime 的存储 JSON 根包含 `checksum`，它覆盖移除自身字段后的 JSON 值的确定性紧凑序列化字节，对象键按序排列。读取先检查格式版本与 Schema，再验证 checksum，最后校验领域不变量；纯排版与对象键顺序变化不影响校验。Core 的 `RuntimeDocument` 不携带存储校验字段，避免业务更新持有陈旧校验。
+
+每次事务将状态与校验和写入同目录唯一临时文件，同步后一次原子替换并同步目录。正常初始化或重复初始化只持久化 `runtime.json` 与 `lock`，不生成备份、独立校验或诊断文件。状态损坏直接报错，不读取旧快照；这保留原子提交和损坏检测，不提供自动恢复。需求阶段的可读文档仍按需写入 `changes/`。
+
+当前版本使用 runtime schema 8、state schema 4、config schema 4，不执行旧状态迁移。版本不符在读取校验内容前返回 `E_STATE_VERSION_UNSUPPORTED`，原文件不被覆盖或清理。
 
 ## 代码库上下文
 

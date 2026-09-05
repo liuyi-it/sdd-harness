@@ -290,7 +290,7 @@ fn old_runtime_version_is_rejected_without_migration() {
     let dir = tempfile::tempdir().unwrap();
     let sdd = dir.path().join(".sdd");
     std::fs::create_dir(&sdd).unwrap();
-    let raw = "{\"schemaVersion\":6}";
+    let raw = "{\"schemaVersion\":7}";
     std::fs::write(sdd.join("runtime.json"), raw).unwrap();
     std::fs::write(
         sdd.join("runtime.json.sha256"),
@@ -301,6 +301,10 @@ fn old_runtime_version_is_rejected_without_migration() {
         .read()
         .unwrap_err();
     assert_eq!(error.code, "E_STATE_VERSION_UNSUPPORTED");
+    assert_eq!(
+        std::fs::read_to_string(sdd.join("runtime.json")).unwrap(),
+        raw
+    );
 }
 
 #[test]

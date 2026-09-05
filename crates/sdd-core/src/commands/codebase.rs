@@ -45,8 +45,6 @@ pub fn run_codebase(
     let _guard = if writes_index {
         Some(crate::state::file_lock::lock_initialized_sdd(
             cwd,
-            &format!("sdd codebase {sub}"),
-            None,
             Some(timeout_ms),
         )?)
     } else {

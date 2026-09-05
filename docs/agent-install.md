@@ -95,7 +95,9 @@ if ($actual -ne $expected) { throw "SHA-256 校验失败" }
 
 - 升级：重新执行对应平台的下载命令即可覆盖旧版本；Windows 升级前先结束运行中的 `sdd.exe`。
 
-v0.6 不迁移旧项目的 `.sdd`。升级 CLI 后若返回 `E_STATE_VERSION_UNSUPPORTED`，先备份目标项目的 `.sdd`，确认无需保留后删除该目录，再在项目根目录执行 `sdd init`。不要让 Agent 自动删除用户的旧状态。
+当前源码使用 Runtime schema 8：初始化后 `.sdd/` 只有 `runtime.json` 和 `lock`，校验和内嵌，不生成自动备份或独立诊断文件。版本号未必随每次源码变更递增，安装源码版时还应核对构建提交。
+
+不迁移旧项目的 `.sdd`。升级 CLI 后若返回 `E_STATE_VERSION_UNSUPPORTED`，先用匹配版本读取并保留需要的结果，用户确认旧状态无需保留后再删除该目录并执行 `sdd init`。不要让 Agent 自动删除用户的旧状态；也不要只删除旧校验文件或让不同格式的 CLI 交替操作同一目录。
 
 ## 从源码安装（备选）
 

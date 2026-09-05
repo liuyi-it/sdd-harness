@@ -4,7 +4,7 @@
 
 | Schema | 用途 |
 | --- | --- |
-| `runtime.schema.json` | Runtime 根结构，当前 schemaVersion 7 |
+| `runtime.schema.json` | Runtime 存储根结构，当前 schemaVersion 8，包含内嵌 checksum |
 | `state.schema.json` | 项目初始化与索引状态，当前 schemaVersion 4 |
 | `config.schema.json` | 宿主、Git 隔离、Context Pack 和审计限制，当前 schemaVersion 4 |
 | `artifact.schema.json` | 制品类型、路径、输入和内容哈希 |
@@ -23,6 +23,12 @@
 Core 对 result JSON 先做 Schema 校验，再反序列化为强类型，并递归拒绝占位内容。计划还会逐个用 task schema 复验，检查文件范围矛盾、验证命令、依赖环和规格覆盖。
 
 `plan-result.schema.json` 的 tasks 引用同目录 `task.schema.json`；内嵌校验和行动下发时共用展开后的 Schema。宿主拿到的 resultSchema 无需访问外部文件即可获知全部任务字段。构建行动同样附带完整 task-result Schema。
+
+## Runtime 存储校验
+
+存储 JSON 的根字段 `checksum` 必填，为 64 位小写十六进制 SHA-256。计算时移除该字段，再将剩余 JSON 值按对象键排序进行紧凑序列化，对其 UTF-8 字节计算摘要；数组顺序和字符串内容仍参与校验。纯缩进和对象键顺序不影响结果。该字段属于存储层，不加入 Core 的领域 `RuntimeDocument`。
+
+状态与 checksum 一次原子提交，不生成 `.sha256`、`.bak` 或锁诊断文件；损坏时返回错误，不接受备份回退。旧格式在校验内容前按版本拒绝，不自动迁移或删除。宿主依然只能通过 CLI 更新状态，不应自行构造存储校验。
 
 ## 纵向任务
 

@@ -29,7 +29,7 @@ pub fn run_spec(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddErr
     super::validate_args(args, &["timeout", "changeId", "requirement", "resultJson"])?;
     let timeout_ms = super::timeout_ms(args)?;
     let requested = super::string_arg(args, "changeId")?;
-    let _guard = lock_initialized_sdd(cwd, "sdd spec", requested, timeout_ms)?;
+    let _guard = lock_initialized_sdd(cwd, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     super::ensure_initialized(&runtime.state)?;
 

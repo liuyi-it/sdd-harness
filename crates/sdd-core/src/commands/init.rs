@@ -14,7 +14,7 @@ use crate::state::file_lock::lock_sdd;
 pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandResult, SddError> {
     super::validate_args(args, &["timeout", "structurePolicy", "hostAdapter"])?;
     let timeout_ms = super::timeout_ms(args)?;
-    let _guard = lock_sdd(cwd, "sdd init", None, timeout_ms)?;
+    let _guard = lock_sdd(cwd, timeout_ms)?;
     let adapter = requested_adapter(args)?;
     let structure_policy = super::string_arg(args, "structurePolicy")?;
     if structure_policy.is_some_and(|policy| !matches!(policy, "free-design" | "user-defined")) {

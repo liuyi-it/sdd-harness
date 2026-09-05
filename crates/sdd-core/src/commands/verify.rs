@@ -23,8 +23,7 @@ const MAX_RESULT_JSON_BYTES: usize = 4 * 1024 * 1024;
 pub fn run_verify(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddError> {
     super::validate_args(args, &["timeout", "changeId", "continue", "resultJson"])?;
     let timeout_ms = super::timeout_ms(args)?;
-    let requested = super::string_arg(args, "changeId")?;
-    let _guard = lock_initialized_sdd(cwd, "sdd verify", requested, timeout_ms)?;
+    let _guard = lock_initialized_sdd(cwd, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, args)?;
     let workflow = super::workflow(&runtime, &change_id)?;

@@ -14,8 +14,7 @@ use crate::error::SddError;
 use crate::state::state_store::{validate_run_id, ChangeWorkflow, WorkflowState};
 
 pub const RUNTIME_FILE: &str = "runtime.json";
-pub const RUNTIME_CHECKSUM_FILE: &str = "runtime.json.sha256";
-pub const RUNTIME_SCHEMA_VERSION: u32 = 7;
+pub const RUNTIME_SCHEMA_VERSION: u32 = 8;
 const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -67,53 +66,21 @@ impl RuntimeStore {
     }
 
     pub fn read(&self) -> Result<RuntimeDocument, SddError> {
-        self.read_with_source().map(|(document, _)| document)
-    }
-
-    fn read_with_source(&self) -> Result<(RuntimeDocument, bool), SddError> {
         let Some(dir) = crate::state::paths::existing_sdd_dir(&self.root)? else {
-            return Ok((RuntimeDocument::default(), false));
+            return Ok(RuntimeDocument::default());
         };
         let path = dir.join(RUNTIME_FILE);
         crate::safe_fs::reject_symlink(&path, "runtime.json")?;
         if !path.exists() {
-            return Ok((RuntimeDocument::default(), false));
+            return Ok(RuntimeDocument::default());
         }
-        // 主文件或其校验和损坏时仅接受同样通过校验的备份。
-        match self.read_path(&path) {
-            Ok(document) => Ok((document, true)),
-            Err(error) if error.code == "E_STATE_VERSION_UNSUPPORTED" => Err(error),
-            Err(primary_error) => {
-                let backup = dir.join("runtime.json.bak");
-                crate::safe_fs::reject_symlink(&backup, "runtime 备份")?;
-                if backup.exists() {
-                    match self.read_path(&backup) {
-                        Ok(document) => Ok((document, false)),
-                        Err(backup_error) => Err(SddError::new(
-                            "E_STATE_CORRUPTED",
-                            &format!(
-                                "主 runtime 损坏：{}；备份也不可用：{}",
-                                primary_error.message, backup_error.message
-                            ),
-                        )),
-                    }
-                } else {
-                    Err(primary_error)
-                }
-            }
-        }
-    }
-
-    fn read_path(&self, path: &Path) -> Result<RuntimeDocument, SddError> {
-        crate::safe_fs::reject_symlink(path, "runtime 数据文件")?;
-        let raw = fs::read_to_string(path).map_err(|error| {
+        let raw = fs::read_to_string(&path).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("读取 runtime.json 失败：{error}"),
             )
         })?;
-        self.verify_checksum(path, &raw)?;
-        let value: Value = serde_json::from_str(&raw).map_err(|error| {
+        let mut value: Value = serde_json::from_str(&raw).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("runtime.json 解析失败：{error}"),
@@ -132,6 +99,22 @@ impl RuntimeStore {
             ));
         }
         crate::schema::validate_json("runtime", &value)?;
+        let expected = value
+            .as_object_mut()
+            .expect("runtime Schema 已确认根对象")
+            .remove("checksum")
+            .expect("runtime Schema 已确认 checksum");
+        // JSON 对象按键排序后紧凑序列化；排版不参与校验，checksum 不校验自身。
+        let payload = serde_json::to_vec(&value).expect("JSON 值必须可序列化");
+        if !crate::state::checksum::verify(
+            &payload,
+            expected.as_str().expect("checksum 必须是字符串"),
+        ) {
+            return Err(SddError::new(
+                "E_STATE_CORRUPTED",
+                "runtime.json 内嵌校验和不匹配，状态可能已损坏；已停止读取，不自动回退",
+            ));
+        }
         let document: RuntimeDocument = serde_json::from_value(value).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
@@ -142,37 +125,17 @@ impl RuntimeStore {
         Ok(document)
     }
 
-    fn verify_checksum(&self, path: &Path, raw: &str) -> Result<(), SddError> {
-        let sidecar = checksum_path(path);
-        crate::safe_fs::reject_symlink(&sidecar, "runtime 校验和")?;
-        let expected = fs::read_to_string(&sidecar).map_err(|error| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("读取 runtime 校验和失败：{error}"),
-            )
-        })?;
-        if !crate::state::checksum::verify(raw.as_bytes(), &expected) {
-            return Err(SddError::new(
-                "E_STATE_CORRUPTED",
-                "runtime.json 与校验和不一致（文件可能已损坏）",
-            ));
-        }
-        Ok(())
-    }
-
-    fn write_document(
-        &self,
-        document: &RuntimeDocument,
-        primary_verified: bool,
-    ) -> Result<(), SddError> {
+    fn write_document(&self, document: &RuntimeDocument) -> Result<(), SddError> {
         validate_document(document, &self.root)?;
         let dir = crate::state::paths::ensure_sdd_dir(&self.root)?;
-        let value = serde_json::to_value(document).map_err(|error| {
+        let mut value = serde_json::to_value(document).map_err(|error| {
             SddError::new(
                 "E_STATE_CORRUPTED",
                 &format!("序列化 runtime.json 失败：{error}"),
             )
         })?;
+        let payload = serde_json::to_vec(&value).expect("JSON 值必须可序列化");
+        value["checksum"] = Value::String(crate::state::checksum::compute(&payload));
         crate::schema::validate_json("runtime", &value)?;
         let content = serde_json::to_string_pretty(&value).map_err(|error| {
             SddError::new(
@@ -181,35 +144,8 @@ impl RuntimeStore {
             )
         })?;
         let path = dir.join(RUNTIME_FILE);
-        crate::safe_fs::reject_symlink(&path, "runtime.json")?;
-        if path.exists() && (primary_verified || self.read_path(&path).is_ok()) {
-            self.backup_current(&path, &dir)?;
-        }
-        crate::safe_fs::atomic_write(&path, content.as_bytes(), "runtime.json")?;
-        write_checksum_sidecar(&path, &content)?;
-        Ok(())
-    }
-
-    fn backup_current(&self, path: &Path, dir: &Path) -> Result<(), SddError> {
-        crate::safe_fs::reject_symlink(path, "待备份 runtime.json")?;
-        let content = fs::read(path).map_err(|error| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("读取待备份 runtime.json 失败：{error}"),
-            )
-        })?;
-        let source_checksum = checksum_path(path);
-        crate::safe_fs::reject_symlink(&source_checksum, "待备份 runtime 校验和")?;
-        let checksum = fs::read(source_checksum).map_err(|error| {
-            SddError::new(
-                "E_STATE_CORRUPTED",
-                &format!("读取待备份 runtime 校验和失败：{error}"),
-            )
-        })?;
-        let backup = dir.join("runtime.json.bak");
-        crate::safe_fs::atomic_write(&backup, &content, "runtime 备份")?;
-        crate::safe_fs::atomic_write(&checksum_path(&backup), &checksum, "runtime 备份校验和")?;
-        Ok(())
+        // 数据和校验和只有一个提交点，不产生上一版快照或校验边车。
+        crate::safe_fs::atomic_write(&path, content.as_bytes(), "runtime.json")
     }
 
     pub fn update<F>(&self, update: F) -> Result<RuntimeDocument, SddError>
@@ -233,11 +169,10 @@ impl RuntimeStore {
                 "项目根目录不是有效 UTF-8，无法写入 JSON 契约",
             )
         })?;
-        let _guard =
-            crate::state::file_lock::lock_sdd(root, "runtime transaction", None, Some(5_000))?;
-        let (mut document, primary_verified) = self.read_with_source()?;
+        let _guard = crate::state::file_lock::lock_sdd(root, Some(5_000))?;
+        let mut document = self.read()?;
         let result = update(&mut document)?;
-        self.write_document(&document, primary_verified)?;
+        self.write_document(&document)?;
         Ok((result, document))
     }
 }
@@ -684,23 +619,4 @@ fn validate_business_run_event(
         ));
     }
     Ok(())
-}
-
-/// 将数据文件的 SHA-256 校验和以 tmp+rename 原子写入边车。
-fn write_checksum_sidecar(path: &Path, content: &str) -> Result<(), SddError> {
-    let checksum = crate::state::checksum::compute(content.as_bytes());
-    let sidecar = checksum_path(path);
-    crate::safe_fs::atomic_write(
-        &sidecar,
-        format!("{checksum}\n").as_bytes(),
-        "runtime 校验和",
-    )
-}
-
-fn checksum_path(path: &Path) -> PathBuf {
-    let name = path
-        .file_name()
-        .expect("runtime 内部路径必须包含文件名")
-        .to_string_lossy();
-    path.with_file_name(format!("{name}.sha256"))
 }

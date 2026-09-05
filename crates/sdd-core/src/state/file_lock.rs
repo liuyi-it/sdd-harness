@@ -1,36 +1,23 @@
 //! 基于操作系统独占锁的 `.sdd` 写锁。
 //!
-//! 锁哨兵只承担 OS 排他锁，旁路 JSON 保存当前持有者的诊断元数据。
-//! 因此进程异常退出会由操作系统自动释放锁，也不需要“过期抢占”或删除锁文件；
-//! 竞争进程在 Windows 上也能读取诊断信息，不受独占字节锁影响。
+//! 锁文件保持稳定，不随 runtime 的原子替换而变化，也不写入持有者诊断文件。
+//! 进程异常退出由操作系统释放锁；文件存在不代表锁仍被占用，不应删除它来抢锁。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
-use std::io::Read;
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 
 use crate::error::SddError;
-use crate::state::state_store::now_iso;
 
 const LOCK_FILE: &str = "lock";
 const RETRY_DELAY_MS: u64 = 50;
-const MAX_LOCK_METADATA_BYTES: u64 = 8 * 1024;
 
 thread_local! {
     /// 同一线程中的组合命令复用持有中的文件描述符，避免内部状态写入产生自竞争。
     /// 表中只存弱引用，不延长文件锁生命周期；其他线程和进程仍由 OS 独占锁阻断。
     static HELD_LOCKS: RefCell<HashMap<PathBuf, Weak<LockHandle>>> = RefCell::new(HashMap::new());
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct LockData {
-    pid: u32,
-    command: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    change_id: Option<String>,
-    created_at: String,
 }
 
 #[derive(Debug)]
@@ -61,32 +48,22 @@ impl Drop for SddLockGuard {
     }
 }
 
-/// 获取写锁。`command` 为当前命令名（如 "sdd init"），`change_id` 可选。
+/// 获取项目写锁。
 /// `timeout_ms` 为 None 时不做等待（立即冲突则报 E_CONCURRENT_RUN）。
-pub fn lock_sdd(
-    cwd: &str,
-    command: &str,
-    change_id: Option<&str>,
-    timeout_ms: Option<u64>,
-) -> Result<SddLockGuard, SddError> {
-    lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms, true)
+pub fn lock_sdd(cwd: &str, timeout_ms: Option<u64>) -> Result<SddLockGuard, SddError> {
+    acquire_sdd_lock(cwd, timeout_ms, true)
 }
 
 /// 获取已初始化项目的写锁；`.sdd` 不存在时直接失败且不创建任何状态目录。
 pub(crate) fn lock_initialized_sdd(
     cwd: &str,
-    command: &str,
-    change_id: Option<&str>,
     timeout_ms: Option<u64>,
 ) -> Result<SddLockGuard, SddError> {
-    lock_named(cwd, LOCK_FILE, command, change_id, timeout_ms, false)
+    acquire_sdd_lock(cwd, timeout_ms, false)
 }
 
-fn lock_named(
+fn acquire_sdd_lock(
     cwd: &str,
-    file_name: &str,
-    command: &str,
-    change_id: Option<&str>,
     timeout_ms: Option<u64>,
     create_sdd: bool,
 ) -> Result<SddLockGuard, SddError> {
@@ -99,10 +76,8 @@ fn lock_named(
                 .with_next("sdd init")
         })?
     };
-    let path = dir.join(file_name);
-    let owner_path = dir.join(format!("{file_name}.owner.json"));
+    let path = dir.join(LOCK_FILE);
     crate::safe_fs::reject_symlink(&path, "SDD 锁文件")?;
-    crate::safe_fs::reject_symlink(&owner_path, "SDD 锁持有者信息")?;
     if let Some(guard) = reentrant_guard(&path) {
         return Ok(guard);
     }
@@ -115,14 +90,15 @@ fn lock_named(
         .transpose()?;
 
     loop {
-        match try_acquire(&path, &owner_path, command, change_id) {
+        match try_acquire(&path) {
             Ok(guard) => return Ok(guard),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 if deadline.is_none() {
-                    return Err(
-                        SddError::new("E_CONCURRENT_RUN", &holder_message(&owner_path))
-                            .with_next("sdd status"),
-                    );
+                    return Err(SddError::new(
+                        "E_CONCURRENT_RUN",
+                        "其他写操作正在运行，请等待其完成",
+                    )
+                    .with_next("sdd status"));
                 }
                 if let Some(at) = deadline {
                     let now = std::time::Instant::now();
@@ -135,7 +111,7 @@ fn lock_named(
                 }
                 return Err(SddError::new(
                     "E_LOCK_TIMEOUT",
-                    &format!("{}，无法在限定时间内获取写锁", holder_message(&owner_path)),
+                    "其他写操作正在运行，无法在限定时间内获取写锁",
                 )
                 .with_next("sdd status"));
             }
@@ -149,12 +125,7 @@ fn lock_named(
     }
 }
 
-fn try_acquire(
-    path: &Path,
-    owner_path: &Path,
-    command: &str,
-    change_id: Option<&str>,
-) -> Result<SddLockGuard, std::io::Error> {
+fn try_acquire(path: &Path) -> Result<SddLockGuard, std::io::Error> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -163,16 +134,6 @@ fn try_acquire(
         .open(path)?;
     file.try_lock()?;
 
-    let owner = LockData {
-        pid: std::process::id(),
-        command: command.to_string(),
-        change_id: change_id.map(str::to_string),
-        created_at: now_iso(),
-    };
-    if let Err(error) = write_lock_data(owner_path, &owner) {
-        drop(file.unlock());
-        return Err(error);
-    }
     let handle = Rc::new(LockHandle { file });
     HELD_LOCKS.with(|locks| {
         locks
@@ -197,51 +158,4 @@ fn reentrant_guard(path: &Path) -> Option<SddLockGuard> {
             _handle: handle,
         })
     })
-}
-
-fn write_lock_data(path: &Path, owner: &LockData) -> Result<(), std::io::Error> {
-    let mut content = serde_json::to_vec(owner)
-        .map_err(|error| std::io::Error::other(format!("序列化锁信息失败：{error}")))?;
-    content.push(b'\n');
-    crate::safe_fs::atomic_write(path, &content, "SDD 锁持有者信息")
-        .map_err(|error| std::io::Error::other(error.message))
-}
-
-fn holder_message(path: &Path) -> String {
-    match read_lock_data(path) {
-        Some(holder) => format!("命令 {} 正在运行（pid {}）", holder.command, holder.pid),
-        None => "其他命令正在运行".to_string(),
-    }
-}
-
-fn read_lock_data(path: &Path) -> Option<LockData> {
-    if fs::symlink_metadata(path).ok()?.file_type().is_symlink() {
-        return None;
-    }
-    let file = File::open(path).ok()?;
-    if file.metadata().ok()?.len() > MAX_LOCK_METADATA_BYTES {
-        return None;
-    }
-    let mut raw = String::new();
-    file.take(MAX_LOCK_METADATA_BYTES + 1)
-        .read_to_string(&mut raw)
-        .ok()?;
-    if u64::try_from(raw.len()).ok()? > MAX_LOCK_METADATA_BYTES {
-        return None;
-    }
-    serde_json::from_str(&raw).ok()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn oversized_lock_metadata_is_ignored() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("lock");
-        fs::write(&path, vec![b'x'; MAX_LOCK_METADATA_BYTES as usize + 1]).unwrap();
-
-        assert!(read_lock_data(&path).is_none());
-    }
 }

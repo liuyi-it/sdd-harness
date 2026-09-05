@@ -66,8 +66,7 @@ pub fn run_build(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddEr
 }
 
 fn next(cwd: &str, args: &Value, timeout_ms: Option<u64>) -> Result<CommandResult, SddError> {
-    let requested = super::string_arg(Some(args), "changeId")?;
-    let _guard = lock_initialized_sdd(cwd, "sdd build next", requested, timeout_ms)?;
+    let _guard = lock_initialized_sdd(cwd, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, Some(args))?;
     let workflow = super::workflow(&runtime, &change_id)?;
@@ -152,8 +151,7 @@ fn complete(
     raw: &str,
     timeout_ms: Option<u64>,
 ) -> Result<CommandResult, SddError> {
-    let requested = super::string_arg(Some(args), "changeId")?;
-    let _guard = lock_initialized_sdd(cwd, "sdd build complete", requested, timeout_ms)?;
+    let _guard = lock_initialized_sdd(cwd, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, Some(args))?;
     let workflow = super::workflow(&runtime, &change_id)?;

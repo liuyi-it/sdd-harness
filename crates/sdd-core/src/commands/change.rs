@@ -10,8 +10,7 @@ use crate::state::state_store::apply_workflow_update;
 pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddError> {
     super::validate_args(args, &["timeout", "changeId", "requirement", "resultJson"])?;
     let timeout_ms = super::timeout_ms(args)?;
-    let requested = super::string_arg(args, "changeId")?;
-    let _guard = lock_initialized_sdd(cwd, "sdd change", requested, timeout_ms)?;
+    let _guard = lock_initialized_sdd(cwd, timeout_ms)?;
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, args)?;
     let workflow = super::workflow(&runtime, &change_id)?;

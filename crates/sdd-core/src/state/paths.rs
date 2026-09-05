@@ -151,18 +151,12 @@ mod tests {
         let cwd = project.path().to_str().unwrap().to_string();
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
         let mut threads = Vec::new();
-        for index in 0..8 {
+        for _ in 0..8 {
             let cwd = cwd.clone();
             let barrier = barrier.clone();
             threads.push(std::thread::spawn(move || {
                 barrier.wait();
-                let _guard = crate::state::file_lock::lock_sdd(
-                    &cwd,
-                    &format!("test-{index}"),
-                    None,
-                    Some(5_000),
-                )
-                .unwrap();
+                let _guard = crate::state::file_lock::lock_sdd(&cwd, Some(5_000)).unwrap();
             }));
         }
 

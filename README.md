@@ -75,7 +75,7 @@ OMP 宿主使用内部参数 `sdd init --host-adapter omp`，安装同一组五�
 
 ```bash
 sdd spec "实现订单取消功能" --json
-# 宿主用带选项的交互问题澄清尚未明确的关键决策，再回传
+# 宿主按关键歧义持续多轮澄清，结合选择题与开放问题，明确后再回传
 sdd plan --change <change-id> --json
 sdd build next --change <change-id> --json
 sdd verify --change <change-id> --json
@@ -124,9 +124,7 @@ INDEX_READY
 ```text
 .sdd/
 ├── runtime.json
-├── runtime.json.sha256
-├── runtime.json.bak
-├── runtime.json.bak.sha256
+├── lock
 └── changes/<change-id>/
     ├── spec.md
     ├── plan.md
@@ -135,7 +133,9 @@ INDEX_READY
     └── archive.md       # 归档后仅保留该文件
 ```
 
-v0.6 不迁移旧 `.sdd`。检测到旧 runtime schema 时会直接返回 `E_STATE_VERSION_UNSUPPORTED`；请先备份并删除旧 `.sdd`，再重新执行 `sdd init`。
+初始化后 `.sdd/` 只包含 `runtime.json` 与 `lock`，进入需求阶段后才生成 `changes/` 下的可读文档。状态内嵌 SHA-256，与数据一次原子写入；不生成备份、校验边车或锁诊断文件。检测到损坏就报错停止，不自动回退。锁文件保持稳定，文件存在不表示进程仍在运行。
+
+当前 Runtime 格式为 schema 8，不迁移旧 `.sdd`。检测到旧格式时会直接返回 `E_STATE_VERSION_UNSUPPORTED`；先用匹配版本读取并保留需要的结果，用户确认旧状态无需保留后再清理并执行 `sdd init`。Agent 不自动删除已有状态。
 
 ## 命令
 

@@ -1,9 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "state", "config", "artifacts", "changes", "runs", "workflows", "index"],
+  "required": ["schemaVersion", "checksum", "state", "config", "artifacts", "changes", "runs", "workflows", "index"],
   "properties": {
-    "schemaVersion": { "type": "integer", "enum": [7] },
+    "schemaVersion": { "type": "integer", "enum": [8] },
+    "checksum": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "移除本字段后，对 JSON 值按对象键排序的紧凑序列化字节计算 SHA-256。" },
     "state": { "type": "object" },
     "config": { "type": "object" },
     "artifacts": {
