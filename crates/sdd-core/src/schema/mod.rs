@@ -2,4 +2,4 @@
 
 pub mod validator;
 
-pub use validator::{schema_source, validate_json, SCHEMAS};
+pub use validator::{schema_source, schema_value, validate_json, SCHEMAS};

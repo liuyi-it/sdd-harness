@@ -15,7 +15,7 @@ use crate::state::state_store::{validate_run_id, ChangeWorkflow, WorkflowState};
 
 pub const RUNTIME_FILE: &str = "runtime.json";
 pub const RUNTIME_CHECKSUM_FILE: &str = "runtime.json.sha256";
-pub const RUNTIME_SCHEMA_VERSION: u32 = 6;
+pub const RUNTIME_SCHEMA_VERSION: u32 = 7;
 const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -546,19 +546,16 @@ fn validate_change(change_id: &str, change: &Value) -> Result<(), SddError> {
             &format!("change {change_id} 必须是对象"),
         )
     })?;
-    if fields.keys().any(|field| {
-        !matches!(
-            field.as_str(),
-            "spec" | "design" | "plan" | "reports" | "archive"
-        )
-    }) {
+    if fields
+        .keys()
+        .any(|field| !matches!(field.as_str(), "spec" | "plan" | "reports" | "archive"))
+    {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
             &format!("change {change_id} 包含未知字段"),
         ));
     }
     if fields.get("spec").is_some_and(|value| !value.is_object())
-        || fields.get("design").is_some_and(|value| !value.is_object())
         || fields.get("plan").is_some_and(|value| !value.is_object())
         || fields
             .get("reports")

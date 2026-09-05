@@ -55,7 +55,7 @@ pub fn run_init(cwd: &str, args: Option<&serde_json::Value>) -> Result<CommandRe
     if first_init && empty_project && structure_policy.is_none() {
         warnings.push(CliWarning::new(
             "W_EMPTY_PROJECT",
-            "空项目需要先通过 structurePolicy 指定目录结构策略，可选 free-design 或 user-defined",
+            "空项目已就绪，可直接描述需求；目录结构将在规格阶段确定",
         ));
     }
 

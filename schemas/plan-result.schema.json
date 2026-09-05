@@ -21,7 +21,7 @@
         "additionalProperties": false
       }
     },
-    "tasks": { "type": "array", "minItems": 1, "items": { "type": "object" } }
+    "tasks": { "type": "array", "minItems": 1, "items": { "$ref": "task.schema.json" } }
   },
   "additionalProperties": false
 }

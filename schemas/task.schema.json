@@ -17,7 +17,7 @@
     "dependsOn": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^TASK-[0-9]{3}$" } },
     "allowedFiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "expectedNewFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-    "forbiddenFiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+    "forbiddenFiles": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "interfaces": {
       "type": "object",
       "required": ["consumes", "produces"],
@@ -57,7 +57,7 @@
     "doneCriteria": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
     "userVisibleOutcome": { "type": "string", "minLength": 1 },
     "acceptanceCriteria": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
-    "testSeam": { "type": "string", "minLength": 1 }
+    "testSeam": { "type": "string", "minLength": 1, "description": "允许文件范围内的具体测试入口文件路径，不能填写函数名或说明文字。" }
   },
   "additionalProperties": false
 }

@@ -20,7 +20,7 @@ pub fn run_archive(cwd: &str, args: Option<&Value>) -> Result<CommandResult, Sdd
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, args)?;
     let workflow = super::workflow(&runtime, &change_id)?;
-    super::ensure_phase(workflow, "archive")?;
+    super::ensure_phase(workflow, "archive", &change_id)?;
     if workflow.phase == "ARCHIVED" {
         crate::state::artifact_store::verify_artifacts_in(
             cwd,
@@ -100,7 +100,6 @@ pub fn run_archive(cwd: &str, args: Option<&Value>) -> Result<CommandResult, Sdd
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "run 缺少任务结果"))?;
     let change_dir = crate::state::paths::change_dir(cwd, &change_id, false)?;
     let spec = require_file(&change_dir, "spec.md")?;
-    let design = require_file(&change_dir, "design.md")?;
     let plan_md = require_file(&change_dir, "plan.md")?;
     let tasks_md = require_file(&change_dir, "tasks.md")?;
     let quality_md = require_file(&change_dir, "quality-report.md")?;
@@ -109,7 +108,6 @@ pub fn run_archive(cwd: &str, args: Option<&Value>) -> Result<CommandResult, Sdd
         &runtime,
         [
             format!("{change_id}:spec"),
-            format!("{change_id}:design"),
             format!("{change_id}:plan"),
             format!("{change_id}:plan-md"),
             format!("{change_id}:tasks-md"),
@@ -119,7 +117,7 @@ pub fn run_archive(cwd: &str, args: Option<&Value>) -> Result<CommandResult, Sdd
 
     let archived_at = crate::state::state_store::now_iso();
     let archive_md = format!(
-        "# 需求归档\n\n- 变更：{change_id}\n- 归档时间：{archived_at}\n- 任务数：{}\n\n{spec}\n\n{design}\n\n{plan_md}\n\n{tasks_md}\n\n{quality_md}",
+        "# 需求归档\n\n- 变更：{change_id}\n- 归档时间：{archived_at}\n- 已完成任务数：{}\n\n{spec}\n\n{plan_md}\n\n{tasks_md}\n\n{quality_md}",
         tasks.len()
     );
     let git = if crate::git::GitInspector::is_git_repo(&business_cwd)? {
@@ -146,7 +144,6 @@ pub fn run_archive(cwd: &str, args: Option<&Value>) -> Result<CommandResult, Sdd
         "schemaVersion": "3.0.0",
         "changeId": change_id,
         "spec": change.get("spec"),
-        "design": change.get("design"),
         "plan": plan,
         "taskResults": task_results,
         "qualityReport": report,

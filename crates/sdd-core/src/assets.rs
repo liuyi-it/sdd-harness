@@ -1,4 +1,4 @@
-//! Agent 资产层：把宿主原生 Skill 与 subagent 配置写入业务项目。
+//! Agent 资产层：把五个阶段 Skill 与宿主快捷命令写入业务项目。
 
 use std::fs;
 use std::io::Read;
@@ -18,36 +18,11 @@ pub(crate) struct AdapterWriteResult {
     pub(crate) overwritten: Vec<&'static str>,
 }
 
-const ADAPTER_ASSETS: [AssetFile; 33] = [
+const ADAPTER_ASSETS: [AssetFile; 22] = [
     AssetFile {
         adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-harness/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-harness/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-init/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-init/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-status/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-status/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-new/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-new/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-change/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-change/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-design/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-design/SKILL.md"),
+        target: ".omp/skills/sdd-spec/SKILL.md",
+        content: include_str!("../../../assets/adapters/omp/skills/sdd-spec/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,
@@ -68,11 +43,6 @@ const ADAPTER_ASSETS: [AssetFile; 33] = [
         adapter: HostAdapter::Omp,
         target: ".omp/skills/sdd-archive/SKILL.md",
         content: include_str!("../../../assets/adapters/omp/skills/sdd-archive/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/skills/sdd-codebase/SKILL.md",
-        content: include_str!("../../../assets/adapters/omp/skills/sdd-codebase/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,
@@ -98,6 +68,11 @@ const ADAPTER_ASSETS: [AssetFile; 33] = [
         adapter: HostAdapter::Omp,
         target: ".omp/commands/sdd.status.md",
         content: include_str!("../../../assets/adapters/omp/commands/sdd.status.md"),
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/commands/sdd.spec.md",
+        content: include_str!("../../../assets/adapters/omp/commands/sdd.spec.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,
@@ -131,33 +106,8 @@ const ADAPTER_ASSETS: [AssetFile; 33] = [
     },
     AssetFile {
         adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-harness/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-harness/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-init/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-init/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-status/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-status/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-new/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-new/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-change/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-change/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-design/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-design/SKILL.md"),
+        target: ".agents/skills/sdd-spec/SKILL.md",
+        content: include_str!("../../../assets/adapters/codex/skills/sdd-spec/SKILL.md"),
     },
     AssetFile {
         adapter: HostAdapter::Codex,
@@ -178,11 +128,6 @@ const ADAPTER_ASSETS: [AssetFile; 33] = [
         adapter: HostAdapter::Codex,
         target: ".agents/skills/sdd-archive/SKILL.md",
         content: include_str!("../../../assets/adapters/codex/skills/sdd-archive/SKILL.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Codex,
-        target: ".agents/skills/sdd-codebase/SKILL.md",
-        content: include_str!("../../../assets/adapters/codex/skills/sdd-codebase/SKILL.md"),
     },
 ];
 

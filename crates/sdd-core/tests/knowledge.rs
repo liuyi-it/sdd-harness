@@ -362,10 +362,24 @@ fn codegraph_index_rejects_success_without_index_directory() {
     let result = provider.index(&project.path().to_string_lossy(), 1_000);
 
     assert!(!result.ok);
-    assert!(result.reason.unwrap().contains("未生成 .codegraph"));
+    assert!(
+        result
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("未生成 .codegraph")),
+        "{:?}",
+        result.reason
+    );
     let result = provider.rebuild(&project.path().to_string_lossy(), 1_000);
     assert!(!result.ok);
-    assert!(result.reason.unwrap().contains("未生成 .codegraph"));
+    assert!(
+        result
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("未生成 .codegraph")),
+        "{:?}",
+        result.reason
+    );
 }
 
 #[cfg(unix)]
@@ -460,9 +474,10 @@ fn initialize_degrades_diagnostics_when_summary_query_is_empty() {
         codegraph: CodeGraphProvider { bin: Some(bin) },
     };
 
-    let index = router.initialize(&dir.path().to_string_lossy(), 1_000);
+    // 本例验证空输出降级；并行启动模拟 CLI 时，不应被无关的 1 秒调度预算截断。
+    let index = router.initialize(&dir.path().to_string_lossy(), 10_000);
 
-    assert!(index.diagnostics[0].installed);
+    assert!(index.diagnostics[0].installed, "{:?}", index.diagnostics);
     assert!(!index.diagnostics[0].indexed);
     assert!(index.diagnostics[0].degraded);
     assert!(index.diagnostics[0]

@@ -4,13 +4,12 @@
 
 | Schema | 用途 |
 | --- | --- |
-| `runtime.schema.json` | Runtime 根结构，当前 schemaVersion 6 |
+| `runtime.schema.json` | Runtime 根结构，当前 schemaVersion 7 |
 | `state.schema.json` | 项目初始化与索引状态，当前 schemaVersion 4 |
 | `config.schema.json` | 宿主、Git 隔离、Context Pack 和审计限制，当前 schemaVersion 4 |
 | `artifact.schema.json` | 制品类型、路径、输入和内容哈希 |
-| `spec-result.schema.json` | Agent 回传的规格阶段结果 |
-| `spec.schema.json` | Core 持久化的 READY 规格模型 |
-| `design-result.schema.json` | Agent 回传的技术设计 |
+| `spec-result.schema.json` | Agent 回传的统一规格与技术设计结果 |
+| `spec.schema.json` | Core 持久化的 READY 统一规格模型 |
 | `plan-result.schema.json` | Agent 回传的计划与任务集合 |
 | `task.schema.json` | 单个纵向任务 |
 | `task-result.schema.json` | build 的任务执行结果 |
@@ -19,13 +18,17 @@
 
 ## 阶段结果
 
-规格结果必须包含目标、included/excluded 范围、约束和 Requirement/Scenario 模型。设计结果必须包含真实代码现状、决策与理由、影响文件、接口、错误处理、测试、风险和回滚。计划结果必须包含全局约束、依赖决策和至少一个 task。
+统一规格结果必须包含目标、included/excluded 范围、约束、Requirement/Scenario 模型和 `technicalDesign`。`technicalDesign` 必须包含真实代码现状、决策与理由、影响文件、接口或数据流、错误处理、测试、风险和回滚。计划结果必须包含全局约束、依赖决策和至少一个 task。
 
 Core 对 result JSON 先做 Schema 校验，再反序列化为强类型，并递归拒绝占位内容。计划还会逐个用 task schema 复验，检查文件范围矛盾、验证命令、依赖环和规格覆盖。
+
+`plan-result.schema.json` 的 tasks 引用同目录 `task.schema.json`；内嵌校验和行动下发时共用展开后的 Schema。宿主拿到的 resultSchema 无需访问外部文件即可获知全部任务字段。构建行动同样附带完整 task-result Schema。
 
 ## 纵向任务
 
 taskId 格式为 `TASK-001`。`executionMode` 为 `TDD` 或 `VERIFY_ONLY`。TDD 的 steps 至少包含 TEST、IMPLEMENT、VERIFY；VERIFY_ONLY 至少包含 VERIFY。`interfaces`、用户可见结果、验收标准和 testSeam 用于防止计划退化成模糊动作列表。
+
+`testSeam` 为允许范围内的具体测试入口文件路径，不是自然语言说明。`forbiddenFiles` 允许空数组。验证命令的 `command` 仅填程序名，`args` 保存独立参数；结果回传要求程序和参数数组逐项匹配计划。
 
 ## 结果传输
 
@@ -34,3 +37,5 @@ taskId 格式为 `TASK-001`。`executionMode` 为 `TDD` 或 `VERIFY_ONLY`。TDD 
 ## 报告
 
 统一报告 `kind` 固定为 `quality`。issues 的必填字段为 code、severity、message；可选 file、category、startLine、endLine、existingCode、suggestionCode、origin。minimality 保存 Git 指纹和实际变更文件等可复核事实。
+
+CLI 行动和状态查询会复用该报告：首次质量修复行动通过 `data.report` 提供；选中质量阶段的任务时，状态也通过 `data.report` 提供。`data.selectedChange` 为选中任务的标题、阶段、标识与恢复命令摘要；不存在适用质量报告时 report 为 null。它们是输出视图，不新增 Runtime Schema 或第二份状态。

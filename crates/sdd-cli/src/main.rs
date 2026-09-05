@@ -2,12 +2,13 @@
 //!
 //! 参数与输出遵循当前 Core 契约：
 //! - 全局参数：--json/--cwd/--change/--timeout
-//! - 命令：init/status/new/change/design/plan/build/verify/archive/codebase
+//! - 命令：init/status/spec/change/plan/build/verify/archive/codebase
 //! - 进程退出码必须等于 CommandResult.exitCode
 
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
+use sdd_core::commands::status::phase_label;
 use sdd_core::contracts::{CommandRequest, CommandResult, HostAdapter};
 use sdd_core::error::SddError;
 
@@ -15,6 +16,9 @@ const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser)]
 #[command(name = "sdd", version = PKG_VERSION, about = "面向 AI Coding Agent 的规格驱动开发（SDD）工程支架", disable_help_subcommand = true)]
+#[command(
+    after_help = "快速开始：\n  在业务项目中运行 sdd init，再在 Codex 或 OMP 中描述要完成的需求。\n  例如：请实现订单导出，并完成测试和验证。\n  已有任务用 sdd status 查看进度，多个任务用 --change <标识> 选择。\n\n终端示例：sdd spec \"增加订单导出功能\"\nCLI 不会自行启动 AI；阶段结果由宿主 Agent 提交，用户无需手写 JSON。"
+)]
 struct Cli {
     /// 全局参数（任何命令前均可指定）
     #[command(flatten)]
@@ -42,7 +46,7 @@ struct GlobalArgs {
 
 #[derive(Subcommand)]
 enum Command {
-    /// 初始化 .sdd/
+    /// 初始化项目并安装宿主 Agent 技能
     Init {
         /// 空项目目录结构策略
         #[arg(long = "structurePolicy", value_parser = ["free-design", "user-defined"])]
@@ -53,25 +57,19 @@ enum Command {
     },
     /// 显示当前 SDD 状态
     Status,
-    /// 创建新变更（需求）
-    New {
+    /// 创建统一规格（需求与技术设计）
+    Spec {
         /// 需求文本（可多个词）
         requirement: Vec<String>,
-        /// 宿主 Agent 回传的结构化规格 JSON
+        /// 宿主 Agent 回传的统一规格 JSON
         #[arg(long = "result-json")]
         result_json: Option<String>,
     },
-    /// 修订已有变更并同步所有文档
+    /// 修订已有变更并重新生成统一规格
     Change {
         /// 新需求文本（可多个词）
         requirement: Vec<String>,
-        /// 宿主 Agent 回传的结构化规格 JSON
-        #[arg(long = "result-json")]
-        result_json: Option<String>,
-    },
-    /// 生成设计制品
-    Design {
-        /// 宿主 Agent 回传的结构化设计 JSON
+        /// 宿主 Agent 回传的统一规格 JSON
         #[arg(long = "result-json")]
         result_json: Option<String>,
     },
@@ -232,48 +230,49 @@ fn render_and_exit(result: &CommandResult, json: bool) -> ExitCode {
 /// 文本渲染：状态、下一步与错误信息。
 fn render_text(result: &CommandResult) -> String {
     let mut lines = Vec::new();
+    if let Some(data) = &result.data {
+        if render_codebase(&mut lines, data) {
+            return lines.join("\n");
+        }
+    }
     if let Some(action) = &result.action_required {
         use sdd_core::contracts::AgentActionRequired;
         match action {
-            AgentActionRequired::AgentPhaseExecution {
-                phase,
-                context_pack,
-                result_transport,
-                ..
-            } => {
-                lines.push(format!("阶段：{phase}"));
-                lines.push(format!("Context Pack：{context_pack}"));
-                lines.push(format!("结果传输：{result_transport}"));
+            AgentActionRequired::AgentPhaseExecution { phase, .. } => {
+                let stage = if phase == "PLAN" {
+                    "实施计划"
+                } else {
+                    "规格与技术设计"
+                };
+                lines.push(format!("等待 Agent 完成{stage}。"));
             }
             AgentActionRequired::AgentTaskExecution {
                 task_id,
-                context_pack,
-                result_transport,
                 allowed_files,
                 verification,
                 ..
             } => {
-                lines.push(format!("任务：{task_id}"));
-                lines.push(format!("Context Pack：{context_pack}"));
-                lines.push(format!("结果传输：{result_transport}"));
+                lines.push(format!("等待 Agent 实施任务：{task_id}"));
                 lines.push(format!("允许文件：{}", allowed_files.join("、")));
                 render_verification(&mut lines, verification);
             }
             AgentActionRequired::AgentFixExecution {
-                fix_id,
-                context_pack,
-                result_transport,
                 allowed_files,
                 verification,
                 ..
             } => {
-                lines.push(format!("修复：{fix_id}"));
-                lines.push(format!("Context Pack：{context_pack}"));
-                lines.push(format!("结果传输：{result_transport}"));
+                lines.push("质量检查需要修复，等待 Agent 处理报告中的问题。".to_string());
+                if let Some(report) = result.data.as_ref().and_then(|data| data.get("report")) {
+                    render_report(&mut lines, report);
+                }
                 lines.push(format!("允许文件：{}", allowed_files.join("、")));
                 render_verification(&mut lines, verification);
             }
         }
+        if let Some(change_id) = &result.change_id {
+            lines.push(format!("变更：{change_id}"));
+        }
+        lines.push("请在 Codex 或 OMP 中继续此需求；终端命令不会自行启动 AI。宿主使用 --json 读取完整行动和结果格式。".to_string());
         return lines.join("\n");
     }
     if let Some(error) = &result.error {
@@ -282,22 +281,107 @@ fn render_text(result: &CommandResult) -> String {
             lines.push(format!("建议：{next}"));
         }
     } else if result.ok {
-        lines.push(format!("状态：{}", result.state));
+        lines.push(format!("状态：{}", phase_label(&result.state)));
     } else {
-        lines.push(format!("状态：{}（未完成）", result.state));
+        lines.push(format!("状态：{}（未完成）", phase_label(&result.state)));
     }
     if let Some(change_id) = &result.change_id {
         lines.push(format!("变更：{change_id}"));
     }
-    if let Some(next) = &result.next {
+    if result.state == "QUALITY_BLOCKED" {
+        lines.push(
+            "自动修复轮次已用完。可手动修复后重新验证，或明确授权 Agent 再修一轮。".to_string(),
+        );
+        if let Some(id) = &result.change_id {
+            lines.push(format!("重新验证：sdd verify --change {id}"));
+        }
+        if let Some(next) = &result.next {
+            lines.push(format!("授权后继续修复：{next}"));
+        }
+    } else if let Some(next) = &result.next {
         lines.push(format!("下一步：{next}"));
     }
     if let Some(warnings) = &result.warnings {
         for warning in warnings {
-            lines.push(format!("警告：{}", warning.message));
+            if warning.code == "W_ADAPTER_FILE" {
+                lines.push(format!(
+                    "已安装：{}",
+                    warning.message.trim_start_matches("写入：")
+                ));
+            } else if warning.code == "W_EMPTY_PROJECT" {
+                lines.push(format!("提示：{}", warning.message));
+            } else {
+                lines.push(format!("警告：{}", warning.message));
+            }
         }
     }
     if let Some(data) = &result.data {
+        if let Some(report) = data.get("report").filter(|report| report.is_object()) {
+            render_report(&mut lines, report);
+            if data.get("activeChanges").is_none() {
+                return lines.join("\n");
+            }
+        }
+        if let Some(goal) = data.get("goal").and_then(serde_json::Value::as_str) {
+            lines.push(format!("目标：{goal}"));
+            return lines.join("\n");
+        }
+        if let Some(count) = data.get("taskCount").and_then(serde_json::Value::as_u64) {
+            lines.push(format!("计划任务：{count} 个"));
+            return lines.join("\n");
+        }
+        if let Some(task_id) = data.get("taskId").and_then(serde_json::Value::as_str) {
+            lines.push(format!(
+                "任务：{task_id}，{}",
+                if data["status"] == "DONE" {
+                    "已完成"
+                } else {
+                    "未完成"
+                }
+            ));
+            return lines.join("\n");
+        }
+        if let Some(changes) = data
+            .get("activeChanges")
+            .and_then(serde_json::Value::as_array)
+        {
+            let selected = data.get("selectedChange");
+            let visible = selected
+                .map(std::slice::from_ref)
+                .unwrap_or(changes.as_slice());
+            for change in visible {
+                let id = change["changeId"].as_str().unwrap_or_default();
+                if result
+                    .change_id
+                    .as_deref()
+                    .is_some_and(|selected| selected != id)
+                {
+                    continue;
+                }
+                lines.push(format!(
+                    "- {} [{}]：{}",
+                    change["title"].as_str().unwrap_or(id),
+                    id,
+                    phase_label(change["phase"].as_str().unwrap_or_default())
+                ));
+            }
+            if result.state == "MULTIPLE_CHANGES" {
+                lines.push("请选择变更，使用 --change <标识> 继续。".to_string());
+            }
+            if let Some(tasks) = data
+                .pointer("/workflow/tasks")
+                .and_then(serde_json::Value::as_object)
+            {
+                if !tasks.is_empty() {
+                    let done = tasks
+                        .values()
+                        .filter(|state| state.as_str() == Some("DONE"))
+                        .count();
+                    lines.push(format!("任务进度：{done}/{} 已完成", tasks.len()));
+                }
+            }
+            return lines.join("\n");
+        }
         let text = serde_json::to_string(data).expect("serde_json::Value 必须可序列化");
         if !text.is_empty() && text != "null" {
             let char_count = text.chars().count();
@@ -313,6 +397,71 @@ fn render_text(result: &CommandResult) -> String {
         }
     }
     lines.join("\n")
+}
+
+fn render_report(lines: &mut Vec<String>, report: &serde_json::Value) {
+    if let Some(summary) = report.get("summary").and_then(serde_json::Value::as_str) {
+        lines.push(summary.to_string());
+    }
+    if let Some(issues) = report.get("issues").and_then(serde_json::Value::as_array) {
+        for issue in issues {
+            if let Some(message) = issue.get("message").and_then(serde_json::Value::as_str) {
+                let file = issue
+                    .get("file")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|file| format!("（{file}）"))
+                    .unwrap_or_default();
+                lines.push(format!("- {message}{file}"));
+            }
+        }
+    }
+}
+
+fn render_codebase(lines: &mut Vec<String>, data: &serde_json::Value) -> bool {
+    if let Some(providers) = data.get("providers").and_then(serde_json::Value::as_array) {
+        for provider in providers {
+            let name = provider["provider"].as_str().unwrap_or("CodeGraph");
+            let state = if provider["installed"] != true {
+                "不可用"
+            } else if provider["indexed"] != true {
+                "索引不可用"
+            } else {
+                "索引已就绪"
+            };
+            lines.push(format!("{name}：{state}"));
+            if let Some(reason) = provider["reason"].as_str() {
+                lines.push(format!("原因：{reason}"));
+            }
+            if provider["degraded"] == true {
+                lines.push("可继续开发，代码库上下文将使用受限文件扫描；索引可用后运行 sdd codebase index 更新。".to_string());
+            }
+        }
+        return true;
+    }
+    if let Some(payload) = data
+        .get("payload")
+        .filter(|_| data.get("provider").is_some())
+    {
+        lines.push(format!(
+            "代码库查询（{}）",
+            data["provider"].as_str().unwrap_or_default()
+        ));
+        if let Some(reason) = data.get("reason").and_then(serde_json::Value::as_str) {
+            lines.push(format!("提示：{reason}"));
+        }
+        for key in [
+            "output",
+            "codebaseSummary",
+            "packageStructure",
+            "architecture",
+        ] {
+            if let Some(text) = payload.get(key).and_then(serde_json::Value::as_str) {
+                lines.push(text.to_string());
+            }
+        }
+        return true;
+    }
+    false
 }
 
 fn render_verification(
@@ -381,7 +530,7 @@ fn build_request(
             "init"
         }
         Command::Status => "status",
-        Command::New {
+        Command::Spec {
             requirement,
             result_json,
         } => {
@@ -394,7 +543,7 @@ fn build_request(
             if let Some(result_json) = result_json {
                 args.insert("resultJson".into(), serde_json::json!(result_json));
             }
-            "new"
+            "spec"
         }
         Command::Change {
             requirement,
@@ -410,12 +559,6 @@ fn build_request(
                 args.insert("resultJson".into(), serde_json::json!(result_json));
             }
             "change"
-        }
-        Command::Design { result_json } => {
-            if let Some(result_json) = result_json {
-                args.insert("resultJson".into(), serde_json::json!(result_json));
-            }
-            "design"
         }
         Command::Plan { result_json } => {
             if let Some(result_json) = result_json {

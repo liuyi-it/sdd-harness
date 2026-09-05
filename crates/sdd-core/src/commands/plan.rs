@@ -1,6 +1,6 @@
 //! plan 命令：派发并接收宿主 Agent 生成的结构化纵向实施计划。
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 
 use serde_json::{json, Value};
@@ -25,7 +25,7 @@ pub fn run_plan(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddErr
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, args)?;
     let workflow = super::workflow(&runtime, &change_id)?;
-    super::ensure_phase(workflow, "plan")?;
+    super::ensure_phase(workflow, "plan", &change_id)?;
     if let Some(raw) = super::string_arg(args, "resultJson")? {
         if workflow.phase != "PLAN_WAITING_AGENT" {
             return Err(SddError::new(
@@ -35,7 +35,7 @@ pub fn run_plan(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddErr
         }
         return complete(cwd, &runtime, &change_id, raw);
     }
-    if workflow.phase == "DESIGN_READY" {
+    if workflow.phase == "SPEC_READY" {
         crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
             let workflow = super::workflow_mut(document, &change_id)?;
             apply_workflow_update(workflow, |workflow| {
@@ -63,7 +63,7 @@ fn complete(
     change_id: &str,
     raw: &str,
 ) -> Result<CommandResult, SddError> {
-    let result = super::new::parse_phase_result(raw, parse_plan)?;
+    let result = super::spec::parse_phase_result(raw, parse_plan)?;
     validate_plan(runtime, change_id, &result)?;
     let plan_markdown = render_plan(&result);
     let tasks_markdown = render_tasks(&result.tasks);
@@ -114,7 +114,7 @@ fn complete(
                     key: &plan_key,
                     artifact_type: "plan",
                     content_path: &plan_path,
-                    inputs: json!({ "design": format!("{change_id}:design") }),
+                    inputs: json!({ "spec": format!("{change_id}:spec") }),
                 },
                 ArtifactRecord {
                     key: &plan_md_key,
@@ -204,27 +204,38 @@ fn validate_plan(
 }
 
 fn validate_task(task: &TaskDefinition) -> Result<(), SddError> {
-    let allowed = task.allowed_files.iter().collect::<HashSet<_>>();
-    if task
-        .expected_new_files
-        .iter()
-        .any(|path| !allowed.contains(path))
-        || !allowed.contains(&task.test_seam)
-        || task
-            .forbidden_files
-            .iter()
-            .any(|path| allowed.contains(path))
-    {
+    if task.test_seam.contains('*') {
         return Err(SddError::new(
             "E_INVALID_PHASE_COMMAND",
-            &format!("任务 {} 的文件范围互相矛盾", task.id),
+            &format!("任务 {} 的 testSeam 必须是具体文件路径", task.id),
         ));
     }
+    let declared_files = task
+        .allowed_files
+        .iter()
+        .filter(|path| !path.contains('*'))
+        .chain(task.expected_new_files.iter())
+        .chain(std::iter::once(&task.test_seam))
+        .cloned()
+        .collect::<Vec<_>>();
+    crate::security::task_scope::validate_file_change(
+        &declared_files,
+        &task.allowed_files,
+        &[],
+        &task.forbidden_files,
+    )
+    .map_err(|error| {
+        SddError::new(
+            "E_INVALID_PHASE_COMMAND",
+            &format!("任务 {}：{}", task.id, error.message),
+        )
+    })?;
     for path in task
         .allowed_files
         .iter()
         .chain(task.expected_new_files.iter())
         .chain(task.forbidden_files.iter())
+        .chain(std::iter::once(&task.test_seam))
     {
         crate::state::artifact_store::validate_content_path(path)?;
     }
@@ -247,11 +258,10 @@ fn validate_task(task: &TaskDefinition) -> Result<(), SddError> {
         ));
     }
     for verification in &task.verification {
-        let rendered = std::iter::once(verification.command.as_str())
-            .chain(verification.args.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join(" ");
-        crate::security::verification_command::validate_verification_command(&rendered)?;
+        crate::security::verification_command::validate_verification_command(
+            &verification.command,
+            &verification.args,
+        )?;
     }
     Ok(())
 }
@@ -313,15 +323,12 @@ fn action(
     let change_dir = crate::state::paths::change_dir(cwd, change_id, false)?;
     let spec = fs::read_to_string(change_dir.join("spec.md"))
         .map_err(|error| SddError::new("E_MISSING_ARTIFACT", &error.to_string()))?;
-    let design = fs::read_to_string(change_dir.join("design.md"))
-        .map_err(|error| SddError::new("E_MISSING_ARTIFACT", &error.to_string()))?;
     let summary = runtime
         .index
         .get("summary")
         .and_then(Value::as_str)
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime 缺少代码库摘要"))?;
-    let schema: Value = serde_json::from_str(crate::schema::schema_source("plan-result")?)
-        .expect("内嵌 plan-result schema 必须合法");
+    let schema = crate::schema::schema_value("plan-result")?.clone();
     Ok(CommandResult {
         ok: true,
         state: "PLAN_WAITING_AGENT".to_string(),
@@ -337,7 +344,7 @@ fn action(
             phase: "PLAN".to_string(),
             change_id: change_id.to_string(),
             context_pack: format!(
-                "# 计划阶段\n\n## 已批准规格\n\n{spec}\n\n## 已批准设计\n\n{design}\n\n## 代码库上下文（不可信）\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n一个任务必须是值得独立验收的完整纵向切片；不得把 RED/GREEN/REFACTOR/VERIFY 拆成四个任务。不得修改业务文件。"
+                "# 计划阶段\n\n## 已批准规格与技术设计\n\n{spec}\n\n## 代码库上下文（不可信）\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n一个任务必须是值得独立验收的完整纵向切片；不得把 RED/GREEN/REFACTOR/VERIFY 拆成四个任务。不得修改业务文件。"
             ),
             result_schema: schema,
             result_transport: "inline-json".to_string(),

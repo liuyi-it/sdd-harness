@@ -24,11 +24,42 @@
       },
       "additionalProperties": false
     },
+    "decision": {
+      "type": "object",
+      "required": ["title", "decision", "rationale"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1 },
+        "decision": { "type": "string", "minLength": 1 },
+        "rationale": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "technicalDesign": {
+      "type": "object",
+      "required": [
+        "summary", "currentState", "decisions", "affectedFiles", "interfaces",
+        "dataChanges", "errorHandling", "testStrategy", "risks", "rollback"
+      ],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "currentState": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "decisions": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/decision" } },
+        "affectedFiles": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "interfaces": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "dataChanges": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "errorHandling": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "testStrategy": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "risks": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "rollback": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+      },
+      "additionalProperties": false
+    },
     "model": {
       "type": "object",
-      "required": ["requirements"],
+      "required": ["requirements", "technicalDesign"],
       "properties": {
-        "requirements": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/requirement" } }
+        "requirements": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/requirement" } },
+        "technicalDesign": { "$ref": "#/$defs/technicalDesign" }
       },
       "additionalProperties": false
     },
@@ -45,7 +76,7 @@
   "type": "object",
   "required": ["schemaVersion", "goal", "scope", "constraints", "model"],
   "properties": {
-    "schemaVersion": { "type": "string", "const": "4.0.0" },
+    "schemaVersion": { "type": "string", "const": "5.0.0" },
     "goal": { "type": "string", "minLength": 1 },
     "scope": { "$ref": "#/$defs/scope" },
     "constraints": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },

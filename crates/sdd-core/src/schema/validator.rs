@@ -13,7 +13,7 @@ use regex::Regex;
 use crate::error::SddError;
 
 /// 已注册的 schema（内嵌编译期内容）
-pub const SCHEMAS: [(&str, &str); 12] = [
+pub const SCHEMAS: [(&str, &str); 11] = [
     (
         "state",
         include_str!("../../../../schemas/state.schema.json"),
@@ -49,10 +49,6 @@ pub const SCHEMAS: [(&str, &str); 12] = [
         include_str!("../../../../schemas/spec-result.schema.json"),
     ),
     (
-        "design-result",
-        include_str!("../../../../schemas/design-result.schema.json"),
-    ),
-    (
         "plan-result",
         include_str!("../../../../schemas/plan-result.schema.json"),
     ),
@@ -62,19 +58,22 @@ fn parsed_schemas() -> &'static [serde_json::Value; SCHEMAS.len()] {
     static PARSED: OnceLock<[serde_json::Value; SCHEMAS.len()]> = OnceLock::new();
     PARSED.get_or_init(|| {
         std::array::from_fn(|index| {
-            serde_json::from_str(SCHEMAS[index].1)
-                .expect("内嵌 schema 必须在构建和测试阶段保持合法 JSON")
+            let mut schema: serde_json::Value = serde_json::from_str(SCHEMAS[index].1)
+                .expect("内嵌 schema 必须在构建和测试阶段保持合法 JSON");
+            // 复用唯一 task 定义；发给宿主的计划 Schema 不需要访问外部文件。
+            if SCHEMAS[index].0 == "plan-result" {
+                schema["properties"]["tasks"]["items"] =
+                    serde_json::from_str(schema_source("task").expect("task Schema 必须已注册"))
+                        .expect("task Schema 必须合法");
+            }
+            schema
         })
     })
 }
 
 /// 校验文档；失败返回 E_STATE_CORRUPTED（含首个问题描述）
 pub fn validate_json(name: &str, doc: &serde_json::Value) -> Result<(), SddError> {
-    let index = SCHEMAS
-        .iter()
-        .position(|(candidate, _)| *candidate == name)
-        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", &format!("未知 schema：{name}")))?;
-    let schema = &parsed_schemas()[index];
+    let schema = schema_value(name)?;
     let problems = check_against(schema, doc, "", schema);
     match problems.first() {
         Some(p) => Err(SddError::new(
@@ -83,6 +82,15 @@ pub fn validate_json(name: &str, doc: &serde_json::Value) -> Result<(), SddError
         )),
         None => Ok(()),
     }
+}
+
+/// 校验和宿主行动共用同一份完整 Schema。
+pub fn schema_value(name: &str) -> Result<&'static serde_json::Value, SddError> {
+    let index = SCHEMAS
+        .iter()
+        .position(|(candidate, _)| *candidate == name)
+        .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", &format!("未知 schema：{name}")))?;
+    Ok(&parsed_schemas()[index])
 }
 
 pub fn schema_source(name: &str) -> Result<&'static str, SddError> {

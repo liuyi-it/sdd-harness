@@ -22,9 +22,33 @@ pub struct SpecRequirement {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TechnicalDesignDecision {
+    pub title: String,
+    pub decision: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TechnicalDesign {
+    pub summary: String,
+    pub current_state: Vec<String>,
+    pub decisions: Vec<TechnicalDesignDecision>,
+    pub affected_files: Vec<String>,
+    pub interfaces: Vec<String>,
+    pub data_changes: Vec<String>,
+    pub error_handling: Vec<String>,
+    pub test_strategy: Vec<String>,
+    pub risks: Vec<String>,
+    pub rollback: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SpecDocument {
     pub requirements: Vec<SpecRequirement>,
+    pub technical_design: TechnicalDesign,
 }
 
 /// 规格校验失败

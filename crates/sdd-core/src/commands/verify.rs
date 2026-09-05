@@ -28,7 +28,7 @@ pub fn run_verify(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, args)?;
     let workflow = super::workflow(&runtime, &change_id)?;
-    super::ensure_phase(workflow, "verify")?;
+    super::ensure_phase(workflow, "verify", &change_id)?;
     let continue_fix = super::bool_arg(args, "continue")?.unwrap_or(false);
     let result_json = super::string_arg(args, "resultJson")?;
 
@@ -197,7 +197,7 @@ fn fix_action(
         next: Some(format!(
             "sdd verify --change {change_id} --result-json '<JSON>'"
         )),
-        data: None,
+        data: Some(json!({ "report": report })),
         rendered: None,
         warnings: None,
         action_required: Some(AgentActionRequired::AgentFixExecution {
@@ -226,7 +226,6 @@ fn assess(
         runtime,
         [
             format!("{change_id}:spec"),
-            format!("{change_id}:design"),
             format!("{change_id}:plan"),
             format!("{change_id}:plan-md"),
             format!("{change_id}:tasks-md"),
@@ -305,11 +304,13 @@ fn assess(
         ));
         Vec::new()
     };
+    // 禁止范围只约束各自任务的增量，不能跨任务合并；任务完成时已按其基线校验。
+    // 全局门禁仅确认每个实际变更至少被某个任务允许，避免互斥任务范围相互误杀。
     if let Err(error) = validate_file_change(
         &changed_files,
         &allowed_files(runtime, change_id)?,
         &[],
-        &forbidden_files(runtime, change_id)?,
+        &[],
     ) {
         issues.push(issue(&error.code, "critical", error.message, None));
     }
@@ -566,18 +567,6 @@ fn allowed_files(
         .collect())
 }
 
-fn forbidden_files(
-    runtime: &crate::state::RuntimeDocument,
-    change_id: &str,
-) -> Result<Vec<String>, SddError> {
-    Ok(read_tasks(runtime, change_id)?
-        .into_iter()
-        .flat_map(|task| task.forbidden_files)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect())
-}
-
 fn verification_commands(
     runtime: &crate::state::RuntimeDocument,
     change_id: &str,
@@ -668,21 +657,15 @@ fn business_root(cwd: &str, workflow: &ChangeWorkflow) -> String {
 
 fn read_documents(cwd: &str, change_id: &str) -> Result<String, SddError> {
     let dir = crate::state::paths::change_dir(cwd, change_id, false)?;
-    [
-        "spec.md",
-        "design.md",
-        "plan.md",
-        "tasks.md",
-        "quality-report.md",
-    ]
-    .iter()
-    .map(|name| {
-        fs::read_to_string(dir.join(name))
-            .map(|content| format!("## {name}\n\n{content}"))
-            .map_err(|error| SddError::new("E_MISSING_ARTIFACT", &error.to_string()))
-    })
-    .collect::<Result<Vec<_>, _>>()
-    .map(|items| items.join("\n\n"))
+    ["spec.md", "plan.md", "tasks.md", "quality-report.md"]
+        .iter()
+        .map(|name| {
+            fs::read_to_string(dir.join(name))
+                .map(|content| format!("## {name}\n\n{content}"))
+                .map_err(|error| SddError::new("E_MISSING_ARTIFACT", &error.to_string()))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|items| items.join("\n\n"))
 }
 
 fn audit_limits(config: &Value) -> Result<(usize, usize), SddError> {

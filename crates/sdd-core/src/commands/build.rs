@@ -71,7 +71,7 @@ fn next(cwd: &str, args: &Value, timeout_ms: Option<u64>) -> Result<CommandResul
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, Some(args))?;
     let workflow = super::workflow(&runtime, &change_id)?;
-    super::ensure_phase(workflow, "build")?;
+    super::ensure_phase(workflow, "build", &change_id)?;
     verify_plan_artifacts(cwd, &runtime, &change_id)?;
     let tasks = read_tasks(&runtime, &change_id)?;
     validate_runtime_task_state(workflow, &tasks)?;
@@ -157,7 +157,7 @@ fn complete(
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, Some(args))?;
     let workflow = super::workflow(&runtime, &change_id)?;
-    super::ensure_phase(workflow, "build")?;
+    super::ensure_phase(workflow, "build", &change_id)?;
     if workflow.phase != "BUILD_WAITING_AGENT" {
         return Err(
             SddError::new("E_INVALID_PHASE_COMMAND", "当前没有等待提交的构建任务")
@@ -359,6 +359,7 @@ fn action(
             expected_new_files: task.expected_new_files,
             forbidden_files: task.forbidden_files,
             verification,
+            result_schema: crate::schema::schema_value("task-result")?.clone(),
             result_transport: "inline-json".to_string(),
             codebase: CodebaseProviderInfo {
                 provider: runtime.state.codebase_provider.clone(),
@@ -372,10 +373,10 @@ fn action(
 
 fn validate_task_verification(task: &TaskDefinition) -> Result<(), SddError> {
     for verification in &task.verification {
-        crate::security::verification_command::validate_verification_command(&verification_text(
+        crate::security::verification_command::validate_verification_command(
             &verification.command,
             &verification.args,
-        ))?;
+        )?;
     }
     Ok(())
 }
@@ -404,18 +405,19 @@ pub(crate) fn validate_task_evidence(
     let planned = task
         .verification
         .iter()
-        .map(|item| verification_text(&item.command, &item.args))
+        .map(|item| (&item.command, &item.args))
         .collect::<BTreeSet<_>>();
     let mut submitted = BTreeSet::new();
     for result in &parsed.verification {
         let command = verification_text(&result.command, &result.args);
-        if !planned.contains(&command) {
+        let invocation = (&result.command, &result.args);
+        if !planned.contains(&invocation) {
             return Err(SddError::new(
                 "E_SECURITY_BLOCKED",
                 &format!("任务结果包含未授权验证命令：{command}"),
             ));
         }
-        if !submitted.insert(command) {
+        if !submitted.insert(invocation) {
             return Err(SddError::new(
                 "E_TDD_EVIDENCE_REQUIRED",
                 "同一验证命令不得重复提交",
@@ -434,8 +436,13 @@ pub(crate) fn validate_task_evidence(
             &format!("任务 {} 声明完成，但仍有验证失败", task.id),
         ));
     }
+    let planned_text = task
+        .verification
+        .iter()
+        .map(|item| verification_text(&item.command, &item.args))
+        .collect::<BTreeSet<_>>();
     for evidence in &parsed.evidence {
-        if !planned.contains(&evidence.command) {
+        if !planned_text.contains(&evidence.command) {
             return Err(SddError::new(
                 "E_SECURITY_BLOCKED",
                 &format!("任务证据包含未授权命令：{}", evidence.command),
@@ -476,7 +483,7 @@ fn render_context_pack(
     runtime: &crate::state::RuntimeDocument,
 ) -> Result<String, SddError> {
     let change_dir = crate::state::paths::change_dir(cwd, change_id, false)?;
-    let documents = ["spec.md", "design.md", "plan.md", "tasks.md"]
+    let documents = ["spec.md", "plan.md", "tasks.md"]
         .iter()
         .map(|name| {
             let path = change_dir.join(name);
@@ -515,7 +522,6 @@ fn verify_plan_artifacts(
         runtime,
         [
             format!("{change_id}:spec"),
-            format!("{change_id}:design"),
             format!("{change_id}:plan"),
             format!("{change_id}:plan-md"),
             format!("{change_id}:tasks-md"),

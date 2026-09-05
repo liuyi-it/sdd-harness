@@ -1,0 +1,73 @@
+{
+  "schemaVersion": "3.0.0",
+  "summary": "实现并验证运费计算的一个纵向任务。",
+  "globalConstraints": [
+    "不增加第三方依赖。"
+  ],
+  "dependencies": [],
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "交付运费计算与边界测试",
+      "executionMode": "TDD",
+      "requirements": [
+        "REQ-001"
+      ],
+      "scenarios": [
+        "REQ-001-SC-001",
+        "REQ-001-SC-002"
+      ],
+      "dependsOn": [],
+      "allowedFiles": [
+        "shipping.py",
+        "test_shipping.py"
+      ],
+      "expectedNewFiles": [
+        "shipping.py",
+        "test_shipping.py"
+      ],
+      "forbiddenFiles": [],
+      "interfaces": {
+        "consumes": [
+          "整数元订单金额"
+        ],
+        "produces": [
+          "整数元运费或 ValueError"
+        ]
+      },
+      "steps": [
+        {
+          "kind": "TEST",
+          "instruction": "先写覆盖 0、99、100、101、-1 的测试并记录失败。"
+        },
+        {
+          "kind": "IMPLEMENT",
+          "instruction": "实现 shipping_fee 及负数校验。"
+        },
+        {
+          "kind": "VERIFY",
+          "instruction": "运行完整 unittest 并检查 diff。"
+        }
+      ],
+      "verification": [
+        {
+          "command": "python3",
+          "args": [
+            "-m",
+            "unittest",
+            "-v"
+          ],
+          "expected": "所有运费边界测试通过。"
+        }
+      ],
+      "doneCriteria": [
+        "五个金额用例全部通过。"
+      ],
+      "userVisibleOutcome": "调用者可按金额计算运费并收到非法金额错误。",
+      "acceptanceCriteria": [
+        "100 元免运费，99 元收 10 元，负数拒绝。"
+      ],
+      "testSeam": "test_shipping.py"
+    }
+  ]
+}

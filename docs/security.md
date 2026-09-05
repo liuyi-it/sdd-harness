@@ -13,7 +13,9 @@
 
 `AGENT_TASK_EXECUTION` 限定 allowedFiles、expectedNewFiles、forbiddenFiles 与 verification。Git 仓库中，Agent 声明的 filesChanged 必须与派发时基线后的真实 delta 完全一致；非 Git 项目显式警告事实边界。
 
-验证命令不经过 shell，且会拒绝解释器、命令替换、重定向、管道和不在允许集合内的程序。任务和修复结果的 inline JSON 上限为 4 MiB，各证据字段另有限额。
+验证命令以程序名和参数数组声明；门禁支持明确的本地质量检查入口及其参数，拒绝 shell、内联脚本、命令替换、重定向、管道和发布入口。Python 仅允许 `-m unittest` / `-m pytest`，Node 仅允许 `--test`。完整集合见 CLI 文档。任务和修复结果的 inline JSON 上限为 4 MiB，各证据字段另有限额。
+
+Core 校验计划及提交的证据，不自动运行业务验证；宿主应按独立 argv 执行命令，不拼接 shell。程序白名单不是进程安全沙箱，测试和构建脚本仍会执行项目代码，须遵守宿主的权限和执行策略。任务结果按程序名及参数数组逐项匹配计划，禁止用文本拼接掩盖不同参数。
 
 ## 统一质量门禁
 

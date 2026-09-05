@@ -1,6 +1,6 @@
 //! 项目原生规格校验器。
 
-use super::model::{SpecDocument, SpecValidationFailure};
+use super::model::{SpecDocument, SpecValidationFailure, TechnicalDesign};
 
 /// 校验规格模型，返回问题列表（空列表 = 通过）
 pub fn validate_spec(document: &SpecDocument) -> Vec<SpecValidationFailure> {
@@ -78,7 +78,38 @@ pub fn validate_spec(document: &SpecDocument) -> Vec<SpecValidationFailure> {
         }
     }
 
+    validate_technical_design(&document.technical_design, &mut failures);
+
     failures
+}
+
+fn validate_technical_design(design: &TechnicalDesign, failures: &mut Vec<SpecValidationFailure>) {
+    if invalid_text(&design.summary)
+        || invalid_steps(&design.current_state)
+        || design.decisions.is_empty()
+        || invalid_steps(&design.affected_files)
+        || invalid_steps(&design.interfaces)
+        || invalid_steps(&design.error_handling)
+        || invalid_steps(&design.test_strategy)
+        || invalid_steps(&design.risks)
+        || invalid_steps(&design.rollback)
+        || design.decisions.iter().any(|decision| {
+            invalid_text(&decision.title)
+                || invalid_text(&decision.decision)
+                || invalid_text(&decision.rationale)
+        })
+        || design
+            .data_changes
+            .iter()
+            .any(|change| invalid_text(change))
+    {
+        failures.push(SpecValidationFailure {
+            code: "SPEC_TECHNICAL_DESIGN_INCOMPLETE".to_string(),
+            path: "technicalDesign".to_string(),
+            message: "技术设计必须包含完整的事实、决策、接口、错误处理、测试、风险和回滚信息"
+                .to_string(),
+        });
+    }
 }
 
 fn valid_requirement_id(id: &str) -> bool {
@@ -105,7 +136,9 @@ fn invalid_steps(steps: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engines::spec::{SpecRequirement, SpecScenario};
+    use crate::engines::spec::{
+        SpecRequirement, SpecScenario, TechnicalDesign, TechnicalDesignDecision,
+    };
 
     #[test]
     fn rejects_scenario_id_from_another_requirement() {
@@ -122,6 +155,22 @@ mod tests {
                     then: vec!["系统返回成功结果".to_string()],
                 }],
             }],
+            technical_design: TechnicalDesign {
+                summary: "最小设计".to_string(),
+                current_state: vec!["现有行为".to_string()],
+                decisions: vec![TechnicalDesignDecision {
+                    title: "决策".to_string(),
+                    decision: "实施".to_string(),
+                    rationale: "满足需求".to_string(),
+                }],
+                affected_files: vec!["README.md".to_string()],
+                interfaces: vec!["接口".to_string()],
+                data_changes: vec![],
+                error_handling: vec!["失败上抛".to_string()],
+                test_strategy: vec!["运行测试".to_string()],
+                risks: vec!["风险".to_string()],
+                rollback: vec!["回退".to_string()],
+            },
         };
 
         assert!(validate_spec(&document)

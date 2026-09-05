@@ -102,12 +102,12 @@ impl ChangeWorkflow {
             run_id,
             phase: "SPEC_WAITING_AGENT".to_string(),
             updated_at: now_iso(),
-            last_command: Some("sdd new".to_string()),
+            last_command: Some("sdd spec".to_string()),
             previous_phase: None,
             in_progress_phase: Some("SPECIFICATION".to_string()),
             failed_command: None,
             failed_reason: None,
-            suggested_command: Some("sdd new --result-json '<JSON>'".to_string()),
+            suggested_command: Some("sdd spec --result-json '<JSON>'".to_string()),
             pending_agent_action: None,
             workspace,
             tasks: HashMap::new(),
@@ -291,7 +291,7 @@ pub(crate) fn validate_change_workflow(workflow: &ChangeWorkflow) -> Result<(), 
         .filter(|(_, status)| status.as_str() == TASK_STATUS_BUILDING)
         .count();
     match workflow.phase.as_str() {
-        "SPEC_WAITING_AGENT" | "DESIGN_WAITING_AGENT" | "PLAN_WAITING_AGENT" => {
+        "SPEC_WAITING_AGENT" | "PLAN_WAITING_AGENT" => {
             validate_pending_phase_action(
                 workflow
                     .pending_agent_action
@@ -299,7 +299,6 @@ pub(crate) fn validate_change_workflow(workflow: &ChangeWorkflow) -> Result<(), 
                     .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "生成阶段缺少待处理行动"))?,
                 match workflow.phase.as_str() {
                     "SPEC_WAITING_AGENT" => "SPECIFICATION",
-                    "DESIGN_WAITING_AGENT" => "DESIGN",
                     "PLAN_WAITING_AGENT" => "PLAN",
                     _ => unreachable!("match 分支已限定生成阶段"),
                 },

@@ -7,7 +7,7 @@
   "properties": {
     "type": {
       "type": "string",
-      "enum": ["spec", "design", "plan", "report", "context-pack", "summary", "input"]
+      "enum": ["spec", "plan", "report", "context-pack", "summary", "input"]
     },
     "hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "contentPath": { "type": "string", "minLength": 1 },

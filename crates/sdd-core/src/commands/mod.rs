@@ -4,10 +4,9 @@ pub mod archive;
 pub mod build;
 pub mod change;
 pub mod codebase;
-pub mod design;
 pub mod init;
-pub mod new;
 pub mod plan;
+pub mod spec;
 pub mod status;
 pub mod verify;
 
@@ -151,27 +150,33 @@ pub(crate) fn resolve_change_id(
         return Err(crate::error::SddError::new(
             "E_MISSING_CHANGE",
             &format!("变更不存在：{change_id}"),
-        ));
+        )
+        .with_next("sdd status"));
     }
     let active = active_changes(document);
     match active.as_slice() {
         [] => Err(
             crate::error::SddError::new("E_MISSING_CHANGE", "当前没有进行中的 SDD 任务")
-                .with_next("sdd new <需求>"),
+                .with_next("sdd spec <需求>"),
         ),
         [(change_id, _)] => Ok((*change_id).to_string()),
         _ => Err(crate::error::SddError::new(
             "E_CHANGE_SELECTION_REQUIRED",
             &format!(
-                "当前有多个进行中的 SDD 任务，请明确指定 --change：{}",
+                "当前有多个进行中的任务，请选择目标并传入 --change <标识>：\n{}",
                 active
                     .iter()
-                    .map(|(change_id, _)| *change_id)
+                    .map(|(change_id, workflow)| format!(
+                        "- {} [{}]：{}",
+                        status::change_title(document, change_id, workflow),
+                        change_id,
+                        status::phase_label(&workflow.phase)
+                    ))
                     .collect::<Vec<_>>()
-                    .join("、")
+                    .join("\n")
             ),
         )
-        .with_next("sdd status --json")),
+        .with_next("sdd status")),
     }
 }
 
@@ -198,20 +203,21 @@ pub(crate) fn workflow_mut<'a>(
 pub(crate) fn ensure_phase(
     workflow: &crate::state::state_store::ChangeWorkflow,
     command: &str,
+    change_id: &str,
 ) -> Result<(), crate::error::SddError> {
     let phase = workflow.phase.as_str();
     if phase == "ARCHIVED" && command != "archive" && command != "change" {
-        return Err(crate::error::SddError::new(
-            "E_ARCHIVED_READONLY",
-            "已归档的变更为只读状态",
-        ));
+        return Err(
+            crate::error::SddError::new("E_ARCHIVED_READONLY", "已归档的变更为只读状态")
+                .with_next(&format!("sdd status --change {change_id}")),
+        );
     }
     let allowed = match command {
         "change" => matches!(
             phase,
             "SPEC_WAITING_AGENT"
                 | "SPEC_READY"
-                | "DESIGN_READY"
+                | "PLAN_WAITING_AGENT"
                 | "PLAN_READY"
                 | "BUILD_WAITING_AGENT"
                 | "BUILD_READY"
@@ -220,9 +226,8 @@ pub(crate) fn ensure_phase(
                 | "QUALITY_READY"
                 | "ARCHIVED"
         ),
-        "new" => phase == "SPEC_WAITING_AGENT",
-        "design" => matches!(phase, "SPEC_READY" | "DESIGN_WAITING_AGENT"),
-        "plan" => matches!(phase, "DESIGN_READY" | "PLAN_WAITING_AGENT"),
+        "spec" => phase == "SPEC_WAITING_AGENT",
+        "plan" => matches!(phase, "SPEC_READY" | "PLAN_WAITING_AGENT"),
         "build" => matches!(phase, "PLAN_READY" | "BUILD_WAITING_AGENT" | "BUILD_READY"),
         "verify" => matches!(
             phase,
@@ -232,10 +237,14 @@ pub(crate) fn ensure_phase(
         _ => true,
     };
     if !allowed {
-        let next = status::next_command(phase).unwrap_or_else(|| "sdd status".to_string());
+        let next = status::qualified_next(phase, change_id)
+            .unwrap_or_else(|| format!("sdd status --change {change_id}"));
         return Err(crate::error::SddError::new(
             "E_INVALID_PHASE_COMMAND",
-            &format!("命令 {command} 在状态 {phase} 下不可用"),
+            &format!(
+                "当前阶段：{}；暂时不能执行 sdd {command}",
+                status::phase_label(phase)
+            ),
         )
         .with_next(&next));
     }

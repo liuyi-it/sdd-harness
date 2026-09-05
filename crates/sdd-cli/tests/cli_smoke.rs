@@ -5,23 +5,26 @@ fn sdd() -> Command {
 }
 
 #[test]
-fn help_lists_only_the_staged_commands() {
+fn help_lists_the_unified_spec_commands() {
     let output = sdd().arg("--help").output().unwrap();
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     for command in [
-        "init", "status", "new", "change", "design", "plan", "build", "verify", "archive",
-        "codebase",
+        "init", "status", "spec", "change", "plan", "build", "verify", "archive", "codebase",
     ] {
         assert!(stdout.contains(command), "帮助缺少 {command}: {stdout}");
     }
-    assert!(!stdout.contains(" auto"));
-    assert!(!stdout.contains(" review"));
+    for removed in ["new", "design", "auto", "review"] {
+        assert!(
+            !stdout.contains(&format!(" {removed}")),
+            "帮助仍包含 {removed}: {stdout}"
+        );
+    }
 }
 
 #[test]
 fn removed_commands_are_rejected_by_clap() {
-    for command in ["auto", "review"] {
+    for command in ["new", "design", "auto", "review"] {
         let output = sdd().arg(command).output().unwrap();
         assert_eq!(output.status.code(), Some(2));
     }
@@ -29,7 +32,7 @@ fn removed_commands_are_rejected_by_clap() {
 
 #[test]
 fn result_json_options_are_registered_for_agent_phases() {
-    for command in ["new", "change", "design", "plan", "verify"] {
+    for command in ["spec", "change", "plan", "verify"] {
         let output = sdd().args([command, "--help"]).output().unwrap();
         assert!(output.status.success());
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -38,7 +41,7 @@ fn result_json_options_are_registered_for_agent_phases() {
 }
 
 #[test]
-fn init_defaults_to_codex_and_installs_all_skills() {
+fn init_defaults_to_codex_and_installs_only_five_skills() {
     let dir = tempfile::tempdir().unwrap();
     let output = sdd()
         .args(["--cwd", &dir.path().to_string_lossy(), "init", "--json"])
@@ -49,22 +52,27 @@ fn init_defaults_to_codex_and_installs_all_skills() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    for command in [
-        "harness", "init", "status", "new", "change", "design", "plan", "build", "verify",
-        "archive", "codebase",
-    ] {
-        assert!(
-            dir.path()
-                .join(format!(".agents/skills/sdd-{command}/SKILL.md"))
-                .is_file(),
-            "缺少 sdd-{command}"
-        );
-    }
+    let skills = dir.path().join(".agents/skills");
+    let mut names = std::fs::read_dir(&skills)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "sdd-archive",
+            "sdd-build",
+            "sdd-plan",
+            "sdd-spec",
+            "sdd-verify"
+        ]
+    );
 }
 
 #[test]
-fn global_change_is_available_to_every_stage() {
-    for command in ["status", "design", "plan", "verify", "archive"] {
+fn global_change_is_available_to_every_change_scoped_command() {
+    for command in ["status", "spec", "change", "plan", "verify", "archive"] {
         let output = sdd()
             .args(["--change", "demo", command, "--json"])
             .output()

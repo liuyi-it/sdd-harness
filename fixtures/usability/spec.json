@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "5.0.0",
+  "goal": "提供可测试的订单运费计算",
+  "scope": {
+    "included": [
+      "计算满 100 元免运费规则并拒绝负数金额"
+    ],
+    "excluded": [
+      "订单存储与支付集成"
+    ]
+  },
+  "constraints": [
+    "仅使用 Python 标准库"
+  ],
+  "model": {
+    "requirements": [
+      {
+        "id": "REQ-001",
+        "title": "订单运费",
+        "statement": "非负金额不足 100 元时运费为 10 元，满 100 元时免运费，负数金额抛出 ValueError。",
+        "scenarios": [
+          {
+            "id": "REQ-001-SC-001",
+            "title": "金额边界",
+            "given": [
+              "金额分别为 0、99、100、101 元"
+            ],
+            "when": [
+              "调用 shipping_fee"
+            ],
+            "then": [
+              "运费分别为 10、10、0、0 元"
+            ]
+          },
+          {
+            "id": "REQ-001-SC-002",
+            "title": "拒绝负数",
+            "given": [
+              "金额为 -1"
+            ],
+            "when": [
+              "调用 shipping_fee"
+            ],
+            "then": [
+              "抛出 ValueError"
+            ]
+          }
+        ]
+      }
+    ],
+    "technicalDesign": {
+      "summary": "在 shipping.py 中实现纯函数，使用 unittest 覆盖金额边界。",
+      "currentState": [
+        "项目只有 README 和忽略规则，没有业务代码。"
+      ],
+      "decisions": [
+        {
+          "title": "计算接口",
+          "decision": "使用 shipping_fee(amount: int) -> int。",
+          "rationale": "整数元金额足以验证 demo 规则，纯函数便于测试。"
+        }
+      ],
+      "affectedFiles": [
+        "shipping.py",
+        "test_shipping.py"
+      ],
+      "interfaces": [
+        "shipping_fee 接受整数元金额，返回整数元运费。"
+      ],
+      "dataChanges": [],
+      "errorHandling": [
+        "负数金额抛出 ValueError。"
+      ],
+      "testStrategy": [
+        "python3 -m unittest -v 验证金额边界与错误。"
+      ],
+      "risks": [
+        "该 demo 不处理小数金额与税费。"
+      ],
+      "rollback": [
+        "删除新增的运费函数和对应测试即可回退。"
+      ]
+    }
+  }
+}

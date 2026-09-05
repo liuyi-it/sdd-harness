@@ -4,11 +4,13 @@ pub mod model;
 pub mod renderer;
 pub mod validator;
 
-pub use model::{SpecDocument, SpecRequirement, SpecScenario};
+pub use model::{
+    SpecDocument, SpecRequirement, SpecScenario, TechnicalDesign, TechnicalDesignDecision,
+};
 
 use crate::error::SddError;
 
-pub(crate) const SPEC_SCHEMA_VERSION: &str = "4.0.0";
+pub(crate) const SPEC_SCHEMA_VERSION: &str = "5.0.0";
 
 /// 从 runtime 的 READY 规格记录读取唯一机器模型。
 pub(crate) fn model_from_record(record: &serde_json::Value) -> Result<SpecDocument, SddError> {

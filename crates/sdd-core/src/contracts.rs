@@ -34,14 +34,12 @@ impl HostAdapter {
 }
 
 /// 当前工作流会真实持久化的阶段枚举。
-pub const PHASES: [&str; 15] = [
+pub const PHASES: [&str; 13] = [
     "NOT_INITIALIZED",
     "INITIALIZING",
     "INDEX_READY",
     "SPEC_WAITING_AGENT",
     "SPEC_READY",
-    "DESIGN_WAITING_AGENT",
-    "DESIGN_READY",
     "PLAN_WAITING_AGENT",
     "PLAN_READY",
     "BUILD_WAITING_AGENT",
@@ -165,6 +163,8 @@ pub enum AgentActionRequired {
         #[serde(rename = "forbiddenFiles")]
         forbidden_files: Vec<String>,
         verification: Vec<VerificationCommand>,
+        #[serde(rename = "resultSchema")]
+        result_schema: serde_json::Value,
         #[serde(rename = "resultTransport")]
         result_transport: String,
         codebase: CodebaseProviderInfo,

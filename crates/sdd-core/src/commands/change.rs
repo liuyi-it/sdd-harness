@@ -15,7 +15,7 @@ pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
     let runtime = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let change_id = super::resolve_change_id(&runtime, args)?;
     let workflow = super::workflow(&runtime, &change_id)?;
-    super::ensure_phase(workflow, "change")?;
+    super::ensure_phase(workflow, "change", &change_id)?;
 
     if let Some(raw) = super::string_arg(args, "resultJson")? {
         if workflow.phase != "SPEC_WAITING_AGENT"
@@ -26,20 +26,21 @@ pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
                 "必须先执行 sdd change <新需求> 获取规格修订行动",
             ));
         }
-        return super::new::complete_spec(cwd, &runtime, &change_id, raw);
-    }
-
-    if workflow.phase == "SPEC_WAITING_AGENT"
-        && workflow.last_command.as_deref() == Some("sdd change")
-    {
-        return super::new::phase_action(&runtime, &change_id, "SPECIFICATION");
+        return super::spec::complete_spec(cwd, &runtime, &change_id, raw);
     }
 
     let requirement = super::string_arg(args, "requirement")?
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| SddError::new("E_INVALID_REQUIREMENT", "修订需求不能为空"))?;
-    super::new::validate_requirement_length(requirement)?;
+        .filter(|value| !value.is_empty());
+    if requirement.is_none()
+        && workflow.phase == "SPEC_WAITING_AGENT"
+        && workflow.last_command.as_deref() == Some("sdd change")
+    {
+        return super::spec::phase_action(&runtime, &change_id, "SPECIFICATION");
+    }
+    let requirement =
+        requirement.ok_or_else(|| SddError::new("E_INVALID_REQUIREMENT", "修订需求不能为空"))?;
+    super::spec::validate_requirement_length(requirement)?;
     let run_id = workflow.run_id.clone();
     crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
         document
@@ -67,5 +68,5 @@ pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
         })
     })?;
     let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
-    super::new::phase_action(&current, &change_id, "SPECIFICATION")
+    super::spec::phase_action(&current, &change_id, "SPECIFICATION")
 }
