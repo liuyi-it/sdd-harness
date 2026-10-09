@@ -9,16 +9,16 @@ pub fn validate_verification_command(command: &str, args: &[String]) -> Result<(
         ("cargo", ["test" | "check" | "build" | "clippy" | "fmt", ..])
             | ("npm", ["test", ..])
             | ("npm", ["run", "test" | "lint" | "typecheck" | "build", ..])
-            | ("mvn", ["test" | "verify", ..])
             | ("python" | "python3", ["-m", "unittest" | "pytest", ..])
             | ("pytest", _)
             | ("node", ["--test", ..])
-    );
+    ) || (command == "mvn" && maven_quality_arguments(&arguments));
     let shell_syntax = std::iter::once(command)
         .chain(arguments.iter().copied())
         .any(|part| {
             part.contains(['\n', '\r', '\0', ';', '|', '&', '`', '$', '<', '>'])
-                || matches!(part, "-c" | "-e" | "--eval")
+                || part == "--eval"
+                || (command != "mvn" && matches!(part, "-c" | "-e"))
         });
     if !allowed || shell_syntax {
         return Err(SddError::new(
@@ -30,6 +30,126 @@ pub fn validate_verification_command(command: &str, args: &[String]) -> Result<(
         ));
     }
     Ok(())
+}
+
+fn maven_quality_arguments(args: &[&str]) -> bool {
+    // Maven 的选项可以放在生命周期前后；带值选项的值不是额外目标。
+    const FLAGS: &[&str] = &[
+        "-B",
+        "--batch-mode",
+        "-q",
+        "--quiet",
+        "-e",
+        "--errors",
+        "-o",
+        "--offline",
+        "-U",
+        "--update-snapshots",
+        "-N",
+        "--non-recursive",
+        "-am",
+        "--also-make",
+        "-amd",
+        "--also-make-dependents",
+        "-fae",
+        "--fail-at-end",
+        "-ff",
+        "--fail-fast",
+        "-nsu",
+        "--no-snapshot-updates",
+        "-ntp",
+        "--no-transfer-progress",
+        "-C",
+        "--strict-checksums",
+        "-c",
+        "--lax-checksums",
+        "-V",
+        "--show-version",
+        "-X",
+        "--debug",
+        "-itr",
+        "--ignore-transitive-repositories",
+    ];
+    const VALUES: &[&str] = &[
+        "-s",
+        "--settings",
+        "-gs",
+        "--global-settings",
+        "-t",
+        "--toolchains",
+        "-gt",
+        "--global-toolchains",
+        "-f",
+        "--file",
+        "-pl",
+        "--projects",
+        "-P",
+        "--activate-profiles",
+        "-rf",
+        "--resume-from",
+        "-T",
+        "--threads",
+        "-l",
+        "--log-file",
+        "-D",
+        "--define",
+        "-b",
+        "--builder",
+    ];
+    let mut quality_goal = false;
+    let mut index = 0;
+    let mut options = true;
+    while let Some(argument) = args.get(index).copied() {
+        index += 1;
+        match argument {
+            "-fn" | "--fail-never" => return false,
+            "test" | "verify" => quality_goal = true,
+            "clean" => {}
+            "--" if options => options = false,
+            "--color" if options => {
+                // --color 的值可省略；后续非选项仍会被 Maven 消费为颜色值。
+                if let Some(value) = args.get(index).filter(|value| !value.starts_with('-')) {
+                    if !matches!(*value, "auto" | "always" | "never") {
+                        return false;
+                    }
+                    index += 1;
+                }
+            }
+            _ if options && argument.starts_with("--color=") => {
+                if !matches!(
+                    argument.trim_start_matches("--color="),
+                    "auto" | "always" | "never"
+                ) {
+                    return false;
+                }
+            }
+            _ if options && FLAGS.contains(&argument) => {}
+            _ if options && VALUES.contains(&argument) => {
+                let Some(value) = args.get(index) else {
+                    return false;
+                };
+                if value.is_empty() || value.starts_with('-') {
+                    return false;
+                }
+                index += 1;
+            }
+            _ if options
+                && VALUES.iter().any(|option| {
+                    argument.strip_prefix(option).is_some_and(|value| {
+                        if option.starts_with("--") {
+                            value
+                                .strip_prefix('=')
+                                .is_some_and(|value| !value.is_empty())
+                        } else {
+                            !value.trim_start_matches('=').is_empty()
+                        }
+                    })
+                }) => {}
+            // install/deploy 和 plugin:goal 均不是质量入口；未知选项也不猜测其值。
+            _ => return false,
+        }
+    }
+    quality_goal
 }
 
 #[cfg(test)]
@@ -60,6 +180,25 @@ mod tests {
             ("npm", vec!["run", "typecheck"]),
             ("mvn", vec!["test", "-pl", "service", "-am"]),
             ("mvn", vec!["verify"]),
+            (
+                "mvn",
+                vec!["-B", "-q", "-s", "settings.xml", "verify", "-e"],
+            ),
+            (
+                "mvn",
+                vec![
+                    "--settings=settings.xml",
+                    "-DskipTests=false",
+                    "clean",
+                    "test",
+                ],
+            ),
+            ("mvn", vec!["-plservice", "-am", "-T1C", "verify"]),
+            ("mvn", vec!["test", "-D", "profile=test", "-c"]),
+            ("mvn", vec!["--", "clean", "verify"]),
+            ("mvn", vec!["verify", "--color"]),
+            ("mvn", vec!["--color", "never", "verify"]),
+            ("mvn", vec!["--color=auto", "verify"]),
             ("python3", vec!["-m", "unittest", "discover", "-v"]),
             ("python", vec!["-m", "pytest", "tests/test_shipping.py"]),
             ("pytest", vec!["-q"]),
@@ -83,6 +222,20 @@ mod tests {
             ("cargo", vec!["test", "$(whoami)"]),
             ("cargo", vec!["test", ">report.txt"]),
             ("git", vec!["reset", "--hard"]),
+            ("mvn", vec!["test", "deploy"]),
+            ("mvn", vec!["verify", "install"]),
+            ("mvn", vec!["-B", "verify", "exec:java"]),
+            ("mvn", vec!["--help", "test"]),
+            ("mvn", vec!["-fn", "test"]),
+            ("mvn", vec!["--unknown", "deploy", "test"]),
+            ("mvn", vec!["--settings", "verify"]),
+            ("mvn", vec!["-s", "-q", "verify"]),
+            ("mvn", vec!["--settings=", "verify"]),
+            ("mvn", vec!["-q", "clean"]),
+            ("mvn", vec!["--", "-q", "verify"]),
+            ("mvn", vec!["--color", "verify"]),
+            ("mvn", vec!["--color=invalid", "verify"]),
+            ("mvn", vec!["-Bq", "verify"]),
         ] {
             assert!(!validate(command, &args), "{command} {args:?}");
         }

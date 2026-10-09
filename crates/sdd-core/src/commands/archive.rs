@@ -47,6 +47,32 @@ pub fn run_archive(cwd: &str, args: Option<&Value>) -> Result<CommandResult, Sdd
                 .with_next(&format!("sdd verify --change {change_id}")),
         );
     }
+    if !super::review::current_ready(
+        cwd,
+        &runtime,
+        &change_id,
+        "QUALITY",
+        "architecture-reviewer",
+    )? || report
+        .minimality
+        .as_ref()
+        .and_then(|value| value.get("workspaceFingerprint"))
+        .and_then(Value::as_str)
+        != Some(super::review::workspace_hash(cwd, &runtime, &change_id)?.as_str())
+    {
+        crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+            apply_workflow_update(super::workflow_mut(document, &change_id)?, |workflow| {
+                workflow.phase = "BUILD_READY".into();
+                workflow.record_failure("sdd archive", "成果或验证记录发生变化");
+                workflow.suggested_command = Some(format!("sdd verify --change {change_id}"));
+            })
+        })?;
+        return Err(SddError::new(
+            "E_QUALITY_REQUIRED",
+            "成果或验证记录发生变化，请重新验证与审查",
+        )
+        .with_next(&format!("sdd verify --change {change_id}")));
+    }
     let business_cwd = workflow
         .workspace
         .as_ref()

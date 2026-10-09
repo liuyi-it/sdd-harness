@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SDD 语义审查结果",
+  "type": "object",
+  "required": [
+    "reviewId",
+    "targetHash",
+    "mode",
+    "verdict",
+    "summary",
+    "findings",
+    "rechecks"
+  ],
+  "properties": {
+    "reviewId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "targetHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "mode": {
+      "type": "string",
+      "enum": [
+        "independent",
+        "self",
+        "self_fallback"
+      ]
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "READY",
+        "NOT_READY"
+      ]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1
+    },
+    "fallbackReason": {
+      "type": "string",
+      "minLength": 1
+    },
+    "incomplete": {
+      "type": "boolean"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "message"
+        ],
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "rechecks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "findingId",
+          "present",
+          "explanation"
+        ],
+        "properties": {
+          "findingId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "present": {
+            "type": "boolean"
+          },
+          "explanation": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "riskFactors": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": [
+          "cross-module",
+          "external-contract",
+          "concurrency",
+          "transaction-consistency",
+          "permissions",
+          "sensitive-data",
+          "irreversible-data"
+        ]
+      }
+    }
+  },
+  "additionalProperties": false
+}

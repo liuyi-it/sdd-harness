@@ -8,12 +8,12 @@ pub fn next_command(phase: &str) -> Option<String> {
     let next = match phase {
         "NOT_INITIALIZED" => "sdd init",
         "INDEX_READY" => "sdd spec <需求>",
-        "SPEC_WAITING_AGENT" => "sdd spec",
+        "SPEC_WAITING_AGENT" | "SPEC_WAITING_REVIEW" => "sdd spec",
         "SPEC_READY" => "sdd plan",
         "PLAN_WAITING_AGENT" => "sdd plan",
         "PLAN_READY" | "BUILD_WAITING_AGENT" => "sdd build next",
         "BUILD_READY" => "sdd verify",
-        "QUALITY_WAITING_FIX" => "sdd verify",
+        "QUALITY_WAITING_FIX" | "QUALITY_WAITING_REVIEW" => "sdd verify",
         "QUALITY_BLOCKED" => "sdd verify --continue",
         "QUALITY_READY" => "sdd archive",
         _ => return None,
@@ -165,7 +165,10 @@ pub(crate) fn change_title<'a>(
         .get(&workflow.run_id)
         .and_then(|run| run.get("input"))
         .and_then(serde_json::Value::as_str);
-    if workflow.phase == "SPEC_WAITING_AGENT" {
+    if matches!(
+        workflow.phase.as_str(),
+        "SPEC_WAITING_AGENT" | "SPEC_WAITING_REVIEW"
+    ) {
         input.or(goal)
     } else {
         goal.or(input)
@@ -180,7 +183,7 @@ fn quality_report<'a>(
 ) -> Option<&'a serde_json::Value> {
     if !matches!(
         workflow.phase.as_str(),
-        "QUALITY_WAITING_FIX" | "QUALITY_BLOCKED" | "QUALITY_READY"
+        "QUALITY_WAITING_FIX" | "QUALITY_WAITING_REVIEW" | "QUALITY_BLOCKED" | "QUALITY_READY"
     ) {
         return None;
     }
@@ -198,12 +201,14 @@ pub fn phase_label(phase: &str) -> &str {
         "INITIALIZING" => "正在初始化",
         "INDEX_READY" => "已就绪，可以开始新需求",
         "SPEC_WAITING_AGENT" => "等待规格与技术设计",
+        "SPEC_WAITING_REVIEW" => "等待规格审查",
         "SPEC_READY" => "规格与技术设计已完成",
         "PLAN_WAITING_AGENT" => "等待实施计划",
         "PLAN_READY" => "计划已就绪，等待实施",
         "BUILD_WAITING_AGENT" => "任务实施中",
         "BUILD_READY" => "实施已完成，等待验证",
         "QUALITY_WAITING_FIX" => "等待质量修复",
+        "QUALITY_WAITING_REVIEW" => "等待实现审查",
         "QUALITY_BLOCKED" => "质量检查阻断，需要决定下一步",
         "QUALITY_READY" => "质量检查已通过，可以归档",
         "ARCHIVED" => "已归档",

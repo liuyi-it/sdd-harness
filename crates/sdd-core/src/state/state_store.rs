@@ -324,6 +324,15 @@ pub(crate) fn validate_change_workflow(workflow: &ChangeWorkflow) -> Result<(), 
                 ));
             }
         }
+        "SPEC_WAITING_REVIEW" | "QUALITY_WAITING_REVIEW" => {
+            crate::commands::review::validate_pending(workflow)?;
+            if building != 0 {
+                return Err(SddError::new(
+                    "E_STATE_CORRUPTED",
+                    "审查阶段不得存在 BUILDING 任务",
+                ));
+            }
+        }
         "QUALITY_WAITING_FIX" => {
             validate_pending_fix_action(
                 workflow

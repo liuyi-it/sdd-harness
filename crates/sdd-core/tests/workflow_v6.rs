@@ -28,8 +28,18 @@ fn technical_design() -> Value {
 
 fn spec_result() -> Value {
     json!({
-        "schemaVersion": "5.0.0",
+        "schemaVersion": "6.0.0",
         "goal": "让用户看到明确的完成结果",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "product",
+            "contributions": [],
+            "limitations": []
+        },
+        "reviewPolicy": {
+            "riskFactors": [],
+            "rationale": "变更仅更新 README，不涉及跨模块、外部契约、并发、一致性、权限、敏感数据或不可逆数据。"
+        },
         "scope": { "included": ["更新 README 行为"], "excluded": ["不修改依赖"] },
         "constraints": ["保持现有接口"],
         "model": {
@@ -50,10 +60,68 @@ fn spec_result() -> Value {
     })
 }
 
+fn approve_review(
+    root: &std::path::Path,
+    command_name: &str,
+    change_id: &str,
+    pending: &CommandResult,
+) -> CommandResult {
+    let pending = serde_json::to_value(pending).unwrap();
+    assert_eq!(pending["actionRequired"]["type"], "AGENT_REVIEW_EXECUTION");
+    let required = &pending["actionRequired"];
+    let review = json!({
+        "reviewId": required["reviewId"],
+        "targetHash": required["targetHash"],
+        "mode": "self",
+        "verdict": "READY",
+        "summary": "已核对目标内容和验证证据。",
+        "findings": [],
+        "rechecks": []
+    });
+    command(
+        root,
+        command_name,
+        Some(json!({
+            "changeId": change_id,
+            "resultJson": review.to_string()
+        })),
+    )
+}
+
+fn complete_spec(root: &std::path::Path, change_id: &str, command_name: &str) -> CommandResult {
+    let pending = command(
+        root,
+        command_name,
+        Some(json!({
+            "changeId": change_id,
+            "resultJson": spec_result().to_string()
+        })),
+    );
+    assert_eq!(pending.state, "SPEC_WAITING_REVIEW");
+    let ready = approve_review(root, command_name, change_id, &pending);
+    assert_eq!(ready.state, "SPEC_READY");
+    ready
+}
+
+fn complete_quality_review(
+    root: &std::path::Path,
+    change_id: &str,
+    pending: &CommandResult,
+) -> CommandResult {
+    assert_eq!(pending.state, "QUALITY_WAITING_REVIEW");
+    approve_review(root, "verify", change_id, pending)
+}
+
 fn plan_result() -> Value {
     json!({
-        "schemaVersion": "3.0.0",
+        "schemaVersion": "4.0.0",
         "summary": "一个纵向任务完成行为和验证",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "architect",
+            "contributions": [],
+            "limitations": []
+        },
         "globalConstraints": ["只修改 README.md"],
         "dependencies": [],
         "tasks": [{
@@ -151,11 +219,7 @@ fn unified_spec_workflow_reaches_archive_without_design_artifact() {
         }
         other => panic!("期望统一规格行动，实际：{other:?}"),
     }
-    let ready = command(
-        dir.path(),
-        "spec",
-        Some(json!({ "changeId": "demo", "resultJson": spec_result().to_string() })),
-    );
+    let ready = complete_spec(dir.path(), "demo", "spec");
     assert_eq!(ready.state, "SPEC_READY");
     assert_eq!(ready.next.as_deref(), Some("sdd plan --change demo"));
     let spec = std::fs::read_to_string(dir.path().join(".sdd/changes/demo/spec.md")).unwrap();
@@ -177,6 +241,12 @@ fn unified_spec_workflow_reaches_archive_without_design_artifact() {
     let result = json!({
         "taskId": "TASK-001",
         "status": "completed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "developer",
+            "contributions": [],
+            "limitations": []
+        },
         "filesChanged": [],
         "evidence": [
             { "type": "command-run", "command": "cargo test", "passed": false, "expectedFailure": true, "output": "预期失败" },
@@ -196,8 +266,9 @@ fn unified_spec_workflow_reaches_archive_without_design_artifact() {
         .state,
         "BUILD_READY"
     );
+    let quality_review = command(dir.path(), "verify", Some(json!({ "changeId": "demo" })));
     assert_eq!(
-        command(dir.path(), "verify", Some(json!({ "changeId": "demo" }))).state,
+        complete_quality_review(dir.path(), "demo", &quality_review).state,
         "QUALITY_READY"
     );
     assert_eq!(
@@ -217,11 +288,7 @@ fn change_reuses_the_unified_spec_phase() {
         "spec",
         Some(json!({ "changeId": "demo", "requirement": "初始需求" })),
     );
-    command(
-        dir.path(),
-        "spec",
-        Some(json!({ "changeId": "demo", "resultJson": spec_result().to_string() })),
-    );
+    complete_spec(dir.path(), "demo", "spec");
 
     let revised = command(
         dir.path(),
@@ -229,15 +296,8 @@ fn change_reuses_the_unified_spec_phase() {
         Some(json!({ "changeId": "demo", "requirement": "修订需求" })),
     );
     assert_eq!(revised.state, "SPEC_WAITING_AGENT");
-    assert_eq!(
-        command(
-            dir.path(),
-            "change",
-            Some(json!({ "changeId": "demo", "resultJson": spec_result().to_string() })),
-        )
-        .state,
-        "SPEC_READY"
-    );
+    let revised = complete_spec(dir.path(), "demo", "change");
+    assert_eq!(revised.state, "SPEC_READY");
     assert!(!dir.path().join(".sdd/changes/demo/design.md").exists());
 }
 
@@ -323,11 +383,7 @@ fn quality_accepts_files_owned_by_different_task_scopes() {
         "spec",
         Some(json!({ "changeId": "scopes", "requirement": "验证多任务范围" })),
     );
-    command(
-        dir.path(),
-        "spec",
-        Some(json!({ "changeId": "scopes", "resultJson": spec_result().to_string() })),
-    );
+    complete_spec(dir.path(), "scopes", "spec");
     command(dir.path(), "plan", Some(json!({ "changeId": "scopes" })));
     command(
         dir.path(),
@@ -354,6 +410,12 @@ fn quality_accepts_files_owned_by_different_task_scopes() {
             "resultJson": json!({
                 "taskId": "TASK-001",
                 "status": "completed",
+                "collaboration": {
+                    "topology": "inline",
+                    "lead": "developer",
+                    "contributions": [],
+                    "limitations": []
+                },
                 "filesChanged": ["README.md"],
                 "evidence": [
                     { "type": "command-run", "command": "cargo test", "passed": false, "expectedFailure": true, "output": "预期失败" },
@@ -381,6 +443,12 @@ fn quality_accepts_files_owned_by_different_task_scopes() {
             "resultJson": json!({
                 "taskId": "TASK-002",
                 "status": "completed",
+                "collaboration": {
+                    "topology": "inline",
+                    "lead": "developer",
+                    "contributions": [],
+                    "limitations": []
+                },
                 "filesChanged": ["assets/config.txt"],
                 "evidence": [
                     { "type": "command-run", "command": "cargo test", "passed": false, "expectedFailure": true, "output": "预期失败" },
@@ -392,7 +460,10 @@ fn quality_accepts_files_owned_by_different_task_scopes() {
     );
 
     let verified = command(dir.path(), "verify", Some(json!({ "changeId": "scopes" })));
-    assert_eq!(verified.state, "QUALITY_READY");
+    assert_eq!(
+        complete_quality_review(dir.path(), "scopes", &verified).state,
+        "QUALITY_READY"
+    );
 }
 
 #[test]
@@ -411,11 +482,7 @@ fn quality_fix_runs_once_then_requires_user_authorization() {
         "spec",
         Some(json!({ "changeId": "quality", "requirement": "实现质量修复预算" })),
     );
-    command(
-        dir.path(),
-        "spec",
-        Some(json!({ "changeId": "quality", "resultJson": spec_result().to_string() })),
-    );
+    complete_spec(dir.path(), "quality", "spec");
     complete_plan(dir.path(), "quality");
     command(
         dir.path(),
@@ -433,6 +500,12 @@ fn quality_fix_runs_once_then_requires_user_authorization() {
     let task_result = json!({
         "taskId": "TASK-001",
         "status": "completed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "developer",
+            "contributions": [],
+            "limitations": []
+        },
         "filesChanged": ["README.md"],
         "evidence": [
             { "type": "command-run", "command": "cargo test", "passed": false, "expectedFailure": true, "output": "预期失败" },
@@ -458,6 +531,12 @@ fn quality_fix_runs_once_then_requires_user_authorization() {
     let fix_result = json!({
         "fixId": "FIX-001",
         "status": "completed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "quality",
+            "contributions": [],
+            "limitations": []
+        },
         "filesChanged": ["README.md"],
         "verification": [{ "command": "cargo", "args": ["test"], "passed": true, "output": "通过" }]
     });

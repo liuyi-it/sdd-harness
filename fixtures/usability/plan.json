@@ -1,6 +1,12 @@
 {
-  "schemaVersion": "3.0.0",
+  "schemaVersion": "4.0.0",
   "summary": "实现并验证运费计算的一个纵向任务。",
+  "collaboration": {
+    "topology": "inline",
+    "lead": "architect",
+    "contributions": [],
+    "limitations": []
+  },
   "globalConstraints": [
     "不增加第三方依赖。"
   ],

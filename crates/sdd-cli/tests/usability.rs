@@ -26,6 +26,65 @@ fn run(root: &Path, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+fn approve_spec_result(root: &Path, command: &str, result: &str) -> Value {
+    approve_spec_result_for(root, command, None, result)
+}
+
+fn approve_spec_result_for(
+    root: &Path,
+    command: &str,
+    change_id: Option<&str>,
+    result: &str,
+) -> Value {
+    let mut args = vec![command];
+    if let Some(change_id) = change_id {
+        args.extend(["--change", change_id]);
+    }
+    args.extend(["--result-json", result]);
+    let action = run(root, &args);
+    assert_eq!(action["state"], "SPEC_WAITING_REVIEW");
+    assert_eq!(action["actionRequired"]["type"], "AGENT_REVIEW_EXECUTION");
+    let required = &action["actionRequired"];
+    let review = json!({
+        "reviewId": required["reviewId"],
+        "targetHash": required["targetHash"],
+        "mode": "self",
+        "verdict": "READY",
+        "summary": "已核对统一规格的需求、验收场景和技术设计。",
+        "findings": [],
+        "rechecks": []
+    });
+    let review_json = review.to_string();
+    let mut review_args = vec![command];
+    if let Some(change_id) = change_id {
+        review_args.extend(["--change", change_id]);
+    }
+    review_args.extend(["--result-json", review_json.as_str()]);
+    run(root, &review_args)
+}
+
+fn approve_quality_review(root: &Path) -> Value {
+    let action = run(root, &["verify"]);
+    assert_eq!(action["state"], "QUALITY_WAITING_REVIEW");
+    assert_eq!(action["actionRequired"]["type"], "AGENT_REVIEW_EXECUTION");
+    assert_eq!(action["actionRequired"]["target"], "QUALITY");
+    for field in ["reviewId", "targetHash", "reviewer", "resultSchema"] {
+        assert!(!action["actionRequired"][field].is_null());
+    }
+    let required = &action["actionRequired"];
+    let review = json!({
+        "reviewId": required["reviewId"],
+        "targetHash": required["targetHash"],
+        "mode": "self",
+        "verdict": "READY",
+        "summary": "已核对质量报告和验证证据。",
+        "findings": [],
+        "rechecks": []
+    });
+    let review_json = review.to_string();
+    run(root, &["verify", "--result-json", review_json.as_str()])
+}
+
 fn combined(output: &Output) -> String {
     format!(
         "{}{}",
@@ -54,6 +113,62 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 #[test]
+fn maven_quality_options_and_goals_are_validated_through_cli() {
+    let root = tempfile::tempdir().unwrap();
+    git(root.path(), &["init", "-q"]);
+    std::fs::write(root.path().join("README.md"), "Maven 验证协议样例\n").unwrap();
+    git(root.path(), &["add", "README.md"]);
+    git(root.path(), &["commit", "-qm", "初始化 Maven 验证样例"]);
+    run(root.path(), &["init"]);
+    run(root.path(), &["spec", "用 Maven 验证当前业务变更"]);
+    approve_spec_result(root.path(), "spec", SPEC);
+    run(root.path(), &["plan"]);
+
+    let mut plan: Value = serde_json::from_str(PLAN).unwrap();
+    plan["tasks"][0]["verification"] = json!([{
+        "command": "mvn",
+        "args": ["-B", "-q", "--settings", "settings.xml", "clean", "verify", "-e", "--color"],
+        "expected": "Maven 质量检查通过"
+    }]);
+    // 仅验证入口协议；真正的 Spring Boot/HTTP 执行由独立宿主试用证明。
+    for args in [
+        vec!["test", "deploy"],
+        vec!["verify", "install"],
+        vec!["-B", "test", "help:evaluate"],
+        vec!["--settings", "verify"],
+        vec!["-s", "-q", "verify"],
+        vec!["-q", "clean"],
+        vec!["--color", "verify"],
+        vec!["-Bq", "verify"],
+    ] {
+        let mut rejected_plan = plan.clone();
+        rejected_plan["tasks"][0]["verification"][0]["args"] = json!(args);
+        let output = cli(
+            root.path(),
+            &[
+                "plan",
+                "--result-json",
+                &rejected_plan.to_string(),
+                "--json",
+            ],
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            result["error"]["code"], "E_SECURITY_BLOCKED",
+            "{args:?}: {result}"
+        );
+        assert_eq!(result["state"], "PLAN_WAITING_AGENT");
+    }
+    let accepted = run(root.path(), &["plan", "--result-json", &plan.to_string()]);
+    assert_eq!(accepted["state"], "PLAN_READY");
+    let task = run(root.path(), &["build", "next"]);
+    assert_eq!(
+        task["actionRequired"]["verification"][0]["args"],
+        plan["tasks"][0]["verification"][0]["args"]
+    );
+}
+
+#[test]
 fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
@@ -76,7 +191,10 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     let waiting = run(root, &["status"]);
     assert_eq!(waiting["next"], "sdd spec --change shipping");
     assert_eq!(run(root, &["spec"])["changeId"], "shipping");
-    run(root, &["spec", "--result-json", SPEC]);
+    assert_eq!(
+        approve_spec_result(root, "spec", SPEC)["state"],
+        "SPEC_READY"
+    );
 
     let planning = run(root, &["plan"]);
     assert_eq!(
@@ -110,7 +228,10 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     );
     let stale_plan = cli(root, &["plan", "--result-json", PLAN, "--json"]);
     assert!(!stale_plan.status.success());
-    run(root, &["change", "--result-json", SPEC]);
+    assert_eq!(
+        approve_spec_result(root, "change", SPEC)["state"],
+        "SPEC_READY"
+    );
     run(root, &["plan"]);
 
     let python = if cfg!(windows) { "python" } else { "python3" };
@@ -166,6 +287,12 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     let command = format!("{python} -m unittest -v");
     let result = json!({
         "taskId": "TASK-001", "status": "completed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "developer",
+            "contributions": [],
+            "limitations": []
+        },
         "filesChanged": ["shipping.py", "test_shipping.py"],
         "evidence": [
             {"type": "command-run", "command": command, "passed": false, "expectedFailure": true, "output": combined(&red)},
@@ -204,7 +331,7 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
         )["state"],
         "BUILD_READY"
     );
-    assert_eq!(run(root, &["verify"])["state"], "QUALITY_READY");
+    assert_eq!(approve_quality_review(root)["state"], "QUALITY_READY");
     // 在真实完成的项目上制造范围问题，验证普通用户能看到阻断原因和处理选择。
     std::fs::write(root.join("unexpected.txt"), "计划外文件\n").unwrap();
     let fixing = combined(&cli(root, &["verify"]));
@@ -213,6 +340,12 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     let fix = run(root, &["verify"]);
     let failed_fix = json!({
         "fixId": fix["actionRequired"]["fixId"], "status": "failed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "quality",
+            "contributions": [],
+            "limitations": []
+        },
         "filesChanged": [], "verification": result["verification"]
     });
     let blocked = cli(root, &["verify", "--result-json", &failed_fix.to_string()]);
@@ -227,9 +360,50 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
         "{blocked_status}"
     );
     assert!(blocked_status.contains("任务进度：1/1 已完成"));
-    // 用户选择手动恢复范围后，重新验证无需消耗另一轮 Agent 修复授权。
+    // 用户选择手动恢复范围后，仍须明确 --continue 授权才能重新进入修复流程。
     std::fs::remove_file(root.join("unexpected.txt")).unwrap();
-    assert_eq!(run(root, &["verify"])["state"], "QUALITY_READY");
+    let still_blocked = cli(root, &["verify", "--json"]);
+    assert!(!still_blocked.status.success());
+    let still_blocked_json: Value = serde_json::from_slice(&still_blocked.stdout).unwrap();
+    assert_eq!(still_blocked_json["state"], "QUALITY_BLOCKED");
+    assert!(still_blocked_json["actionRequired"].is_null());
+
+    let next_fix = run(root, &["verify", "--continue"]);
+    assert_eq!(next_fix["state"], "QUALITY_WAITING_FIX");
+    assert_eq!(next_fix["actionRequired"]["type"], "AGENT_FIX_EXECUTION");
+    assert_eq!(next_fix["actionRequired"]["userAuthorized"], true);
+    let retry = Command::new(python)
+        .args(["-m", "unittest", "-v"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(retry.status.success(), "{}", combined(&retry));
+    assert!(combined(&retry).contains("Ran 2 tests"));
+    let retry_result = json!({
+        "fixId": next_fix["actionRequired"]["fixId"],
+        "status": "completed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "quality",
+            "contributions": [],
+            "limitations": []
+        },
+        "filesChanged": [],
+        "verification": [{
+            "command": python,
+            "args": ["-m", "unittest", "-v"],
+            "passed": retry.status.success(),
+            "output": combined(&retry)
+        }]
+    });
+    assert_eq!(
+        run(
+            root,
+            &["verify", "--result-json", &retry_result.to_string()]
+        )["state"],
+        "QUALITY_WAITING_REVIEW"
+    );
+    assert_eq!(approve_quality_review(root)["state"], "QUALITY_READY");
     let status = combined(&cli(root, &["status"]));
     assert!(status.contains("任务进度：1/1 已完成"), "{status}");
     assert!(!status.contains("JSON 过长"));
@@ -312,7 +486,10 @@ fn human_errors_keep_the_selected_change_and_show_latest_business_titles() {
     let typo = combined(&cli(root, &["status", "--change", "typo"]));
     assert!(typo.contains("建议：sdd status"), "{typo}");
 
-    run(root, &["spec", "--change", "export", "--result-json", SPEC]);
+    assert_eq!(
+        approve_spec_result_for(root, "spec", Some("export"), SPEC)["state"],
+        "SPEC_READY"
+    );
     run(root, &["change", "只导出退款订单", "--change", "export"]);
     let status = run(root, &["status", "--change", "export"]);
     assert_eq!(status["data"]["selectedChange"]["title"], "只导出退款订单");

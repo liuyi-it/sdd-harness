@@ -41,6 +41,9 @@ pub fn run_verify(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
         return start_fix(cwd, &runtime, &change_id, true);
     }
     if let Some(raw) = result_json {
+        if workflow.phase == "QUALITY_WAITING_REVIEW" {
+            return complete_review(cwd, &runtime, &change_id, raw);
+        }
         if workflow.phase != "QUALITY_WAITING_FIX" {
             return Err(SddError::new(
                 "E_INVALID_PHASE_COMMAND",
@@ -49,21 +52,27 @@ pub fn run_verify(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
         }
         return complete_fix(cwd, &runtime, &change_id, raw);
     }
+    if workflow.phase == "QUALITY_WAITING_REVIEW" {
+        return resume_review(cwd, &runtime, &change_id);
+    }
     if workflow.phase == "QUALITY_WAITING_FIX" {
         return fix_action(cwd, &runtime, &change_id);
     }
+    if workflow.phase == "QUALITY_BLOCKED" {
+        let report = runtime.changes[&change_id]
+            .pointer("/reports/quality")
+            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "质量阻断缺少报告"))?;
+        let report: Report = serde_json::from_value(report.clone())
+            .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.to_string()))?;
+        return blocked_result(
+            change_id.clone(),
+            report,
+            super::review::warnings(&runtime, &change_id)?.unwrap_or_default(),
+        );
+    }
 
     let (report, warnings) = assess(cwd, &runtime, &change_id)?;
-    record_report(cwd, &change_id, &report)?;
-    if report.passed {
-        set_ready(cwd, &change_id)?;
-        return ready_result(change_id, report, warnings);
-    }
-    if workflow.quality_fix_rounds == 0 {
-        return start_fix(cwd, &runtime, &change_id, false);
-    }
-    set_blocked(cwd, &change_id, &report.summary)?;
-    blocked_result(change_id, report, warnings)
+    finish_assessment(cwd, &runtime, &change_id, report, warnings)
 }
 
 fn complete_fix(
@@ -104,12 +113,34 @@ fn complete_fix(
     validate_fix_verification(runtime, change_id, &value)?;
     if value.get("status").and_then(Value::as_str) != Some("completed") {
         set_blocked(cwd, change_id, "Agent 未能完成质量修复")?;
-        let (report, warnings) = assess(cwd, runtime, change_id)?;
+        let (mut report, mut warnings) = assess(cwd, runtime, change_id)?;
+        report
+            .issues
+            .extend(super::review::quality_issues(runtime, change_id)?);
+        report.issues.push(issue(
+            "E_QUALITY_FAILED",
+            "high",
+            "Agent 未能完成质量修复".into(),
+            None,
+        ));
+        report.passed = false;
+        report.summary = "质量修复未完成，等待明确授权后继续".into();
+        warnings.extend(super::review::warnings(runtime, change_id)?.unwrap_or_default());
         record_report(cwd, change_id, &report)?;
         return blocked_result(change_id.to_string(), report, warnings);
     }
 
     crate::state::RuntimeStore::new(cwd.to_string()).try_update(|document| {
+        let run = document
+            .runs
+            .get_mut(&workflow.run_id)
+            .and_then(Value::as_object_mut)
+            .expect("运行已校验为对象");
+        run.entry("fixes")
+            .or_insert_with(|| json!([]))
+            .as_array_mut()
+            .expect("fixes 已校验为数组")
+            .push(value.clone());
         let workflow = super::workflow_mut(document, change_id)?;
         apply_workflow_update(workflow, |workflow| {
             workflow.pending_agent_action = None;
@@ -120,14 +151,87 @@ fn complete_fix(
     })?;
     let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
     let (report, warnings) = assess(cwd, &current, change_id)?;
+    finish_assessment(cwd, &current, change_id, report, warnings)
+}
+
+fn finish_assessment(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+    report: Report,
+    mut warnings: Vec<CliWarning>,
+) -> Result<CommandResult, SddError> {
+    warnings.extend(super::review::warnings(runtime, change_id)?.unwrap_or_default());
     record_report(cwd, change_id, &report)?;
     if report.passed {
-        set_ready(cwd, change_id)?;
-        ready_result(change_id.to_string(), report, warnings)
-    } else {
-        set_blocked(cwd, change_id, &report.summary)?;
-        blocked_result(change_id.to_string(), report, warnings)
+        if super::review::current_ready(
+            cwd,
+            runtime,
+            change_id,
+            "QUALITY",
+            "architecture-reviewer",
+        )? {
+            set_ready(cwd, change_id)?;
+            return ready_result(change_id.to_string(), report, warnings);
+        }
+        let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+        return super::review::begin(cwd, &current, change_id, "QUALITY", "architecture-reviewer");
     }
+    if super::workflow(runtime, change_id)?.quality_fix_rounds == 0 {
+        return start_fix(cwd, runtime, change_id, false);
+    }
+    set_blocked(cwd, change_id, &report.summary)?;
+    blocked_result(change_id.to_string(), report, warnings)
+}
+
+fn resume_review(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+) -> Result<CommandResult, SddError> {
+    let pending = super::workflow(runtime, change_id)?
+        .pending_agent_action
+        .as_ref()
+        .expect("审查等待已校验");
+    if pending["targetHash"] == super::review::target_hash(cwd, runtime, change_id, "QUALITY")? {
+        if let Some(raw) = super::review::completed_result(runtime, change_id)? {
+            return complete_review(cwd, runtime, change_id, &raw);
+        }
+        return super::review::action(cwd, runtime, change_id);
+    }
+    // 原命令恢复时重新评估变更后的事实，不接受旧目标的回传。
+    let (report, warnings) = assess(cwd, runtime, change_id)?;
+    finish_assessment(cwd, runtime, change_id, report, warnings)
+}
+
+fn complete_review(
+    cwd: &str,
+    runtime: &crate::state::RuntimeDocument,
+    change_id: &str,
+    raw: &str,
+) -> Result<CommandResult, SddError> {
+    let completion = super::review::complete(cwd, runtime, change_id, raw)?;
+    let current = crate::state::RuntimeStore::new(cwd.to_string()).read()?;
+    if matches!(
+        completion,
+        super::review::Completion::Incomplete | super::review::Completion::Escalated
+    ) {
+        return super::review::action(cwd, &current, change_id);
+    }
+    let (mut report, warnings) = assess(cwd, &current, change_id)?;
+    report
+        .issues
+        .extend(super::review::quality_issues(&current, change_id)?);
+    let blocked = report
+        .issues
+        .iter()
+        .filter(|issue| matches!(issue.severity.as_str(), "critical" | "high"))
+        .count();
+    if matches!(completion, super::review::Completion::Rejected) || blocked > 0 {
+        report.passed = false;
+        report.summary = format!("语义审查未通过，发现 {blocked} 个阻断问题");
+    }
+    finish_assessment(cwd, &current, change_id, report, warnings)
 }
 
 fn start_fix(
@@ -185,8 +289,7 @@ fn fix_action(
         .cloned()
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "缺少质量报告"))?;
     let verification = verification_commands(runtime, change_id)?;
-    let schema: Value = serde_json::from_str(crate::schema::schema_source("fix-result")?)
-        .expect("内嵌 fix-result schema 必须合法");
+    let schema = crate::schema::schema_value("fix-result")?.clone();
     let docs = read_documents(cwd, change_id)?;
     Ok(CommandResult {
         ok: true,
@@ -202,8 +305,10 @@ fn fix_action(
         action_required: Some(AgentActionRequired::AgentFixExecution {
             fix_id: fix_id.to_string(),
             change_id: change_id.to_string(),
+            user_authorized: workflow.pending_agent_action.as_ref().and_then(|value| value["userAuthorized"].as_bool()).expect("修复行动已校验授权标记"),
             context_pack: format!(
-                "# 质量修复\n\n## 质量报告\n\n{}\n\n## 已批准文档\n\n{docs}\n\n只修复报告中的阻断问题，不扩大需求范围；完成后执行全部 verification 并回传 inline JSON。",
+                "{}\n\n# 质量修复\n\n## 质量报告\n\n{}\n\n## 已批准文档\n\n{docs}\n\n只修复报告中的阻断问题，不扩大需求范围；完成后执行全部 verification 并回传 inline JSON。",
+                crate::assets::COLLABORATION_POLICY,
                 serde_json::to_string_pretty(&report).expect("质量报告必须可序列化")
             ),
             allowed_files: allowed_files(runtime, change_id)?,
@@ -341,6 +446,8 @@ fn assess(
     report.issues = issues;
     report.minimality = Some(json!({
         "changedFiles": changed_files,
+        "workspaceFingerprint": super::review::workspace_hash(cwd, runtime, change_id)?,
+        "semanticReviews": super::review::summaries(runtime, change_id)?,
         "gitFingerprint": if GitInspector::is_git_repo(&business_cwd)? {
             Some(GitInspector::workspace_fingerprint(&business_cwd)?)
         } else {
@@ -602,7 +709,9 @@ fn validate_fix_verification(
             .and_then(Value::as_str)
             .ok_or_else(|| SddError::new("E_QUALITY_FAILED", "verification 缺少 command"))?;
         let args = string_array(item, "args")?;
-        if item.get("passed").and_then(Value::as_bool) != Some(true) {
+        if value["status"] == "completed"
+            && item.get("passed").and_then(Value::as_bool) != Some(true)
+        {
             return Err(SddError::new(
                 "E_QUALITY_FAILED",
                 "质量修复后的验证必须全部通过",

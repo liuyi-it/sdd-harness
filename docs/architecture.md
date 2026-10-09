@@ -18,15 +18,21 @@ Core 不生成需求内容、技术方案或计划，也不替代 Agent 编码�
 init → spec → plan → build → verify → archive
 ```
 
-每个任务都走相同阶段，但内容规模自适应：简单任务可以只有一条需求、一个技术设计决策和一个纵向任务；复杂任务增加场景、决策和任务数量。系统不提供 `auto`，也不提供单独 `review`。
+每个任务都走相同阶段，但内容规模自适应：简单任务可以只有一条需求、一个技术设计决策和一个纵向任务；复杂任务增加场景、决策和任务数量。系统不提供 `auto`，也不提供单独 `review` 命令；审查作为规格和 verify 阶段内的 Core 行动。
 
-`spec`、`change`、`plan` 返回 `AGENT_PHASE_EXECUTION`。统一 Spec 行动包含不可信代码库上下文和 resultSchema；Agent 一次生成可验收规格与技术设计 JSON 后，由 Core 校验、渲染到唯一 `spec.md` 并落盘。这样保留高质量规格与计划，同时避免重复设计文档。
+`spec`、`change`、`plan` 返回 `AGENT_PHASE_EXECUTION`。统一 Spec 行动包含不可信代码库上下文和 resultSchema；Agent 一次生成可验收规格与技术设计候选 JSON 后，由 Core 校验并进入审查，只有 READY 才渲染到唯一 `spec.md` 并落盘。这样保留高质量规格与计划，同时避免重复设计文档。
+
+规格的首次生成、等待恢复与修订均由 `phase_action` 下发编译期嵌入的 `assets/policies/specification.md`，位于不可信代码材料边界之外。两端 Skill 指引宿主执行同一套依据分类和提交前语义核对，避免仅靠某个宿主模板约束。修订前规格仍完整传入，但明确不是用户逐项确认的证明。候选结果回传后进入 `AGENT_REVIEW_EXECUTION`，只有 reviewer 返回 READY 才落盘唯一 `spec.md`。协作记录由当前阶段 resultSchema 约束；本提示不属于 build 的 policyBundle，也不新增模型执行器。Core 不持有完整对话，不能判定用户确认或自然语言语义。
+
+工作目录与材料生命周期单源维护在 `assets/policies/workspace.md`。资产层编译期嵌入并复用现有安全写入机制，将同一源分发为 Codex/OMP 各五个 Skill 的本地 `references/workspace.md`；规格行动也直接下发同一内容，不再在规格策略中复制公共细则。协作规则另由 `assets/policies/collaboration.md` 单源维护并分发为本地 `references/collaboration.md`；spec、plan、build task result 和 verify fix result 的 `collaboration` 记录由各自 resultSchema 约束。未增加新的 Skill、运行时配置或自动清理器。
+
+AI-DLC 协作协议单源维护在 `assets/policies/collaboration.md` 的明确角色段，由 `assets.rs` 编译嵌入为 `COLLABORATION_POLICY`；Core 的 `role_reference` 接口按角色名从该段提取职责，不另维护一套职责文字，且同一策略随两端十个 Skill 分发为本地参考。角色是宽职责视角，不是新 Skill 或固定 subagent 配置。conductor 唯一派发、lead 整合贡献、reviewer 独立只读；`inline`、`subagent`、`pipeline`、`mob` 只描述组织方式，不改变状态机或 Core 权限。
 
 `build` 返回 `AGENT_TASK_EXECUTION`。一个任务覆盖完整纵向结果，内部 steps 承载 TEST、IMPLEMENT、可选 REFACTOR、VERIFY。Core 校验实际文件变化与声明、全部计划验证命令以及 TDD 预期失败和最终通过证据。
 
 计划 Schema 复用唯一 task 定义并在下发前内嵌，构建行动也附完整结果 Schema。命令门禁按程序与子命令检查，保留参数边界；结果匹配按 argv 比较。Core 不执行业务 verification，宿主必须实际执行，结构一致性不能证明测试真实性或语义正确。
 
-`verify` 合并验证与审查：覆盖、证据、Git 范围、敏感信息、依赖计划一次完成。失败时返回 `AGENT_FIX_EXECUTION`；默认只允许一轮，后续必须由用户显式 `--continue`。
+`verify` 先确定性检查覆盖、证据、Git 范围、敏感信息和依赖计划；检查通过后按风险派发 `AGENT_REVIEW_EXECUTION`，QUALITY targetHash 绑定确定性报告（排除 Core 生成的语义附录）以及 spec/plan/tasks/fixes/workspace。审查结果用原命令的 `--result-json` 回传 READY/NOT_READY，并声明 independent/self/self_fallback，可选回传七类 riskFactors；新风险要求 Core 原子升级、生成新目标哈希并让同一 reviewer 重新独立审查，旧记录保留为历史，当前 candidate 按新风险重新判断，产品通过后才进入架构审查，不能复用旧 self/self_fallback。审查不完整只能由 independent 重派一次，第二次仍不完整以退出码 8 阻断并保留行动；完整结果不可覆盖，重复相同结果由原命令幂等恢复。失败时返回带 `userAuthorized` 和完整 materialized `resultSchema` 的 `AGENT_FIX_EXECUTION`；自动修复默认只允许一轮，`QUALITY_BLOCKED` 下普通 verify 保持阻断，后续只有用户显式授权 `--continue` 才能开启新一轮。
 
 ## 多 change Runtime
 
@@ -55,7 +61,7 @@ Runtime 的存储 JSON 根包含 `checksum`，它覆盖移除自身字段后的 
 
 每次事务将状态与校验和写入同目录唯一临时文件，同步后一次原子替换并同步目录。正常初始化或重复初始化只持久化 `runtime.json` 与 `lock`，不生成备份、独立校验或诊断文件。状态损坏直接报错，不读取旧快照；这保留原子提交和损坏检测，不提供自动恢复。需求阶段的可读文档仍按需写入 `changes/`。
 
-当前版本使用 runtime schema 8、state schema 4、config schema 4，不执行旧状态迁移。版本不符在读取校验内容前返回 `E_STATE_VERSION_UNSUPPORTED`，原文件不被覆盖或清理。
+当前版本使用 runtime schema 9、state schema 4、config schema 4；规格结果和持久规格版本为 6.0.0，计划结果版本为 4.0.0，不执行旧状态迁移。版本不符在读取校验内容前返回 `E_STATE_VERSION_UNSUPPORTED`，原文件不被覆盖或清理。
 
 ## 代码库上下文
 

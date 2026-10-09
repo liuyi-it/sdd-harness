@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sdd-harness.dev/schemas/collaboration.schema.json",
+  "title": "SDD 协作记录",
+  "type": "object",
+  "required": [
+    "topology",
+    "lead",
+    "contributions",
+    "limitations"
+  ],
+  "properties": {
+    "topology": {
+      "type": "string",
+      "enum": [
+        "inline",
+        "subagent",
+        "pipeline",
+        "mob"
+      ]
+    },
+    "lead": {
+      "type": "string",
+      "enum": [
+        "product",
+        "architect",
+        "developer",
+        "quality",
+        "product-reviewer",
+        "architecture-reviewer"
+      ]
+    },
+    "contributions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "role",
+          "summary",
+          "inputs",
+          "feedback"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "product",
+              "architect",
+              "developer",
+              "quality",
+              "product-reviewer",
+              "architecture-reviewer"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          },
+          "feedback": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  },
+  "additionalProperties": false
+}

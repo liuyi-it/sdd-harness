@@ -21,6 +21,8 @@ pub struct SpecPhaseResult {
     pub scope: Scope,
     pub constraints: Vec<String>,
     pub model: SpecDocument,
+    pub collaboration: serde_json::Value,
+    pub review_policy: crate::commands::review::ReviewPolicy,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -36,6 +38,7 @@ pub struct DependencyDecision {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PlanPhaseResult {
+    pub collaboration: serde_json::Value,
     pub schema_version: String,
     pub summary: String,
     pub global_constraints: Vec<String>,

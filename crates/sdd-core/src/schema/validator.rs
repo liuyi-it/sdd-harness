@@ -13,7 +13,15 @@ use regex::Regex;
 use crate::error::SddError;
 
 /// 已注册的 schema（内嵌编译期内容）
-pub const SCHEMAS: [(&str, &str); 11] = [
+pub const SCHEMAS: [(&str, &str); 13] = [
+    (
+        "collaboration",
+        include_str!("../../../../schemas/collaboration.schema.json"),
+    ),
+    (
+        "review-result",
+        include_str!("../../../../schemas/review-result.schema.json"),
+    ),
     (
         "state",
         include_str!("../../../../schemas/state.schema.json"),
@@ -66,6 +74,15 @@ fn parsed_schemas() -> &'static [serde_json::Value; SCHEMAS.len()] {
                     serde_json::from_str(schema_source("task").expect("task Schema 必须已注册"))
                         .expect("task Schema 必须合法");
             }
+            if matches!(
+                SCHEMAS[index].0,
+                "spec-result" | "spec" | "plan-result" | "task-result" | "fix-result"
+            ) {
+                schema["properties"]["collaboration"] = serde_json::from_str(
+                    schema_source("collaboration").expect("协作 Schema 必须已注册"),
+                )
+                .expect("协作 Schema 必须合法");
+            }
             schema
         })
     })
@@ -80,7 +97,16 @@ pub fn validate_json(name: &str, doc: &serde_json::Value) -> Result<(), SddError
             "E_STATE_CORRUPTED",
             &format!("{} 校验失败：{}", name, p),
         )),
-        None => Ok(()),
+        None => {
+            if name == "collaboration" {
+                crate::protocol::validate_collaboration(doc)
+                    .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.message))?;
+            } else if let Some(collaboration) = doc.get("collaboration") {
+                crate::protocol::validate_collaboration(collaboration)
+                    .map_err(|error| SddError::new("E_STATE_CORRUPTED", &error.message))?;
+            }
+            Ok(())
+        }
     }
 }
 

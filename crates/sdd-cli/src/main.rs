@@ -238,6 +238,24 @@ fn render_text(result: &CommandResult) -> String {
     if let Some(action) = &result.action_required {
         use sdd_core::contracts::AgentActionRequired;
         match action {
+            AgentActionRequired::AgentReviewExecution {
+                target,
+                independent_required,
+                ..
+            } => {
+                let subject = if target == "SPECIFICATION" {
+                    "规格与技术设计"
+                } else {
+                    "当前实现与验证结果"
+                };
+                lines.push(format!("等待 Agent 审查{subject}。"));
+                if *independent_required {
+                    lines.push("当前风险需要独立审查；宿主能力不足时须明确说明降级。".into());
+                }
+                if !result.ok {
+                    lines.push("审查未完整返回，当前行动已保留，需恢复审查后才能继续。".into());
+                }
+            }
             AgentActionRequired::AgentPhaseExecution { phase, .. } => {
                 let stage = if phase == "PLAN" {
                     "实施计划"

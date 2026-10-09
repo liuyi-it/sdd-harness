@@ -14,7 +14,7 @@ use crate::error::SddError;
 use crate::state::state_store::{validate_run_id, ChangeWorkflow, WorkflowState};
 
 pub const RUNTIME_FILE: &str = "runtime.json";
-pub const RUNTIME_SCHEMA_VERSION: u32 = 8;
+pub const RUNTIME_SCHEMA_VERSION: u32 = 9;
 const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +209,7 @@ fn validate_document(document: &RuntimeDocument, root: &Path) -> Result<(), SddE
     }
     for (change_id, workflow) in &document.workflows {
         crate::state::state_store::validate_change_workflow(workflow)?;
+        crate::commands::review::validate_binding(document, change_id)?;
         let run = document.runs.get(&workflow.run_id).ok_or_else(|| {
             SddError::new(
                 "E_STATE_CORRUPTED",
@@ -481,10 +482,19 @@ fn validate_change(change_id: &str, change: &Value) -> Result<(), SddError> {
             &format!("change {change_id} 必须是对象"),
         )
     })?;
-    if fields
-        .keys()
-        .any(|field| !matches!(field.as_str(), "spec" | "plan" | "reports" | "archive"))
-    {
+    if fields.keys().any(|field| {
+        !matches!(
+            field.as_str(),
+            "spec"
+                | "plan"
+                | "reports"
+                | "archive"
+                | "candidate"
+                | "reviews"
+                | "reviewRiskFactors"
+                | "revisionBasis"
+        )
+    }) {
         return Err(SddError::new(
             "E_STATE_CORRUPTED",
             &format!("change {change_id} 包含未知字段"),
@@ -504,11 +514,20 @@ fn validate_change(change_id: &str, change: &Value) -> Result<(), SddError> {
             &format!("change {change_id} 字段类型无效"),
         ));
     }
+    crate::commands::review::validate_storage(change)?;
     if let Some(spec) = fields.get("spec") {
         crate::schema::validate_json("spec", spec)?;
         if spec.get("status").and_then(Value::as_str) == Some("READY") {
             crate::engines::spec::model_from_record(spec)?;
         }
+    }
+    if let Some(plan) = fields.get("plan") {
+        let mut result = plan.clone();
+        let object = result.as_object_mut().expect("计划已校验为对象");
+        if object.remove("changeId").as_ref().and_then(Value::as_str) != Some(change_id) {
+            return Err(SddError::new("E_STATE_CORRUPTED", "计划与所属变更不一致"));
+        }
+        crate::schema::validate_json("plan-result", &result)?;
     }
     if let Some(reports) = fields.get("reports").and_then(Value::as_object) {
         for (kind, report) in reports {
@@ -530,7 +549,7 @@ fn validate_run(run_id: &str, run: &Value) -> Result<(), SddError> {
         .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", &format!("run {run_id} 必须是对象")))?;
     if fields
         .keys()
-        .any(|field| !matches!(field.as_str(), "changeId" | "input" | "tasks"))
+        .any(|field| !matches!(field.as_str(), "changeId" | "input" | "tasks" | "fixes"))
         || !fields
             .get("changeId")
             .and_then(Value::as_str)
@@ -542,6 +561,14 @@ fn validate_run(run_id: &str, run: &Value) -> Result<(), SddError> {
             "E_STATE_CORRUPTED",
             &format!("run {run_id} 结构无效"),
         ));
+    }
+    if let Some(fixes) = fields.get("fixes") {
+        let fixes = fixes
+            .as_array()
+            .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "run.fixes 必须是数组"))?;
+        for fix in fixes {
+            crate::schema::validate_json("fix-result", fix)?;
+        }
     }
     if let Some(tasks) = fields.get("tasks") {
         let tasks = tasks.as_object().ok_or_else(|| {

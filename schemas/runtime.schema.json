@@ -1,25 +1,66 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["schemaVersion", "checksum", "state", "config", "artifacts", "changes", "runs", "workflows", "index"],
+  "required": [
+    "schemaVersion",
+    "checksum",
+    "state",
+    "config",
+    "artifacts",
+    "changes",
+    "runs",
+    "workflows",
+    "index"
+  ],
   "properties": {
-    "schemaVersion": { "type": "integer", "enum": [8] },
-    "checksum": { "type": "string", "pattern": "^[a-f0-9]{64}$", "description": "移除本字段后，对 JSON 值按对象键排序的紧凑序列化字节计算 SHA-256。" },
-    "state": { "type": "object" },
-    "config": { "type": "object" },
+    "schemaVersion": {
+      "type": "integer",
+      "enum": [
+        9
+      ]
+    },
+    "checksum": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "移除本字段后，对 JSON 值按对象键排序的紧凑序列化字节计算 SHA-256。"
+    },
+    "state": {
+      "type": "object"
+    },
+    "config": {
+      "type": "object"
+    },
     "artifacts": {
       "type": "object",
-      "required": ["schemaVersion", "artifacts"],
+      "required": [
+        "schemaVersion",
+        "artifacts"
+      ],
       "properties": {
-        "schemaVersion": { "type": "string", "enum": ["2.0.0"] },
-        "artifacts": { "type": "object" }
+        "schemaVersion": {
+          "type": "string",
+          "enum": [
+            "2.0.0"
+          ]
+        },
+        "artifacts": {
+          "type": "object"
+        }
       },
       "additionalProperties": false
     },
-    "changes": { "type": "object" },
-    "runs": { "type": "object" },
-    "workflows": { "type": "object" },
-    "index": { "type": "object" }
+    "changes": {
+      "type": "object"
+    },
+    "runs": {
+      "type": "object"
+    },
+    "workflows": {
+      "type": "object"
+    },
+    "index": {
+      "type": "object"
+    }
   },
   "additionalProperties": false
 }

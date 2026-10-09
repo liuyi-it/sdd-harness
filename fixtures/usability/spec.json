@@ -1,6 +1,16 @@
 {
-  "schemaVersion": "5.0.0",
+  "schemaVersion": "6.0.0",
   "goal": "提供可测试的订单运费计算",
+  "collaboration": {
+    "topology": "inline",
+    "lead": "product",
+    "contributions": [],
+    "limitations": []
+  },
+  "reviewPolicy": {
+    "riskFactors": [],
+    "rationale": "变更仅新增纯函数及其单元测试，不涉及跨模块、外部契约、并发、一致性、权限、敏感数据或不可逆数据。"
+  },
   "scope": {
     "included": [
       "计算满 100 元免运费规则并拒绝负数金额"

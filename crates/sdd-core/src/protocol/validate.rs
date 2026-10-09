@@ -236,3 +236,59 @@ fn validate_length(value: &str, maximum: usize, field: &str) -> Result<(), SddEr
 fn invalid(reason: &str) -> SddError {
     SddError::new("E_TDD_EVIDENCE_REQUIRED", reason)
 }
+
+/// 记录协作成果之间的实际交接关系；这不证明 Agent 身份或调度真实性。
+pub fn validate_collaboration(value: &serde_json::Value) -> Result<(), SddError> {
+    let contributions = value["contributions"]
+        .as_array()
+        .ok_or_else(|| invalid("协作贡献必须是数组"))?;
+    if contributions.len() > 32 {
+        return Err(invalid("协作贡献超过 32 条"));
+    }
+    let topology = value["topology"]
+        .as_str()
+        .ok_or_else(|| invalid("缺少协作拓扑"))?;
+    let mut ids = std::collections::BTreeSet::new();
+    let mut roles = std::collections::BTreeSet::new();
+    for (index, contribution) in contributions.iter().enumerate() {
+        let id = contribution["id"]
+            .as_str()
+            .ok_or_else(|| invalid("贡献缺少标识"))?;
+        let inputs = contribution["inputs"]
+            .as_array()
+            .ok_or_else(|| invalid("贡献缺少输入引用"))?;
+        if ids.contains(id)
+            || inputs
+                .iter()
+                .any(|input| !input.as_str().is_some_and(|input| ids.contains(input)))
+        {
+            return Err(invalid("贡献标识重复或输入不是已完成的前序贡献"));
+        }
+        if topology == "pipeline"
+            && index > 0
+            && !inputs
+                .iter()
+                .any(|input| input == &contributions[index - 1]["id"])
+        {
+            return Err(invalid("pipeline 后续环节必须引用上一环节成果"));
+        }
+        ids.insert(id);
+        roles.insert(contribution["role"].as_str());
+    }
+    if (topology == "subagent" && contributions.is_empty())
+        || (topology == "pipeline" && contributions.len() < 2)
+    {
+        return Err(invalid("委派协作缺少实际贡献"));
+    }
+    if topology == "mob"
+        && (roles.len() < 2
+            || !contributions.iter().any(|item| {
+                item["feedback"]
+                    .as_array()
+                    .is_some_and(|items| !items.is_empty())
+            }))
+    {
+        return Err(invalid("mob 必须包含不同角色的贡献及交叉反馈"));
+    }
+    Ok(())
+}

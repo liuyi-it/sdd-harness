@@ -60,6 +60,22 @@ pub fn validate_file_change(
     Ok(())
 }
 
+/// 使用同一范围语义选择指纹文件，避免为每个路径重复编译 glob。
+pub(crate) fn matching_paths(
+    paths: &[String],
+    allowed: &[String],
+) -> Result<Vec<String>, SddError> {
+    let patterns = compile_patterns(allowed, false)?;
+    let mut result = paths
+        .iter()
+        .filter(|path| patterns.iter().any(|pattern| pattern.matches(path)))
+        .cloned()
+        .collect::<Vec<_>>();
+    result.sort();
+    result.dedup();
+    Ok(result)
+}
+
 fn compile_patterns(
     patterns: &[String],
     case_insensitive: bool,

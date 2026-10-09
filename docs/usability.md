@@ -69,7 +69,7 @@ cargo test -p sdd-cli --test usability -- --test-threads=1
 | 多任务选错阶段 | 建议丢失目标，跟随提示又触发歧义 | 恢复命令保留目标；测试按提示恢复同一变更 |
 | 多任务冲突 | 只给内部标识，要求用户查看 JSON | 错误直接列业务标题和阶段；拼错标识时给可执行的查看命令 |
 | 需求修订与归档查询 | 修订仍展示旧目标；已归档任务缺少标题 | 待修订标题取最新输入，所选任务摘要独立展示 |
-| 质量失败 | 首次修复隐藏具体问题，阻断仅提示继续修复 | 真实 demo 添加计划外文件，验证首次修复、失败结果与状态都展示问题；手动恢复范围后普通验证通过 |
+| 质量失败 | 首次修复隐藏具体问题，阻断仅提示继续修复 | 真实 demo 添加计划外文件，验证首次修复、失败结果与状态都展示问题；当前预算耗尽后保持阻断，须明确授权后恢复修复链 |
 | 代码库诊断和长查询 | 输出内部 JSON，长结果被整体省略 | 缺少 CodeGraph 的独立进程验证可读诊断和 40 个文件的完整扫描结果 |
 | Agent 向用户提问 | 没有明确要求业务语言和可理解选项 | Codex/OMP 五阶段模板明确按标题选择、说明取舍、报告阻断事实；结构校验通过 |
 
@@ -79,9 +79,68 @@ cargo test -p sdd-cli --test usability -- --test-threads=1
 
 提交前另一项“命令成功但未生成索引目录”测试出现一次并行断言失败。已补充实际失败原因输出；随后连续五次定向测试和三次全量测试均通过，但未复现该次失败，不能据此宣称并行波动已彻底消除。该测试的时间预算和生产校验保持不变。
 
+## AI-DLC 协作回归边界
+
+共享协作参考定义六类宽职责角色和 `inline`、`subagent`、`pipeline`、`mob` 四种拓扑。确定性 CLI 回归应覆盖：规格候选在审查 READY 前不落盘；审查行动用原命令的 `--result-json` 回传；spec/plan/task/fix 结果记录必填 `collaboration`，并校验 subagent、pipeline、mob 的贡献与输入/交叉反馈约束；review-result 可回传七类风险并触发同一 reviewer 的新 hash 独立复核；QUALITY hash 排除 Core 语义附录且绑定 spec/plan/tasks/fixes/workspace；历史审查只追加、完整结果不可覆盖、相同结果可幂等恢复；verify 先完成确定性门禁再审查；不完整 independent 审查最多重派一次，第二次以退出码 8 保留行动；build 子 Agent 写入时同一时间只有一个业务写者；质量自动修复只有一轮。`AGENT_FIX_EXECUTION` 的 action 还必须带 `userAuthorized` 和完整 materialized `resultSchema`，`QUALITY_BLOCKED` 下普通 verify 保持阻断，`--continue` 只在用户明确授权后开启额外轮次。
+
+## 2026-10-08 Codex 宿主真实拓扑试用
+
+四个隔离运费 demo 由 Codex 宿主按真实 `sdd` CLI 完成五阶段闭环并全部到达 `ARCHIVED`。原始 action、贡献、命令输出和日志作为本轮证据保留在临时会话材料中；长期文档不依赖这些临时绝对路径，也不把一次试用外推为所有模型或宿主的能力证明。
+
+- `inline`：小范围运费缺陷完成 `spec → plan → build → verify → archive`。
+- `subagent`：developer 角色的 Lead 实际跨 `shipping`/`order` 修改三个业务文件并运行 5 个测试；这次实施者是 developer Lead，不是只读 support。产品审查先因类型边界、场景和回滚遗漏返回 `NOT_READY`，架构审查再因缺少 mock 委托证据返回 `NOT_READY`；修订候选并逐项 recheck 后变为 READY。
+- `pipeline`：两个不同 Agent 先完成真实诊断，`-1`、`99`、`100` 均返回 `0`；架构 Agent 读取开发贡献后综合建议。计划第一次漏掉第三个场景，被 CLI 拒绝；使用原命令恢复并修正后完成闭环。
+- `mob`：架构和质量两个 support 独立贡献并互读交叉反馈，Lead 整合纯函数场景、回滚和类型范围后完成闭环。
+
+同一轮还验证了质量阻断恢复：subagent 质量独立审查实际运行 5 个测试并 READY；随后仅改变代码注释，归档被 `E_QUALITY_REQUIRED` 拒绝，旧审查结果回传也被拒绝；重新运行测试并取得新的独立审查后才 READY 和归档。该证据说明审查绑定和历史不可复用生效，不代表性能、效率或模型泛化收益。资产 10 个协作参考映射回归已通过；新增 Unix CLI 路径回归曾真实复现“空外部 alias/** 进入 review”的 RED，修复后 collaboration 回归共 14 项。完整 workspace 检查最终为 140 passed、1 ignored。OMP 资产安装协议已验证，但真实 OMP 宿主协作闭环未验证。本轮 OMP 查询首次因沙箱 SQLite `READONLY` 被阻断，权限放行后模型目录查询长时间无返回并以退出码 130 取消；没有继续运行中的 OMP 任务或可报告的协作结论。
+
+### 按 CLI 复现
+
+在一个新的隔离 Git 项目中执行以下步骤；`<JSON>` 由宿主根据每次 action 携带的完整 resultSchema 生成，不能直接调用 Core 或手写 Runtime：
+
+```bash
+cd <demo-project>
+sdd init --json
+sdd spec "实现完整运费计算并拒绝负数，保持纯函数且不新增依赖" --change shipping --json
+sdd spec --change shipping --result-json '<candidate JSON>' --json
+# 若返回 AGENT_REVIEW_EXECUTION，仍使用原 sdd spec 命令回传 review JSON
+sdd spec --change shipping --result-json '<review JSON>' --json
+sdd plan --change shipping --json
+sdd plan --change shipping --result-json '<plan JSON>' --json
+sdd build next --change shipping --json
+sdd build complete --change shipping --task TASK-001 --result-json '<task JSON>' --json
+sdd verify --change shipping --json
+sdd verify --change shipping --result-json '<fix JSON>' --json
+sdd archive --change shipping --json
+```
+
+每一步都在目标项目目录执行，并按 action 的 `allowedFiles`、verification 和 resultSchema 运行；support 贡献由宿主 native 返回交给 Lead，不成为第二份规格。若质量门禁进入 `QUALITY_BLOCKED`，普通 `sdd verify` 保持阻断；即使手动修复，也必须先获得用户明确授权，再执行 `sdd verify --change shipping --continue --json` 重新进入修复验证链，该命令不能与 `--result-json` 同时使用。遇到计划遗漏或审查不完整，应重新执行原命令恢复行动并保留旧历史，不预填成功结果。
+
+## 2026-10-09 Spring Boot 真实宿主试用
+
+隔离工程从只含健康接口的 Spring Boot 3.5.11、Java 17、Maven 3.9.16 基线开始；通过当前工作树编译出的 CLI 初始化、规格与独立产品/架构审查、纵向计划、开发子 Agent 实施、实际验证和质量审查。需求是内存工单创建/查询：snake_case、严格 JSON 类型、1..120 Unicode 码点标题、稳定 201/200/400/404、20 并发创建不覆盖、重启清空、健康接口保留。业务代码由真实 developer 子 Agent 编写，Conductor 核对全部实际 diff 和证据并回传；Reviewer 为另一独立只读 Agent。
+
+| 真实路径及问题 | 定位和处理 | 证据边界 |
+|---|---|---|
+| 默认 Java 为 8，离线插件依赖不齐，本地私服未启动 | 显式使用已有 Java 17；独立临时 settings/localRepository 从 Maven Central 补依赖，不改全局配置 | 环境问题，与 SDD 命令门禁分开；基线健康测试实际运行成功 |
+| 合法 `mvn -B -q -s settings.xml verify` 在 plan 被拒绝 | 首参数假设误把选项当入口；按 Maven 选项、值及质量目标解析，保留原参数重试成功 | 真实 CLI 前后对照；可选 `--color` 由有 POM 的 Maven probe 实证；`-Bq` 被实际解释为非法生命周期，保持拒绝 |
+| `mvn test deploy` 被旧门禁放行 | 原规则未检查后续目标；当前拒绝 install/deploy/plugin goal、缺值和隐藏失败入口 | Cargo 回归真实 RED 后修复；未执行任何发布或安装命令。门禁不能证明任意 POM 安全或测试真实执行 |
+| 子 Agent 读取阶段 Skill 后再次从 PATH 获取旧 CLI | 完整行动已经派发，子 Agent 应直接消费包；公共协作规则明确由 Conductor 操作阶段入口和恢复 | 旧版本明确拒绝状态读取，未改写状态；刷新后的两端公共资产验证规则分发，不能据此宣称所有模型一定遵循 |
+| TaskResult 附加 `git diff --check` 证据、成功证据省略 passed | 保持 Core 的计划命令约束；补充规则，额外检查进入消息/贡献反馈，RED/GREEN 如实给出布尔字段 | 原返回被真实 CLI 拒绝，原命令修正回传后接受；未伪造命令或新增成功记录 |
+| 非 UUID 的未知工单返回400，违反规格“任意未创建ID返回404” | Conductor 在回传前发现真实合同遗漏，developer 修正并补实际 HTTP 断言 | 保留错误行为 RED 和修正 GREEN；不通过改规格或仅更新 mock 规避 |
+| 规格审查和 build 中断恢复 | 原命令恢复同一审查标识/目标及完整任务包，审查完成前未生成正式 spec | 全程只通过 CLI；恢复不依赖旧 Agent 会话；根仓库旧格式控制状态没有迁移 |
+| 质量通过后改变源码注释 | archive 和旧 review 结果真实被拒绝，重新获取新的目标绑定并重新实际验证/独立审查 | 成果变化即失效；不把行为未变或原测试已过当作复用旧结论的依据 |
+| 复审生成未忽略的 Python 字节码缓存 | 具体生成文件进入 Git 业务指纹，导致回传被拒绝；精确清理后，原验证命令以 `PYTHONDONTWRITEBYTECODE=1` 执行 | 不忽略实际成果变化；复跑基线包含样例 `.gitignore`，避免测试生成物进入业务范围 |
+
+Maven 与 Surefire 报告实际为 23 tests、0 failures、0 errors、0 skipped；包括 22 项工单测试和 1 项原健康测试。Python 的 1 项检查实际启动打包 JAR、HTTP 创建/读取/错误响应、终止及重启，验证旧工单 404。独立 Reviewer 再次运行两项原验证命令，并检查契约、并发、范围和历史证据；最终审查回传被接受，CLI 实际完成归档，再查询没有活动任务。可复制的最终业务源与复跑方法见 [Spring Boot 样例](../fixtures/springboot/README.md)；复制后也在独立目录实际完成 Maven 与 JAR 进程检查。
+
+本轮最终 `cargo fmt --check`、Clippy workspace 全目标零告警和 `cargo test --workspace` 通过；全量为 141 passed、0 failed、1 ignored。
+
+本轮覆盖 Codex 宿主、当前源码 CLI 和本机单进程 HTTP，未验证 OMP 真实协作、生产数据库/权限/网关/部署、容量、Windows 或远端 CI。20 并发属于行为验收，不是压测或吞吐结论。固定 CLI 回归仅证明协议，真实 Agent 返回、实际源码、命令退出码和报告共同支撑本轮交付结论。未替换全局 `sdd`，未提交或推送。
+
 ## 双文件持久化与多轮澄清
 
-初始化产生六个辅助文件的问题已收敛为 `runtime.json` 与稳定的 `lock`。checksum 放在存储 JSON 根中，与状态一次原子提交；取消自动备份、备份回退和持有者诊断文件。损坏后报错停止是明确选择的产品行为，不代表能够自动恢复。
+初始化产生六个辅助文件的问题已收敛为 `runtime.json` 与稳定的 `lock`。当前 Runtime schema 为 9，checksum 放在存储 JSON 根中，与状态一次原子提交；取消自动备份、备份回退和持有者诊断文件。损坏后报错停止是明确选择的产品行为，不代表能够自动恢复。
 
 定向验证：
 
@@ -99,7 +158,37 @@ cargo test -p sdd-core --test assets
 
 Codex、OMP 的规格模板明确每轮少量、总轮数不限，并按关键歧义是否消除来决定继续或结束。方案取舍使用互斥选项，事实与实例允许开放回答，已有答案不重复询问。交互案例见 [Agent 接入](adapters.md#需求澄清的轮次与结束条件)。自动测试验证两个宿主真正安装、刷新到当前模板，不再用模板关键词断言代替行为证明；多轮澄清语义仍需宿主遵循，未宣称已完成多模型会话测评。
 
+## 规格依据与修订回归
+
+真实看板会话暴露了“结构已通过，但 Agent 推断成为业务要求”的问题：最高权限规则扩展到了购买范围、旧电话接口阈值被带入新需求、时间窗口的回答被当成转化去重确认。改动集中在共享规格提示和两端 Skill，不用关键词黑名单或自报通过字段冒充语义判断。
+
+```bash
+cargo test -p sdd-cli --test specification
+cargo test -p sdd-core --test assets
+```
+
+自动回归通过真实 CLI 验证两种宿主的首次行动、恢复和修订均携带完整共享规则，规则处于代码材料边界之外；原规格完整传入，回传的修订同步渲染到需求、验收和设计，下一轮仍能取得修订依据。固定结果只验证协议与持久化，不证明模型会作出正确业务决定。模板安装/刷新继续验证下发内容与源文件一致。
+
+宿主语义试用可在隔离 demo 中逐步提供以下材料，不操作原业务项目。每步记录实际问题、回答和规格差异，不提前向 Agent 提供期望结果：
+
+| 输入阶段 | 应观察的行为 |
+|---|---|
+| 用户仅确认标签服务已处理多个客户 ID 的最高权限 | 不推导出购买只查询最高权限 ID，也不虚构服务返回选中 ID 的字段 |
+| 用户回答购买按会话窗口查询，Agent 曾推荐按会话计转化 | 时间窗口已确认，转化计数与重叠会话去重仍需澄清；不把回答扩张到未答问题 |
+| 现有电话接口只查会话内、客户被叫且至少 120 秒；用户仅要求最近电话 | 区分旧代码事实与新要求，询问影响结果的时间和过滤口径，而非直接沿用 |
+| 用户明确合并全部关联 ID 购买、按用户去重；电话沿用客户被叫但取消 120 秒 | 需求、场景、设计和接口一起修订；电话窗口若仍不明确就继续询问，不能扩大回答含义 |
+| 用户澄清展示 ID 是业务系统数字，外部联系人 ID 是另一标识；资料请求时查询不落库 | 同步映射、类型、来源、存储和验收，保留不相关的已确认规则 |
+| 外部服务不在本机，用户要求实时展示 | 将未验证契约明确标为拟议；明确实时的可验收边界，不凭现有接口能力改成分钟级承诺 |
+
+该表是后续真实宿主试用的验收基准，不是已完成的多模型实验。本轮对提示做了上述反例的人工语义审查，自动测试只覆盖确定性链路。
+
 ## 验证边界
+
+五阶段公共参考回归扩展 `assets` 测试：两端十个 Skill 首次安装和旧模板/参考刷新均核对实际文件，解析入口中的本地参考并确认内容来自唯一源；Unix 上验证参考路径为符号链接时拒绝写入且外部文件不变。规格行动回归另检查公共规则和规格规则都完整下发。测试不声称宿主一定遵循清理规则；人工审查另外覆盖 build 业务文件、verify 必要证据和 archive 正式材料的保护边界。
+
+工作目录回归使用分离的会话目录与目标目录，显式在目标目录执行真实 CLI，确认规格只出现在目标项目，未改动会话目录的已有文件。完整共享规则下发、两端 Skill 安装/刷新沿用上述测试。它不证明模型不会自行创建额外文件，也不模拟或宣称已验证所有宿主的临时文件清理行为。可在宿主试用时分别检查：目标不明先询问、权限不足不切换目录、无导出要求不复制文档、暂停说明恢复材料、成功后只清理自建临时文件、用户指定保留时不清理。
+
+Unix 路径回归还覆盖没有 Git fingerprint 的计划目录：遍历前静态前缀遇到项目内或项目外的任一目录符号链接都拒绝，通配扫描不跟随目录链接；空目录返回 `E_PATH_OUTSIDE_REPO`，不解析目录别名。精确文件路径的末级符号链接只有仓库内目标可接受，并按链接文本绑定，不读取或遍历目标；外部目标和悬空链接由路径校验拒绝。非 Git 报告仍明确受计划文件范围限制。新增“空外部 alias/** 进入 review”的回归先真实失败后修复；完整 workspace 检查最终为 140 passed、1 ignored。
 
 手工试用由当前会话 Agent 驱动 CLI 完成，自动回归复用其业务案例验证协议和状态行为。自动回归不调用真实模型，因此不能证明所有模型、所有宿主会话都会正确理解模板；模板的语义、业务审查和用户体验仍需持续真实试用。
 

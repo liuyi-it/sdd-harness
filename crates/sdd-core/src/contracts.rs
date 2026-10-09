@@ -34,17 +34,19 @@ impl HostAdapter {
 }
 
 /// 当前工作流会真实持久化的阶段枚举。
-pub const PHASES: [&str; 13] = [
+pub const PHASES: [&str; 15] = [
     "NOT_INITIALIZED",
     "INITIALIZING",
     "INDEX_READY",
     "SPEC_WAITING_AGENT",
+    "SPEC_WAITING_REVIEW",
     "SPEC_READY",
     "PLAN_WAITING_AGENT",
     "PLAN_READY",
     "BUILD_WAITING_AGENT",
     "BUILD_READY",
     "QUALITY_WAITING_FIX",
+    "QUALITY_WAITING_REVIEW",
     "QUALITY_BLOCKED",
     "QUALITY_READY",
     "ARCHIVED",
@@ -137,6 +139,24 @@ pub struct CodebaseProviderInfo {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AgentActionRequired {
+    AgentReviewExecution {
+        #[serde(rename = "reviewId")]
+        review_id: String,
+        #[serde(rename = "changeId")]
+        change_id: String,
+        target: String,
+        #[serde(rename = "targetHash")]
+        target_hash: String,
+        reviewer: String,
+        #[serde(rename = "independentRequired")]
+        independent_required: bool,
+        #[serde(rename = "contextPack")]
+        context_pack: String,
+        #[serde(rename = "resultSchema")]
+        result_schema: serde_json::Value,
+        #[serde(rename = "resultTransport")]
+        result_transport: String,
+    },
     AgentPhaseExecution {
         phase: String,
         #[serde(rename = "changeId")]
@@ -176,6 +196,8 @@ pub enum AgentActionRequired {
         fix_id: String,
         #[serde(rename = "changeId")]
         change_id: String,
+        #[serde(rename = "userAuthorized")]
+        user_authorized: bool,
         #[serde(rename = "contextPack")]
         context_pack: String,
         #[serde(rename = "allowedFiles")]

@@ -50,13 +50,13 @@ sdd spec "实现订单取消功能" --json
 sdd spec --change order-cancel --result-json '<SpecPhaseResult JSON>' --json
 ```
 
-每个新需求都创建独立 workflow，因此已有活动任务不会阻止新建。
+每个新需求都创建独立 workflow，因此已有活动任务不会阻止新建。规格结果通过结构校验后先等待 `AGENT_REVIEW_EXECUTION`；审查 READY 后才写入唯一 `spec.md`，审查仍使用本命令的 `--result-json` 回传。
 
 不带需求文本的 `sdd spec --change <id> --json` 恢复等待中的规格行动，不创建新变更。
 
 ## `sdd change <新需求>`
 
-修订目标 change。多个活动任务时必须 `--change`；修订开始后重新生成同时包含技术设计的完整 `spec.md`，完成时作废所有派生制品。
+修订目标 change。多个活动任务时必须 `--change`；修订开始后重新生成同时包含技术设计的规格候选，候选审查 READY 后才更新唯一 `spec.md`，完成时作废所有派生制品。
 
 计划等待中也可发起修订。等待修订结果期间再次传入非空新需求时更新输入；不传需求则恢复已有修订行动。行动携带修订前规格，供宿主保留仍有效的需求、场景和设计。
 
@@ -69,9 +69,11 @@ sdd change --change order-cancel --result-json '<SpecPhaseResult JSON>' --json
 
 从含技术设计的统一规格生成纵向任务计划。Core 校验任务 ID、文件范围、依赖无环、验证命令安全，以及规格需求/场景的精确完整覆盖。
 
-行动的 `resultSchema` 包含完整任务定义，无需宿主读取源码补全字段。`testSeam` 必须是允许范围内的具体文件路径；`forbiddenFiles` 无额外禁止项时允许 `[]`。
+行动的 `resultSchema` 包含完整任务定义，无需宿主读取源码补全字段。计划结果版本为 4.0.0，并按 Schema 必填 `collaboration` 记录 `topology`、`lead`、`contributions` 和 `limitations`；`testSeam` 必须是允许范围内的具体文件路径；`forbiddenFiles` 无额外禁止项时允许 `[]`。
 
 验证声明使用独立程序名与参数，例如 `{"command":"python3","args":["-m","unittest","-v"],"expected":"测试通过"}`。支持 Cargo 的 test/check/build/clippy/fmt、npm test 或 run test/lint/typecheck/build、Maven test/verify、Python unittest/pytest、pytest 和 node --test，均可携带参数。不接受 shell 拼接与发布命令。
+
+Maven 选项可以位于质量生命周期前后，例如 `{"command":"mvn","args":["-B","-q","-s","settings.xml","clean","verify"],"expected":"测试与检查通过"}`。`-s`、`-f`、`-pl`、`-P`、`-D` 等选项按各自的参数消费规则解析，支持独立值、短选项附值和长选项 `=值`。`--color` 可省略值，有值时仅接受 `auto`、`always` 或 `never`。必须包含 `test` 或 `verify`；可附带 `clean`，拒绝 `install`、`deploy`、额外插件目标、未知选项、缺失参数，以及隐藏失败的 `--fail-never`。`-Bq` 等组合不会合并成两个布尔选项，仍须按 Maven 实际语义拒绝。规则依据 [Maven CLI 选项说明](https://maven.apache.org/ref/3.9.16/maven-embedder/cli.html)。门禁只检查声明的入口，宿主仍须确认实际执行了测试及其结果。
 
 ```bash
 sdd plan --change <id> --json
@@ -91,7 +93,7 @@ sdd build complete \
 
 `next` 返回 `AGENT_TASK_EXECUTION`。`complete` 要求 taskId 匹配 pending 任务、filesChanged 与 Git 事实一致、文件在计划范围内、全部 verification 不重不漏。TDD 任务完成时必须同时包含 expectedFailure=true 的失败证据和最终通过证据。
 
-任务行动包含完整 `resultSchema`。验证结果的程序名和参数数组必须逐项匹配计划，不能仅靠拼接后的命令字符串相同。宿主必须真正执行命令并保留输出。`tasks.md` 是计划定义，实时进度以 `sdd status` 为准。
+任务行动包含完整 `resultSchema`。TaskExecutionResult 还必须按 Schema 记录本次协作的 `topology`、`lead`、`contributions` 和 `limitations`；验证结果的程序名和参数数组必须逐项匹配计划，不能仅靠拼接后的命令字符串相同。宿主必须真正执行命令并保留输出。`tasks.md` 是计划定义，实时进度以 `sdd status` 为准。
 
 ## `sdd verify`
 
@@ -103,13 +105,13 @@ sdd verify --change <id> --result-json '<FixResult JSON>' --json
 sdd verify --change <id> --continue --json
 ```
 
-首次失败返回 `AGENT_FIX_EXECUTION` 并消耗一轮修复预算。修复后自动重新评估；仍失败进入 `QUALITY_BLOCKED`。`--continue` 只允许用户明确授权后的额外一轮，不能与 `--result-json` 同时使用。
+确定性检查通过后可能返回 `AGENT_REVIEW_EXECUTION`，审查目标为当前质量报告，宿主按原命令 `--result-json` 回传 READY/NOT_READY。审查结果必须声明 `independent`、`self` 或 `self_fallback`，可选回传与 spec `reviewPolicy` 相同的七类 `riskFactors`，并核对 Core 下发的版本/哈希绑定。发现新风险时 Core 原子追加风险、生成新 targetHash，并要求同一 reviewer 重新独立审查；旧审查记录保留为历史，当前 candidate 按新风险重新判断，产品通过后才进入架构审查，不能复用旧 self/self_fallback。QUALITY targetHash 绑定确定性报告（排除 Core 生成的语义附录）以及 spec、plan、tasks、fixes、workspace。不完整审查只能由 independent 重派一次，第二次仍不完整以退出码 8 阻断并保留行动；完整结果不可覆盖，重复提交相同结果由原命令幂等恢复。首次质量失败返回带 `userAuthorized` 和完整 materialized `resultSchema` 的 `AGENT_FIX_EXECUTION`，并消耗一轮修复预算。修复后自动重新评估；仍失败进入 `QUALITY_BLOCKED`。普通 `sdd verify` 在 `QUALITY_BLOCKED` 保持阻断；即使用户手动修复，也必须先获得明确授权并用 `sdd verify --continue` 重新进入修复验证链，不能用普通 verify 直接开启新自动修复，且 `--continue` 不能与 `--result-json` 同时使用。
 
-首次修复行动的 `data.report` 和被阻断后的状态都提供质量报告。普通文本显示具体问题及关联文件；自动修复预算耗尽后明确列出手动修复后重新验证、授权额外修复两种处理方式，`--continue` 不代表默认授权。手动解决问题后再次运行普通 `sdd verify` 即可重新检查。
+首次修复行动的 `data.report` 和被阻断后的状态都提供质量报告。Fix action 的 `userAuthorized` 表示是否有用户授权额外轮次；其完整 materialized `resultSchema` 随行动下发，宿主不需要猜测或拼装字段。FixResult 必须按 Schema 记录本次协作的 `topology`、`lead`、`contributions` 和 `limitations`。普通文本显示具体问题及关联文件；自动修复预算耗尽后明确要求用户选择手动修复并授权 `--continue`，或保持阻断。手动修复本身不会让普通 `sdd verify` 直接重入修复验证链，`--continue` 也不代表默认授权。
 
 ## `sdd archive`
 
-仅允许 `QUALITY_READY`。归档前重新核对 Git 指纹和任务完成状态，生成单一 `archive.md`。
+仅允许 `QUALITY_READY`。归档前重新核对 Git 指纹、审查目标的版本/哈希绑定和任务完成状态，生成单一 `archive.md`。
 
 ```bash
 sdd archive --change <id> --json

@@ -506,7 +506,7 @@ fn render_context_pack(
             "ESCAPED_END_UNTRUSTED_CODEBASE_CONTEXT",
         );
     Ok(format!(
-        "# 纵向实施任务\n\n{task_json}\n\n# 已批准文档\n\n{documents}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{codebase}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n只修改 allowedFiles；按 steps 在一个任务内完成测试、实现和最终验证，并通过 inline JSON 回传全部证据。"
+        "# 纵向实施任务\n\n{task_json}\n\n# 已批准文档\n\n{documents}\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{codebase}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n{}\n\n只修改 allowedFiles；按 steps 在一个任务内完成测试、实现和最终验证，并通过 inline JSON 回传全部证据。", crate::assets::COLLABORATION_POLICY
     ))
 }
 

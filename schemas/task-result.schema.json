@@ -3,22 +3,59 @@
   "$id": "https://sdd-harness.dev/schemas/task-result.schema.json",
   "title": "SDD 任务执行结果",
   "type": "object",
-  "required": ["taskId", "status", "evidence", "verification", "filesChanged"],
+  "required": [
+    "taskId",
+    "status",
+    "evidence",
+    "verification",
+    "filesChanged",
+    "collaboration"
+  ],
   "properties": {
-    "taskId": { "type": "string", "pattern": "^TASK-[0-9]{3}$" },
-    "status": { "type": "string", "enum": ["completed", "failed"] },
-    "message": { "type": "string" },
+    "taskId": {
+      "type": "string",
+      "pattern": "^TASK-[0-9]{3}$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "failed"
+      ]
+    },
+    "message": {
+      "type": "string"
+    },
     "evidence": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["type", "command", "output"],
+        "required": [
+          "type",
+          "command",
+          "output"
+        ],
         "properties": {
-          "type": { "type": "string", "enum": ["command-run"] },
-          "command": { "type": "string", "minLength": 1 },
-          "passed": { "type": "boolean" },
-          "expectedFailure": { "type": "boolean" },
-          "output": { "type": "string", "minLength": 1 }
+          "type": {
+            "type": "string",
+            "enum": [
+              "command-run"
+            ]
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "expectedFailure": {
+            "type": "boolean"
+          },
+          "output": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "additionalProperties": false
       }
@@ -28,17 +65,44 @@
       "minItems": 1,
       "items": {
         "type": "object",
-        "required": ["command", "args", "passed"],
+        "required": [
+          "command",
+          "args",
+          "passed"
+        ],
         "properties": {
-          "command": { "type": "string", "minLength": 1 },
-          "args": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-          "passed": { "type": "boolean" },
-          "output": { "type": "string" }
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "output": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
     },
-    "filesChanged": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } }
+    "filesChanged": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "collaboration": {
+      "type": "object"
+    }
   },
   "additionalProperties": false
 }

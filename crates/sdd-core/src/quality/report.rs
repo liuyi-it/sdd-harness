@@ -60,6 +60,25 @@ pub fn render_report_markdown(report: &Report) -> String {
         "## 问题".to_string(),
         String::new(),
     ];
+    if let Some(reviews) = report
+        .minimality
+        .as_ref()
+        .and_then(|value| value.get("semanticReviews"))
+        .and_then(serde_json::Value::as_array)
+    {
+        for review in reviews {
+            let mode = match review["mode"].as_str() {
+                Some("independent") => "独立审查",
+                Some("self_fallback") => "能力受限，主 Agent 自查",
+                _ => "主 Agent 自查",
+            };
+            lines.push(format!(
+                "- 语义审查：{mode}；{}",
+                review["summary"].as_str().unwrap_or("未提供摘要")
+            ));
+        }
+        lines.push(String::new());
+    }
     if report.issues.is_empty() {
         lines.push("- 无问题。".to_string());
     } else {

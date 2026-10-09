@@ -2,4 +2,4 @@
 
 pub mod validate;
 
-pub use validate::{validate_task_result, TaskExecutionResult};
+pub use validate::{validate_collaboration, validate_task_result, TaskExecutionResult};

@@ -6,6 +6,7 @@ pub mod change;
 pub mod codebase;
 pub mod init;
 pub mod plan;
+pub(crate) mod review;
 pub mod spec;
 pub mod status;
 pub mod verify;
@@ -216,22 +217,28 @@ pub(crate) fn ensure_phase(
         "change" => matches!(
             phase,
             "SPEC_WAITING_AGENT"
+                | "SPEC_WAITING_REVIEW"
                 | "SPEC_READY"
                 | "PLAN_WAITING_AGENT"
                 | "PLAN_READY"
                 | "BUILD_WAITING_AGENT"
                 | "BUILD_READY"
                 | "QUALITY_WAITING_FIX"
+                | "QUALITY_WAITING_REVIEW"
                 | "QUALITY_BLOCKED"
                 | "QUALITY_READY"
                 | "ARCHIVED"
         ),
-        "spec" => phase == "SPEC_WAITING_AGENT",
+        "spec" => matches!(phase, "SPEC_WAITING_AGENT" | "SPEC_WAITING_REVIEW"),
         "plan" => matches!(phase, "SPEC_READY" | "PLAN_WAITING_AGENT"),
         "build" => matches!(phase, "PLAN_READY" | "BUILD_WAITING_AGENT" | "BUILD_READY"),
         "verify" => matches!(
             phase,
-            "BUILD_READY" | "QUALITY_WAITING_FIX" | "QUALITY_BLOCKED" | "QUALITY_READY"
+            "BUILD_READY"
+                | "QUALITY_WAITING_FIX"
+                | "QUALITY_WAITING_REVIEW"
+                | "QUALITY_BLOCKED"
+                | "QUALITY_READY"
         ),
         "archive" => phase == "QUALITY_READY" || phase == "ARCHIVED",
         _ => true,

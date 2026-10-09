@@ -40,7 +40,7 @@ fn repeated_transactions_keep_two_files_and_embed_the_checksum() {
 
     assert_eq!(entries(dir.path()), ["lock", "runtime.json"]);
     let mut value = stored_value(dir.path());
-    assert_eq!(value["schemaVersion"], 8);
+    assert_eq!(value["schemaVersion"], 9);
     let expected = value.as_object_mut().unwrap().remove("checksum").unwrap();
     assert_eq!(
         expected,

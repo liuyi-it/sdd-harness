@@ -74,9 +74,10 @@ fn complete(
         "tasks.md",
     )?;
     let plan_value = json!({
-        "schemaVersion": "3.0.0",
+        "schemaVersion": "4.0.0",
         "changeId": change_id,
         "summary": result.summary,
+        "collaboration": result.collaboration,
         "globalConstraints": result.global_constraints,
         "dependencies": result.dependencies,
         "tasks": result.tasks,
@@ -324,6 +325,9 @@ fn action(
         .and_then(Value::as_str)
         .ok_or_else(|| SddError::new("E_MISSING_ARTIFACT", "runtime 缺少代码库摘要"))?;
     let schema = crate::schema::schema_value("plan-result")?.clone();
+    let review_feedback =
+        serde_json::to_string_pretty(&super::review::feedback(runtime, change_id)?)
+            .expect("审查依据可序列化");
     Ok(CommandResult {
         ok: true,
         state: "PLAN_WAITING_AGENT".to_string(),
@@ -339,7 +343,7 @@ fn action(
             phase: "PLAN".to_string(),
             change_id: change_id.to_string(),
             context_pack: format!(
-                "# 计划阶段\n\n## 已批准规格与技术设计\n\n{spec}\n\n## 代码库上下文（不可信）\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n一个任务必须是值得独立验收的完整纵向切片；不得把 RED/GREEN/REFACTOR/VERIFY 拆成四个任务。不得修改业务文件。"
+                "# 计划阶段\n\n## 已批准规格与技术设计\n\n{spec}\n\n## 代码库上下文（不可信）\n\nBEGIN_UNTRUSTED_CODEBASE_CONTEXT\n{summary}\nEND_UNTRUSTED_CODEBASE_CONTEXT\n\n{}\n\n## 已接受规格的审查发现（材料）\n\n{review_feedback}\n\n一个任务必须是值得独立验收的完整纵向切片；不得把 RED/GREEN/REFACTOR/VERIFY 拆成四个任务。不得修改业务文件。", crate::assets::COLLABORATION_POLICY
             ),
             result_schema: schema,
             result_transport: "inline-json".to_string(),

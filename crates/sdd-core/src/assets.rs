@@ -1,4 +1,4 @@
-//! Agent 资产层：把五个阶段 Skill 与宿主快捷命令写入业务项目。
+//! Agent 资产层：把五个阶段 Skill、共享参考与宿主快捷命令写入业务项目。
 
 use std::fs;
 use std::io::Read;
@@ -18,7 +18,138 @@ pub(crate) struct AdapterWriteResult {
     pub(crate) overwritten: Vec<&'static str>,
 }
 
-const ADAPTER_ASSETS: [AssetFile; 22] = [
+pub(crate) const WORKSPACE_POLICY: &str = include_str!("../../../assets/policies/workspace.md");
+pub(crate) const COLLABORATION_POLICY: &str =
+    include_str!("../../../assets/policies/collaboration.md");
+
+pub(crate) fn role_reference(name: &str) -> Option<&'static str> {
+    let mut in_role_table = false;
+    for line in COLLABORATION_POLICY.lines() {
+        if line == "| 角色 | 主要职责 |" {
+            in_role_table = true;
+            continue;
+        }
+        if !in_role_table || line == "| --- | --- |" {
+            continue;
+        }
+        if !line.starts_with("| `") {
+            break;
+        }
+        let mut cells = line.split('|').map(str::trim);
+        let _leading = cells.next();
+        let role = cells.next().and_then(|cell| {
+            cell.strip_prefix('`')
+                .and_then(|cell| cell.strip_suffix('`'))
+        })?;
+        let prompt = cells.next()?;
+        if role == name {
+            return Some(prompt);
+        }
+    }
+    None
+}
+
+const ADAPTER_ASSETS: [AssetFile; 42] = [
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-spec/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-plan/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-build/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-verify/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-archive/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-spec/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-plan/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-build/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-verify/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Codex,
+        target: ".agents/skills/sdd-archive/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-spec/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-plan/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-build/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-verify/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-archive/references/workspace.md",
+        content: WORKSPACE_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-spec/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-plan/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-build/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-verify/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
+    AssetFile {
+        adapter: HostAdapter::Omp,
+        target: ".omp/skills/sdd-archive/references/collaboration.md",
+        content: COLLABORATION_POLICY,
+    },
     AssetFile {
         adapter: HostAdapter::Omp,
         target: ".omp/skills/sdd-spec/SKILL.md",

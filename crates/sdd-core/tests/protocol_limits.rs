@@ -8,6 +8,12 @@ fn base() -> serde_json::Value {
     json!({
         "taskId": "TASK-001",
         "status": "completed",
+        "collaboration": {
+            "topology": "inline",
+            "lead": "developer",
+            "contributions": [],
+            "limitations": []
+        },
         "evidence": [{ "type": "command-run", "command": "cargo test", "output": "ok" }],
         "verification": [{ "command": "cargo test", "args": [], "passed": true }],
         "filesChanged": []

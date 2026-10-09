@@ -17,8 +17,10 @@ pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
     super::ensure_phase(workflow, "change", &change_id)?;
 
     if let Some(raw) = super::string_arg(args, "resultJson")? {
-        if workflow.phase != "SPEC_WAITING_AGENT"
-            || workflow.last_command.as_deref() != Some("sdd change")
+        if !matches!(
+            workflow.phase.as_str(),
+            "SPEC_WAITING_AGENT" | "SPEC_WAITING_REVIEW"
+        ) || workflow.last_command.as_deref() != Some("sdd change")
         {
             return Err(SddError::new(
                 "E_INVALID_PHASE_COMMAND",
@@ -32,9 +34,18 @@ pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
         .map(str::trim)
         .filter(|value| !value.is_empty());
     if requirement.is_none()
-        && workflow.phase == "SPEC_WAITING_AGENT"
+        && matches!(
+            workflow.phase.as_str(),
+            "SPEC_WAITING_AGENT" | "SPEC_WAITING_REVIEW"
+        )
         && workflow.last_command.as_deref() == Some("sdd change")
     {
+        if workflow.phase == "SPEC_WAITING_REVIEW" {
+            if let Some(raw) = super::review::completed_result(&runtime, &change_id)? {
+                return super::spec::complete_spec(cwd, &runtime, &change_id, &raw);
+            }
+            return super::review::action(cwd, &runtime, &change_id);
+        }
         return super::spec::phase_action(&runtime, &change_id, "SPECIFICATION");
     }
     let requirement =
@@ -48,6 +59,15 @@ pub fn run_change(cwd: &str, args: Option<&Value>) -> Result<CommandResult, SddE
             .and_then(Value::as_object_mut)
             .ok_or_else(|| SddError::new("E_STATE_CORRUPTED", "change workflow 缺少 run"))?
             .insert("input".to_string(), json!(requirement));
+        let change = super::change_mut(document, &change_id)?;
+        if let Some(basis) = change
+            .get("candidate")
+            .or_else(|| change.get("spec"))
+            .cloned()
+        {
+            change.insert("revisionBasis".into(), basis);
+        }
+        super::review::invalidate(change)?;
         let workflow = super::workflow_mut(document, &change_id)?;
         apply_workflow_update(workflow, |workflow| {
             workflow.phase = "SPEC_WAITING_AGENT".to_string();
