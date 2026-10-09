@@ -66,8 +66,6 @@ chmod +x "$build_dir/release/sdd"
 fn script(root: &Path, name: &str, case: &str) -> Output {
     let mut paths = vec![root.join("tools")];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
-    // rustup 的环境入口发现其 bin 已在 PATH 时不会改写前面的受控 Cargo。
-    paths.push(Path::new(&std::env::var_os("HOME").unwrap()).join(".cargo/bin"));
     Command::new("bash")
         .arg(root.join(format!("scripts/{name}.sh")))
         .current_dir(root)
@@ -92,7 +90,12 @@ fn assert_no_staging(root: &Path) {
 fn failed_build_keeps_the_old_command_available() {
     let dir = project();
     let output = script(dir.path(), "install", "fail");
-    assert_eq!(output.status.code(), Some(17));
+    assert_eq!(
+        output.status.code(),
+        Some(17),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert!(dir.path().join("old-present").exists());
     assert_eq!(
         std::fs::read_to_string(dir.path().join("prefix/sdd")).unwrap(),
@@ -105,7 +108,12 @@ fn failed_build_keeps_the_old_command_available() {
 fn invalid_new_binary_keeps_the_old_bytes_and_cleans_staging() {
     let dir = project();
     let output = script(dir.path(), "install", "invalid");
-    assert_eq!(output.status.code(), Some(23));
+    assert_eq!(
+        output.status.code(),
+        Some(23),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     assert_eq!(
         std::fs::read_to_string(dir.path().join("prefix/sdd")).unwrap(),
         OLD

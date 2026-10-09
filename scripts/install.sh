@@ -21,7 +21,8 @@ if [ -d "$PREFIX/sdd${EXE_SUFFIX}" ]; then
   exit 1
 fi
 
-if [ -f "$HOME/.cargo/env" ]; then
+# 优先使用调用者选定的工具链，避免环境脚本重排 PATH 覆盖已有 Cargo。
+if ! command -v cargo >/dev/null 2>&1 && [ -f "$HOME/.cargo/env" ]; then
   # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
 fi

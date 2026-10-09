@@ -47,7 +47,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-卸载 CLI：`bash scripts/uninstall.sh`。卸载失败返回非零并显示错误，不报告完成；不会删除业务项目的 `.sdd/`。源码安装支持 `PREFIX` 与 `CARGO_TARGET_DIR`，锁定依赖并显式构建本机 target，验证后才替换命令。
+卸载 CLI：`bash scripts/uninstall.sh`。卸载失败返回非零并显示错误，不报告完成；不会删除业务项目的 `.sdd/`。源码安装支持 `PREFIX` 与 `CARGO_TARGET_DIR`，优先使用 PATH 中已有的 Cargo，仅缺少时加载现有 Rust 环境；锁定依赖并显式构建本机 target，验证后才替换命令。
 
 ## 初始化与宿主资产
 

@@ -137,4 +137,4 @@ try {
 
 ## 从源码安装（备选）
 
-需要 Rust 工具链时，可克隆仓库后执行 `bash scripts/install.sh`，具体见 [README](../README.md)。脚本使用 `--locked` 与本机 target，`CARGO_TARGET_DIR` 的相对路径以调用时工作目录为基准；构建期间不删除旧命令，验证成功后才同目录替换。`PREFIX` 指定安装位置，安装后只清理本次暂存，不保留旧二进制备份。卸载脚本删除失败时返回非零并显示错误，业务项目 `.sdd/` 始终保留。
+需要 Rust 工具链时，可克隆仓库后执行 `bash scripts/install.sh`，具体见 [README](../README.md)。脚本优先使用 PATH 中已有的 Cargo，仅找不到时加载现有 Rust 环境，随后检查可用性。构建使用 `--locked` 与本机 target，`CARGO_TARGET_DIR` 的相对路径以调用时工作目录为基准；构建期间不删除旧命令，验证成功后才同目录替换。`PREFIX` 指定安装位置，安装后只清理本次暂存，不保留旧二进制备份。卸载脚本删除失败时返回非零并显示错误，业务项目 `.sdd/` 始终保留。
