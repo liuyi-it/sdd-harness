@@ -49,7 +49,7 @@ pub(crate) fn role_reference(name: &str) -> Option<&'static str> {
     None
 }
 
-const ADAPTER_ASSETS: [AssetFile; 42] = [
+const ADAPTER_ASSETS: [AssetFile; 40] = [
     AssetFile {
         adapter: HostAdapter::Codex,
         target: ".agents/skills/sdd-spec/references/workspace.md",
@@ -187,11 +187,6 @@ const ADAPTER_ASSETS: [AssetFile; 42] = [
     },
     AssetFile {
         adapter: HostAdapter::Omp,
-        target: ".omp/commands/sdd.new.md",
-        content: include_str!("../../../assets/adapters/omp/commands/sdd.new.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
         target: ".omp/commands/sdd.change.md",
         content: include_str!("../../../assets/adapters/omp/commands/sdd.change.md"),
     },
@@ -209,11 +204,6 @@ const ADAPTER_ASSETS: [AssetFile; 42] = [
         adapter: HostAdapter::Omp,
         target: ".omp/commands/sdd.plan.md",
         content: include_str!("../../../assets/adapters/omp/commands/sdd.plan.md"),
-    },
-    AssetFile {
-        adapter: HostAdapter::Omp,
-        target: ".omp/commands/sdd.design.md",
-        content: include_str!("../../../assets/adapters/omp/commands/sdd.design.md"),
     },
     AssetFile {
         adapter: HostAdapter::Omp,

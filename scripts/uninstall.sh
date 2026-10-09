@@ -14,7 +14,7 @@ else
   prefixes=("$HOME/.local/bin" /usr/local/bin "$HOME/bin")
 fi
 for prefix in "${prefixes[@]}"; do
-  rm -f "$prefix/sdd" "$prefix/sdd.exe" 2>/dev/null || true
+  rm -f "$prefix/sdd" "$prefix/sdd.exe"
 done
 
 echo "清理构建产物..."

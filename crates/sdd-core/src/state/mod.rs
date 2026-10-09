@@ -9,4 +9,4 @@ pub mod state_store;
 
 pub use file_lock::{lock_sdd, SddLockGuard};
 pub use runtime_store::{RuntimeDocument, RuntimeStore};
-pub use state_store::{StateStore, WorkflowState};
+pub use state_store::WorkflowState;

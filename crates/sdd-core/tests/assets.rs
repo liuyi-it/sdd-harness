@@ -1,14 +1,12 @@
 use sdd_core::contracts::{CommandRequest, HostAdapter};
 
 const SKILLS: [&str; 5] = ["spec", "plan", "build", "verify", "archive"];
-const OMP_COMMANDS: [&str; 12] = [
+const OMP_COMMANDS: [&str; 10] = [
     "sdd.md",
     "sdd.init.md",
     "sdd.status.md",
     "sdd.spec.md",
-    "sdd.new.md",
     "sdd.change.md",
-    "sdd.design.md",
     "sdd.plan.md",
     "sdd.build.md",
     "sdd.verify.md",

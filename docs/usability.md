@@ -205,3 +205,34 @@ cargo test --workspace
 ```
 
 可使用 `cargo test --workspace -- --test-threads=1` 串行复核外部工具相关测试。后续新增场景时，应扩展以上真实路径并检查相关文档，不能只增加预填成功结果的测试。
+
+## 2026-10-09 全仓审计与旧版清理
+
+本轮覆盖调用链、协议契约、关键边界及全量回归，未发现需要修改的模块继续保留现行实现。检查范围与处理如下：
+
+| 范围 | 检查与处理 |
+| --- | --- |
+| CLI、文档引擎、五阶段命令 | 保留规格、计划、构建、验证、归档；现有真实 CLI 回归覆盖初始化、修订、多任务选择、恢复、失败修复与审查失效 |
+| Runtime、锁、制品、安全文件 | 删除唯一无调用 `StateStore` 外观；保留 `RuntimeStore`、OS 排他锁、内嵌校验和原子写入，工作流测试改为无版本编号文件名 |
+| Schema、协议、策略 | 核对全部 13 份 Schema、内嵌引用、协作和证据约束；保留当前嵌套版本、Schema 缓存和通配批量编译，不增加兼容或重复机制 |
+| 安全、Git、子进程 | 核对实际 diff、范围、秘密模式、argv、超时/输出限额和进程组回收；修复整行占位词隐藏无引号凭据，新增真实 CLI verify 阻断回归 |
+| 知识模块 | 核对 CodeGraph 初始化、查询、诊断与 TTL，以及受限文件扫描；显式降级是有效产品能力，继续保留 |
+| 两端资产与忽略规则 | 删除 OMP 的 `new`、`design` 旧入口，保留十个有效快捷入口和五个 Skill；精确忽略当前生成 Skill，自定义文件仍可见，重复 init 保留清单外文件 |
+| 安装与卸载 | 真实复现构建期间旧 CLI 消失、卸载失败却报告成功；修复为锁定本机构建、遵守实际 target-dir、同目录暂存验证后替换，删除错误不再静默忽略 |
+| fixtures、CI、全部文档 | 核对运费与 Spring Boot 样例、三系统 CI、五平台 Release/checksum 和当前接口描述；同步所有受影响产品、宿主、架构、安全和安装说明 |
+
+定向测试先实际失败，再修复通过：旧 OMP 入口与忽略规则各一项，源码安装/卸载三项，敏感扫描两项；CLI 阻断位于 `verify`，没有把质量扫描提前到 build。新增安装回归还覆盖无效新产物、目录目标、交叉编译环境与实际 target-dir，Release 文档的 Unix 示例直接执行受控下载、校验失败及成功路径，确认原字节和自身暂存清理。
+
+在独立安装目录实际执行了源码安装脚本，也按安装文档下载 GitHub 最新 Release 并在替换前验证 SHA-256 和版本；主机 PATH 中已安装的 v0.7.0 保持原字节，不将本轮尚未发布的源码称为已安装 Release。既有 AGENTS.md、十五份 .agents 文件及五份历史归档逐项核对哈希，没有被清理或提交。
+
+验证入口：
+
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo test --workspace --locked
+cargo test -p sdd-cli --test install --locked
+cargo test -p sdd-cli --test usability --locked
+```
+
+安装子进程模拟只证明脚本文件操作及失败语义，不证明业务执行或模型协作。Unix 安装与本地全仓回归在 macOS 实际运行；PowerShell 示例仅静态复核，Windows 文件占用与安装尚未实机验证。真实 OMP 协作仍未验证。远端 Rust CI 与本轮源码提交结果以对应 GitHub run 为准；源码清理不自动发布新 Release。

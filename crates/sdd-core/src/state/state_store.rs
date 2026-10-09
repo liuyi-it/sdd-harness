@@ -1,15 +1,13 @@
-//! StateStore 负责工作流状态的读取、校验与更新。
+//! 工作流状态模型、更新规则与不变量校验。
 //!
 //! 状态是 `.sdd/runtime.json` 的 `state` 节点；runtime 文件由 `RuntimeStore`
 //! 统一原子写入，避免状态、配置和制品索引之间出现半更新。
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::SddError;
-use crate::state::runtime_store::{RuntimeStore, RUNTIME_FILE};
 
 pub const SDD_DIR: &str = ".sdd";
 
@@ -123,39 +121,6 @@ impl ChangeWorkflow {
     pub(crate) fn record_failure(&mut self, command: impl Into<String>, reason: impl Into<String>) {
         self.failed_command = Some(command.into());
         self.failed_reason = Some(reason.into());
-    }
-}
-
-pub struct StateStore {
-    root: PathBuf,
-}
-
-impl StateStore {
-    pub fn new(cwd: impl Into<PathBuf>) -> Self {
-        Self { root: cwd.into() }
-    }
-
-    fn sdd_dir(&self) -> PathBuf {
-        self.root.join(SDD_DIR)
-    }
-
-    pub fn state_path(&self) -> PathBuf {
-        self.sdd_dir().join(RUNTIME_FILE)
-    }
-
-    /// runtime 文件不存在时返回初始状态（未初始化）。
-    pub fn read(&self) -> Result<WorkflowState, SddError> {
-        Ok(RuntimeStore::new(self.root.clone()).read()?.state)
-    }
-
-    pub fn update<F>(&self, f: F) -> Result<WorkflowState, SddError>
-    where
-        F: FnOnce(&mut WorkflowState),
-    {
-        let store = RuntimeStore::new(self.root.clone());
-        let (_, document) =
-            store.try_update(|document| apply_state_update(&mut document.state, f))?;
-        Ok(document.state)
     }
 }
 

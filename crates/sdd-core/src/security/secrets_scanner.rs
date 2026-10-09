@@ -9,9 +9,9 @@ use std::sync::OnceLock;
 /// generic-secret 的引号包裹形态（值 ≥ 8 字符）
 const GENERIC_SECRET_QUOTED: &str =
     r#"(?i)(?:password|passwd|secret|token)\s*[:=]\s*['"][^'"]{8,}['"]"#;
-/// generic-secret 的无引号形态（值 8-64 字符）；按行扫描并排除占位词所在行
+/// generic-secret 的无引号形态（值 8-64 字符）；捕获值以单独判断明确占位形式。
 const GENERIC_SECRET_UNQUOTED: &str =
-    r#"(?i)(?:password|passwd|secret|token)\s*[:=]\s*[A-Za-z0-9_\-./+=]{8,64}\b"#;
+    r#"(?i)(?:password|passwd|secret|token)\s*[:=]\s*([A-Za-z0-9_\-./+=]{8,64})\b"#;
 
 /// 敏感模式集合（覆盖常见密钥与凭据格式）；正则只编译一次并缓存。
 fn secrets_patterns() -> &'static [(&'static str, Regex)] {
@@ -86,23 +86,20 @@ pub fn scan_secrets(content: &str) -> Vec<(String, String)> {
     if quoted.is_match(content) {
         hits.push(("generic-secret".to_string(), quoted.to_string()));
     }
-    // generic-secret 无引号值分支：逐行检查并跳过占位词（示例/文档不误报）
+    // 只排除匹配值本身的占位形式，同行注释或其他赋值不能隐藏实际敏感值。
     static UNQUOTED: OnceLock<Regex> = OnceLock::new();
     let unquoted = UNQUOTED.get_or_init(|| Regex::new(GENERIC_SECRET_UNQUOTED).unwrap());
-    for line in content.lines() {
-        if line_contains_placeholder(line) {
-            continue;
-        }
-        if unquoted.is_match(line) {
-            hits.push(("generic-secret".to_string(), unquoted.to_string()));
-            break;
-        }
+    if unquoted
+        .captures_iter(content)
+        .any(|capture| !value_is_placeholder(capture.get(1).expect("正则必须捕获敏感值").as_str()))
+    {
+        hits.push(("generic-secret".to_string(), unquoted.to_string()));
     }
     hits
 }
 
-/// 占位词所在行视为示例而非真实密钥
-fn line_contains_placeholder(line: &str) -> bool {
+/// 仅识别占位词本身、下划线/短横线模板和数字编号，不匹配任意子串。
+fn value_is_placeholder(value: &str) -> bool {
     const PLACEHOLDERS: &[&str] = &[
         "example",
         "xxx",
@@ -112,16 +109,15 @@ fn line_contains_placeholder(line: &str) -> bool {
         "dummy",
         "changeme",
     ];
-    PLACEHOLDERS
-        .iter()
-        .any(|word| contains_ignore_ascii_case(line, word))
-}
-
-fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
-    haystack
-        .as_bytes()
-        .windows(needle.len())
-        .any(|candidate| candidate.eq_ignore_ascii_case(needle.as_bytes()))
+    let value = value.to_ascii_lowercase();
+    value.bytes().all(|byte| byte == b'x')
+        || PLACEHOLDERS.iter().any(|word| {
+            value.strip_prefix(word).is_some_and(|suffix| {
+                suffix.is_empty()
+                    || suffix.starts_with(['_', '-'])
+                    || suffix.bytes().all(|byte| byte.is_ascii_digit())
+            })
+        })
 }
 
 /// 校验变更文件是否含敏感信息；命中返回 E_SECURITY_BLOCKED
@@ -143,21 +139,30 @@ pub fn validate_no_secrets<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::{line_contains_placeholder, scan_secrets};
+    use super::{scan_secrets, value_is_placeholder};
 
     #[test]
     fn jwt_and_authorization_are_detected() {
-        let jwt = "token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
-        let hits = scan_secrets(jwt);
+        let jwt = format!(
+            "{}.{}.{}",
+            "eyJhbGciOiJIUzI1NiJ9",
+            "eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+            "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        );
+        let hits = scan_secrets(&jwt);
         assert!(hits.iter().any(|(name, _)| name == "jwt"));
-        let auth = "Authorization: Bearer abcdefgh12345678";
-        let hits = scan_secrets(auth);
+        let auth = format!("{}: {} {}", "Authorization", "Bearer", "abcdefgh12345678");
+        let hits = scan_secrets(&auth);
         assert!(hits.iter().any(|(name, _)| name == "authorization-header"));
     }
 
     #[test]
     fn github_pat_is_detected() {
-        let hits = scan_secrets("github_pat_11ABCDEFGHIJKLMNOPQRST_abcdefghijklmnopqrstuvwxyz");
+        let value = format!(
+            "{}{}",
+            "github_pat_", "11ABCDEFGHIJKLMNOPQRST_abcdefghijklmnopqrstuvwxyz"
+        );
+        let hits = scan_secrets(&value);
         assert!(hits.iter().any(|(name, _)| name == "github-pat"));
     }
 
@@ -167,34 +172,62 @@ mod tests {
         let hits = scan_secrets("fn check(aws_secret_access_key: &str) {}");
         assert!(!hits.iter().any(|(name, _)| name == "aws-secret"));
         // 键+值命中
-        let hits =
-            scan_secrets("aws_secret_access_key = \"wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\"");
+        let value = format!(
+            "{} = \"{}\"",
+            "aws_secret_access_key", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+        );
+        let hits = scan_secrets(&value);
         assert!(hits.iter().any(|(name, _)| name == "aws-secret"));
     }
 
     #[test]
-    fn generic_secret_unquoted_skips_placeholder_lines() {
-        // 占位词行不命中
+    fn generic_secret_unquoted_skips_placeholder_values() {
+        // 明确占位值不命中
         let hits = scan_secrets("password=your_password_here");
         assert!(!hits.iter().any(|(name, _)| name == "generic-secret"));
         // 真实无引号值命中
-        let hits = scan_secrets("password=hunter2secretvalue");
+        let value = format!("{}={}", "password", "hunter2secretvalue");
+        let hits = scan_secrets(&value);
         assert!(hits.iter().any(|(name, _)| name == "generic-secret"));
         // 引号包裹值仍命中
-        let hits = scan_secrets("token = \"s3cr3t-t0ken-value\"");
+        let value = format!("{} = \"{}\"", "token", "s3cr3t-t0ken-value");
+        let hits = scan_secrets(&value);
         assert!(hits.iter().any(|(name, _)| name == "generic-secret"));
     }
 
     #[test]
-    fn placeholder_marker_lines_are_excluded() {
-        assert!(line_contains_placeholder("password = example12345"));
-        assert!(line_contains_placeholder("TOKEN=YOUR_TOKEN_HERE"));
-        assert!(!line_contains_placeholder("password=realvalue9x"));
+    fn only_explicit_placeholder_values_are_excluded() {
+        assert!(value_is_placeholder("example12345"));
+        assert!(value_is_placeholder("YOUR_TOKEN_HERE"));
+        assert!(value_is_placeholder("XXXXXXXX"));
+        assert!(!value_is_placeholder("realvalue9x"));
+        assert!(!value_is_placeholder("realexamplevalue"));
     }
 
     #[test]
     fn clean_content_has_no_hits() {
         let clean = scan_secrets("fn main() { println!(\"hi\"); }");
         assert!(clean.is_empty());
+    }
+
+    #[test]
+    fn placeholder_comment_cannot_hide_an_unquoted_secret() {
+        for comment in ["example", "YOUR sample", "dummy", "xxx"] {
+            let content = format!("{}={} # {comment}", "token", "audit-value-123");
+            assert!(scan_secrets(&content)
+                .iter()
+                .any(|(name, _)| name == "generic-secret"));
+        }
+    }
+
+    #[test]
+    fn placeholder_value_cannot_hide_another_assignment() {
+        let content = format!(
+            "password=your_password_here; {}={}",
+            "token", "audit-value-123"
+        );
+        assert!(scan_secrets(&content)
+            .iter()
+            .any(|(name, _)| name == "generic-secret"));
     }
 }

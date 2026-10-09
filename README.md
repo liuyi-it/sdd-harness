@@ -37,17 +37,7 @@ Spring Boot 的 HTTP、并发创建与进程重启验收样例见 [工单试用�
 | macOS Apple Silicon | `sdd-macos-arm64` |
 | Windows x64 | `sdd-windows-x64.exe` |
 
-macOS Apple Silicon 示例：
-
-```bash
-install_dir="$HOME/.local/bin"
-mkdir -p "$install_dir"
-curl -fL -o "$install_dir/sdd" \
-  https://github.com/liuyi-it/sdd-harness/releases/latest/download/sdd-macos-arm64
-chmod +x "$install_dir/sdd"
-export PATH="$install_dir:$PATH"
-sdd --version
-```
+包括 macOS Apple Silicon 在内的安装与升级命令见 [安装指南](docs/agent-install.md)。二进制与校验文件先下载到独立临时目录，校验 SHA-256 和新版本可执行性，再在安装目录暂存并替换；失败时保留原安装。
 
 从源码安装需要 Rust：
 
@@ -57,7 +47,7 @@ cd sdd-harness
 bash scripts/install.sh
 ```
 
-卸载 CLI：`bash scripts/uninstall.sh`。卸载不会删除业务项目的 `.sdd/`。
+卸载 CLI：`bash scripts/uninstall.sh`。卸载失败返回非零并显示错误，不报告完成；不会删除业务项目的 `.sdd/`。源码安装支持 `PREFIX` 与 `CARGO_TARGET_DIR`，锁定依赖并显式构建本机 target，验证后才替换命令。
 
 ## 初始化与宿主资产
 
@@ -73,9 +63,9 @@ sdd init
 sdd-spec  sdd-plan  sdd-build  sdd-verify  sdd-archive
 ```
 
-每个阶段同时安装 `references/workspace.md` 和 `references/collaboration.md`；它们是共享参考，不计入 Skill 数量。OMP 安装同样的五个 Skill 和两份参考，并保留现有 slash command。
+每个阶段同时安装 `references/workspace.md` 和 `references/collaboration.md`；它们是共享参考，不计入 Skill 数量。OMP 安装同样的五个 Skill 和两份参考，并注册当前有效的十个 slash command。
 
-OMP 宿主使用内部参数 `sdd init --host-adapter omp`，安装同一组五个 Skill，并注册 `/sdd`、`/sdd.spec` 与全部既有 `/sdd.<command>` 快捷入口。快捷入口不是额外 Skill：`/sdd`、`/sdd.new`、`/sdd.design` 和 `/sdd.change` 会转入统一 Spec 流程；初始化不会扫描、删除或迁移已有项目的旧 Skill。用户无需在初始化时交互选择宿主；宿主适配器负责传入自身标识。
+OMP 宿主使用内部参数 `sdd init --host-adapter omp`，安装同一组五个 Skill，并注册 `/sdd` 与当前九个 `/sdd.<command>` 快捷入口（清单见 [宿主接入](docs/adapters.md#omp)）。快捷入口不是额外 Skill：`/sdd` 和 `/sdd.change` 会转入统一 Spec 流程；已退役的 `new`、`design` 入口不再分发。初始化只刷新当前清单，保留清单外已有文件，旧资产的删除须按具体项目授权处理。用户无需在初始化时交互选择宿主；宿主适配器负责传入自身标识。
 
 初始化同时探测 CodeGraph。CodeGraph 可用时建立或复用 `.codegraph/` 索引；不可用时显式降级为受限文件扫描。预编译 `sdd` 本身不依赖 Node.js 或 Rust。
 

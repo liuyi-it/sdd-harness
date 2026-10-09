@@ -17,9 +17,9 @@ OMP 宿主运行 `sdd init --host-adapter omp`，写入：
 
 - `.omp/skills/` 下与 Codex 同名的五个 Skill；
 - `.omp/commands/sdd.md` 自然语言入口；
-- `/sdd.init`、`/sdd.status`、`/sdd.spec`、`/sdd.new`、`/sdd.change`、`/sdd.design`、`/sdd.plan`、`/sdd.build`、`/sdd.verify`、`/sdd.archive`、`/sdd.codebase` 全部显式命令。
+- `/sdd.init`、`/sdd.status`、`/sdd.spec`、`/sdd.change`、`/sdd.plan`、`/sdd.build`、`/sdd.verify`、`/sdd.archive`、`/sdd.codebase` 全部显式命令。
 
-OMP slash command 是快捷入口，不计入 Skill 数量。`/sdd`、`/sdd.new` 和 `/sdd.design` 会进入 `sdd-spec`；`/sdd.change` 先运行 `sdd change` 再进入同一统一规格阶段。新版本初始化不会扫描、删除或迁移项目中已存在的旧 Skill，旧资产由用户自行处理。
+OMP slash command 是快捷入口，不计入 Skill 数量。`/sdd` 会进入 `sdd-spec`；`/sdd.change` 先运行 `sdd change` 再进入同一统一规格阶段。当前只分发以上十个入口，已退役的 `new`、`design` 快捷入口已删除。重复初始化只刷新当前清单并保留其他既有文件，包括自定义文件；不自动扫描、删除或迁移旧项目资产。清理旧资产需先确认具体路径、来源与用户授权。
 
 终端默认 Codex，OMP 自己传入隐藏宿主标识；用户无需在 `sdd init` 时选择。两端都分发同一份协作策略，Core 也将同一编译期内容放入适用行动上下文。
 

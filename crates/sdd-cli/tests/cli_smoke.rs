@@ -80,3 +80,102 @@ fn global_change_is_available_to_every_change_scoped_command() {
         assert_ne!(output.status.code(), Some(2), "{command} 未接受 --change");
     }
 }
+
+#[test]
+fn omp_has_only_current_entries_and_refresh_preserves_extra_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let initialize = || {
+        let output = sdd()
+            .args([
+                "--cwd",
+                &dir.path().to_string_lossy(),
+                "init",
+                "--host-adapter",
+                "omp",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    };
+    initialize();
+    let commands = dir.path().join(".omp/commands");
+    let mut names: Vec<_> = std::fs::read_dir(&commands)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        [
+            "sdd.archive.md",
+            "sdd.build.md",
+            "sdd.change.md",
+            "sdd.codebase.md",
+            "sdd.init.md",
+            "sdd.md",
+            "sdd.plan.md",
+            "sdd.spec.md",
+            "sdd.status.md",
+            "sdd.verify.md"
+        ]
+    );
+    for extra in ["sdd.new.md", "custom.md"] {
+        std::fs::write(commands.join(extra), "用户已有文件").unwrap();
+    }
+    initialize();
+    for extra in ["sdd.new.md", "custom.md"] {
+        assert_eq!(
+            std::fs::read_to_string(commands.join(extra)).unwrap(),
+            "用户已有文件"
+        );
+    }
+}
+
+#[test]
+fn repository_ignores_only_the_current_generated_codex_skills() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(dir.path())
+        .status()
+        .unwrap()
+        .success());
+    std::fs::write(
+        dir.path().join(".gitignore"),
+        include_str!("../../../.gitignore"),
+    )
+    .unwrap();
+    for skill in ["spec", "plan", "build", "verify", "archive"] {
+        let path = format!(".agents/skills/sdd-{skill}/SKILL.md");
+        assert!(
+            Command::new("git")
+                .args(["check-ignore", "-q", &path])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .success(),
+            "{path}"
+        );
+    }
+    for path in [
+        ".agents/skills/custom/SKILL.md",
+        ".agents/skills/sdd-harness/SKILL.md",
+        ".codex/agents/sdd-product.toml",
+    ] {
+        assert_eq!(
+            Command::new("git")
+                .args(["check-ignore", "-q", path])
+                .current_dir(dir.path())
+                .status()
+                .unwrap()
+                .code(),
+            Some(1),
+            "{path}"
+        );
+    }
+}

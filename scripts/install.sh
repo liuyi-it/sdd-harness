@@ -1,14 +1,10 @@
 #!/usr/bin/env bash
-# sdd 一键全局安装脚本 (macOS/Linux/Git Bash)
-# 用法: bash scripts/install.sh
+# sdd 源码安装（macOS/Linux/Git Bash）：新产物验证通过后再替换原命令。
 set -euo pipefail
-
-echo "=== sdd 安装 ==="
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 选择安装前缀：允许 PREFIX 覆盖，便于受控安装与 CI 验收。
 if [ -z "${PREFIX:-}" ]; then
   if [ -d "$HOME/.local/bin" ] || [ ! -w /usr/local/bin ]; then
     PREFIX="$HOME/.local/bin"
@@ -16,85 +12,64 @@ if [ -z "${PREFIX:-}" ]; then
     PREFIX="/usr/local/bin"
   fi
 fi
-mkdir -p "$PREFIX"
-
 case "$(uname -s)" in
   MINGW*|MSYS*|CYGWIN*) EXE_SUFFIX=".exe" ;;
   *) EXE_SUFFIX="" ;;
 esac
-COMMANDS=("sdd${EXE_SUFFIX}")
+if [ -d "$PREFIX/sdd${EXE_SUFFIX}" ]; then
+  echo "错误: 安装目标是目录: $PREFIX/sdd${EXE_SUFFIX}" >&2
+  exit 1
+fi
 
-# 加载 cargo 环境（rustup 默认安装位置）
 if [ -f "$HOME/.cargo/env" ]; then
   # shellcheck disable=SC1091
   source "$HOME/.cargo/env"
 fi
-
-# 检查 Rust 工具链
 if ! command -v cargo >/dev/null 2>&1; then
-  echo "错误: 需要 Rust 工具链（cargo）。"
-  echo "请先安装 rustup: https://rustup.rs（国内可配置镜像后安装）"
+  echo "错误: 需要 Rust 工具链（cargo），或按 docs/agent-install.md 安装预编译版本。" >&2
   exit 1
 fi
 
-INSTALL_SUCCEEDED=false
-BACKUP_DIR="$(mktemp -d)"
-for command_name in "${COMMANDS[@]}"; do
-  if [ -f "$PREFIX/$command_name" ]; then
-    cp "$PREFIX/$command_name" "$BACKUP_DIR/$command_name"
-  fi
-done
-rollback_failed_install() {
-  local exit_code="$?"
-  if [ "$INSTALL_SUCCEEDED" != true ]; then
-    echo "安装失败，正在恢复原安装..." >&2
-    rm -f "${COMMANDS[@]/#/$PREFIX/}" || true
-    for command_name in "${COMMANDS[@]}"; do
-      if [ -f "$BACKUP_DIR/$command_name" ]; then
-        cp "$BACKUP_DIR/$command_name" "$PREFIX/$command_name"
-      fi
-    done
-  fi
-  rm -rf "$BACKUP_DIR"
-  exit "$exit_code"
-}
-trap rollback_failed_install EXIT
+# 显式指定目录，构建与产物读取使用同一位置；相对值遵循调用者工作目录。
+BUILD_DIR="${CARGO_TARGET_DIR:-$PROJECT_ROOT/target}"
+case "$BUILD_DIR" in
+  /*|[A-Za-z]:/*) ;;
+  *) BUILD_DIR="$PWD/$BUILD_DIR" ;;
+esac
 
-echo "清理已有安装..."
-rm -f "$PREFIX/sdd" "$PREFIX/sdd.exe"
-
-# 构建 release 二进制
+# 安装本机可执行文件，显式 host 避免工程的交叉编译配置留下陈旧产物被误装。
+BUILD_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
+[ -n "$BUILD_TARGET" ] || { echo "错误: 无法获取 Rust 本机 target" >&2; exit 1; }
 echo "构建..."
-cargo build --release --manifest-path "$PROJECT_ROOT/Cargo.toml"
-
-BIN="$PROJECT_ROOT/target/release/sdd${EXE_SUFFIX}"
+cargo build --release --locked --package sdd-cli --manifest-path "$PROJECT_ROOT/Cargo.toml" --target-dir "$BUILD_DIR" --target "$BUILD_TARGET"
+BIN="$BUILD_DIR/$BUILD_TARGET/release/sdd${EXE_SUFFIX}"
 if [ ! -f "$BIN" ]; then
   echo "错误: 构建产物不存在: $BIN" >&2
   exit 1
 fi
 
-# 注册全局命令
-echo "注册全局命令到 $PREFIX ..."
-install -m 0755 "$BIN" "$PREFIX/sdd${EXE_SUFFIX}"
+mkdir -p "$PREFIX"
+STAGED_BIN="$(mktemp "$PREFIX/.sdd-install.XXXXXX${EXE_SUFFIX}")"
+cleanup_install() {
+  local exit_code="$?"
+  if [ -n "$STAGED_BIN" ]; then
+    if ! rm -f "$STAGED_BIN"; then
+      echo "清理安装暂存失败: $STAGED_BIN" >&2
+      exit_code=1
+    fi
+  fi
+  exit "$exit_code"
+}
+trap cleanup_install EXIT
 
-# 验证安装
+install -m 0755 "$BIN" "$STAGED_BIN"
+"$STAGED_BIN" --version
+# 同目录替换不需要删除旧命令或制作备份；此前失败时原安装字节保持不变。
+mv -f "$STAGED_BIN" "$PREFIX/sdd${EXE_SUFFIX}"
+STAGED_BIN=""
+
 if [ "$(command -v sdd || true)" != "$PREFIX/sdd${EXE_SUFFIX}" ]; then
-  echo "警告: $PREFIX 不在 PATH 中，请将以下行加入 shell 配置（~/.zshrc / ~/.bashrc）："
+  echo "请将 $PREFIX 加入 PATH："
   echo "  export PATH=\"$PREFIX:\$PATH\""
 fi
-for command_name in "${COMMANDS[@]}"; do
-  "$PREFIX/$command_name" --version >/dev/null 2>&1 || {
-    echo "错误: 安装验证失败，$command_name 无法运行" >&2
-    exit 1
-  }
-done
-
-INSTALL_SUCCEEDED=true
-rm -rf "$BACKUP_DIR"
-trap - EXIT
-
-echo ""
-echo "=== 安装完成 ==="
-echo "命令位置: $PREFIX/sdd${EXE_SUFFIX}"
-echo "可用命令: sdd"
-echo "使用 sdd init 初始化项目"
+echo "安装完成: $PREFIX/sdd${EXE_SUFFIX}"

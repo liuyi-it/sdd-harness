@@ -53,7 +53,11 @@ AI-DLC 协作协议单源维护在 `assets/policies/collaboration.md` 的明确�
 
 人类状态与错误引导共用中文阶段名称和任务标题解析，阶段错误的恢复命令带上原目标。所选任务摘要独立于活动列表，因此已归档目标仍可展示标题；质量阶段的状态携带当前报告，CLI 与宿主使用同一份阻断事实。代码库诊断、查询和质量报告使用各自的文本呈现，不通过截断内部 JSON 代替用户可读反馈。
 
+当前五个 Codex Skill 的生成目录在仓库中逐一忽略；自定义 `.agents` 内容仍可被 Git 识别。OMP 只分发十个有效快捷入口，初始化不删除清单外文件。
+
 ## 持久化与并发
+
+工作流模型与不变量由 `state_store.rs` 定义，存储操作统一通过 `RuntimeStore`；不再保留无调用的 `StateStore` 外观。
 
 所有写命令先获取稳定的 `.sdd/lock`。同一线程嵌套事务复用 OS 文件锁，线程与进程间保持排他，最后一个 guard 或进程退出时释放。锁不随 Runtime 原子替换而变化，不记录持有者文件；冲突只提示其他写操作占用，不能靠删除锁文件抢占。
 
@@ -70,3 +74,7 @@ Runtime 的存储 JSON 根包含 `checksum`，它覆盖移除自身字段后的 
 ## Git 隔离
 
 配置 `workflow.gitIsolation=true` 时，每个 change 使用 `sdd/<change-id>` 分支和 `.sdd/worktrees/<change-id>` 工作树。Core 每次读写都会验证路径和分支绑定；不会自动 merge、push、reset、clean 或删除 worktree。
+
+## 安装边界
+
+源码安装锁定 Cargo.lock，并显式选择本机 target 和实际构建目录；目标目录只创建本次唯一暂存，新产物通过 `--version` 后同目录替换。构建或验证失败时原命令持续可用，不制作旧 CLI 备份。卸载遇到删除失败立即返回非零且显示原因，不隐藏错误或报告完整卸载；业务 `.sdd/` 不属于卸载范围。Release 的下载、校验和替换顺序见 [安装指南](agent-install.md)。

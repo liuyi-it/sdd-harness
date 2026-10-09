@@ -333,9 +333,15 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     );
     assert_eq!(approve_quality_review(root)["state"], "QUALITY_READY");
     // 在真实完成的项目上制造范围问题，验证普通用户能看到阻断原因和处理选择。
+    let content = format!(
+        "{IMPLEMENTATION}\n# {}={} # example\n",
+        "token", "audit-value-123"
+    );
+    std::fs::write(root.join("shipping.py"), content).unwrap();
     std::fs::write(root.join("unexpected.txt"), "计划外文件\n").unwrap();
     let fixing = combined(&cli(root, &["verify"]));
     assert!(fixing.contains("unexpected.txt"), "{fixing}");
+    assert!(fixing.contains("generic-secret"), "{fixing}");
     assert!(!fixing.contains("Context Pack"));
     let fix = run(root, &["verify"]);
     let failed_fix = json!({
@@ -362,6 +368,7 @@ fn shipping_demo_completes_with_real_evidence_and_resumes_after_revision() {
     assert!(blocked_status.contains("任务进度：1/1 已完成"));
     // 用户选择手动恢复范围后，仍须明确 --continue 授权才能重新进入修复流程。
     std::fs::remove_file(root.join("unexpected.txt")).unwrap();
+    std::fs::write(root.join("shipping.py"), IMPLEMENTATION).unwrap();
     let still_blocked = cli(root, &["verify", "--json"]);
     assert!(!still_blocked.status.success());
     let still_blocked_json: Value = serde_json::from_slice(&still_blocked.stdout).unwrap();
