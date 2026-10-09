@@ -1020,12 +1020,27 @@ fn failed_quality_fix_keeps_failed_verification_and_requires_continue_authorizat
         },
         "filesChanged": [],
         "verification": [{
-            "command": "python3",
-            "args": ["-m", "unittest", "-v"],
+            "command": fix["actionRequired"]["verification"][0]["command"],
+            "args": fix["actionRequired"]["verification"][0]["args"],
             "passed": false,
             "output": "Ran 2 tests; 1 failed"
         }]
     });
+    // 命令必须来自派发包；Windows 的计划使用 python，其他平台使用 python3。
+    let mut mismatched_fix = failed_fix.clone();
+    mismatched_fix["verification"][0]["command"] =
+        if failed_fix["verification"][0]["command"] == "python" {
+            json!("python3")
+        } else {
+            json!("python")
+        };
+    let rejected = failed(
+        root,
+        &["verify", "--result-json", &mismatched_fix.to_string()],
+    );
+    assert_eq!(rejected["error"]["code"], "E_QUALITY_FAILED");
+    assert_eq!(rejected["state"], "QUALITY_WAITING_FIX");
+
     let failed_fix_json = failed_fix.to_string();
     let blocked = failed(root, &["verify", "--result-json", failed_fix_json.as_str()]);
     assert_eq!(blocked["state"], "QUALITY_BLOCKED");

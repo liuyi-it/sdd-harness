@@ -136,6 +136,8 @@ Maven 与 Surefire 报告实际为 23 tests、0 failures、0 errors、0 skipped�
 
 本轮最终 `cargo fmt --check`、Clippy workspace 全目标零告警和 `cargo test --workspace` 通过；全量为 141 passed、0 failed、1 ignored。
 
+发布 `v0.7.0` 前的真实 Windows CI 发现质量修复失败回归把 `python3` 写死，而该平台计划实际下发 `python`；Core 按命令绑定规则拒绝结果并保留待修复行动。测试现直接使用派发包的 command/args，同时断言错误命令不会消耗修复行动，匹配命令的失败结果才进入阻断。这是跨平台测试输入修正，不改变质量门禁或命令匹配语义。
+
 本轮覆盖 Codex 宿主、当前源码 CLI 和本机单进程 HTTP，未验证 OMP 真实协作、生产数据库/权限/网关/部署、容量、Windows 或远端 CI。20 并发属于行为验收，不是压测或吞吐结论。固定 CLI 回归仅证明协议，真实 Agent 返回、实际源码、命令退出码和报告共同支撑本轮交付结论。未替换全局 `sdd`，未提交或推送。
 
 ## 双文件持久化与多轮澄清
